@@ -1,0 +1,46 @@
+# Bedrock
+
+An experimental x86-64 hypervisor purpose-built for deterministic software
+testing.
+
+Bedrock uses Intel VT-x to run guest VMs with fully emulated time (TSC),
+controlled randomness (RDRAND/RDSEED), various other device emulation, and
+copy-on-write VM forking - enabling reproducible execution for deterministic
+testing.
+
+<a href="https://asciinema.org/a/icy1rkUAHbCEQsRN" target="_blank"><img src="https://asciinema.org/a/icy1rkUAHbCEQsRN.svg" /></a>
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────┐
+│                    User Space                      │
+│                                                    │
+│  bedrock-vm      Rust library for VM control       │
+│                                                    │
+│                        │ ioctl                     │
+├────────────────────────┼───────────────────────────┤
+│                        ▼                           │
+│                   Kernel Space                     │
+│                                                    │
+│  bedrock.ko      Kernel module (/dev/bedrock)      │
+│                  - VMX setup and VM execution      │
+│                  - EPT memory virtualization       │
+│                  - Deterministic device emulation  │
+│                  - ...                             │
+│                                                    │
+└────────────────────────────────────────────────────┘
+```
+
+## Requirements
+
+- [Linux 6.18](https://github.com/torvalds/linux/tree/v6.18) host kernel with
+  `CONFIG_RUST=y`
+- Intel(R) Xeon(R) Gold 5412U (It should work on other modern Intel CPUs with
+  VT-x support, but fine-tuning may be required)
+- Patched linux 6.18 guest kernel (see [guest-patches/](guest-patches/))
+
+---
+
+*This project was created with heavy assistance from LLMs. Might freeze/hang or
+otherwise corrupt host machine, run at your own risk.*

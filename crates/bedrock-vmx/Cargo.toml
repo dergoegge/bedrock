@@ -1,0 +1,16 @@
+[package]
+name = "bedrock-vmx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VMX (Virtual Machine Extensions) support for x86-64 virtualization"
+
+[dependencies]
+memory = { package = "bedrock-memory", path = "../bedrock-memory" }
+bedrock-log = { path = "../bedrock-log", default-features = false }
+bedrock-ept = { path = "../bedrock-ept", default-features = false }
+
+[features]
+default = ["cargo"]
+cargo = ["bedrock-log/cargo", "bedrock-ept/cargo"]
+test-utils = []

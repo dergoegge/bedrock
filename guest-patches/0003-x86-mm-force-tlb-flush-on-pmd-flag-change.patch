@@ -1,0 +1,34 @@
+From: Bedrock <bedrock@example.com>
+Subject: [PATCH 3/3] x86/mm: Force TLB flush on any PMD flag change
+
+For deterministic execution under hypervisors with VPID enabled,
+force TLB flush whenever huge PMD flags change, not just when
+permissions are demoted. This is the transparent hugepage equivalent
+of the PTE fix in patch 1 and prevents spurious faults from stale
+TLB entries on THP mappings.
+
+Signed-off-by: Bedrock <bedrock@example.com>
+---
+ arch/x86/include/asm/tlbflush.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/x86/include/asm/tlbflush.h b/arch/x86/include/asm/tlbflush.h
+index abcdef123..1234567ab 100644
+--- a/arch/x86/include/asm/tlbflush.h
++++ b/arch/x86/include/asm/tlbflush.h
+@@ -440,6 +440,13 @@ static inline bool pte_needs_flush(pte_t oldpte, pte_t newpte)
+  */
+ static inline bool huge_pmd_needs_flush(pmd_t oldpmd, pmd_t newpmd)
+ {
++	/*
++	 * Force TLB flush on any flag change for deterministic execution
++	 * under hypervisors with VPID. Avoids spurious faults on THP.
++	 */
++	if (pmd_flags(oldpmd) != pmd_flags(newpmd))
++		return true;
++
+ 	/* !PRESENT -> * ; no need for flush */
+ 	if (!(pmd_flags(oldpmd) & _PAGE_PRESENT))
+ 		return false;
+--
+2.39.0

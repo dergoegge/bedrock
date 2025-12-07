@@ -1,0 +1,11 @@
+[package]
+name = "bedrock-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Memory address types for x86-64 virtualization"
+
+[dependencies]
+
+[features]
+default = []

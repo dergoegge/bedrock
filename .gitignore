@@ -1,0 +1,12 @@
+target/
+Cargo.lock
+
+# Environment configuration
+.env
+
+.claude/skills/linux/linux/
+freebsd-src/
+*.pdf
+*.log
+
+__pycache__/

@@ -1,0 +1,28 @@
+From: Bedrock <bedrock@example.com>
+Subject: [PATCH 2/3] x86/mm: Make flush_tlb_fix_spurious_fault actually flush
+
+On x86, flush_tlb_fix_spurious_fault() is a no-op. For deterministic
+execution under hypervisors, make it actually call flush_tlb_page()
+to eliminate spurious fault handling non-determinism.
+
+Signed-off-by: Bedrock <bedrock@example.com>
+---
+ arch/x86/include/asm/pgtable.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index abcdef123..1234567ab 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1291,7 +1291,8 @@ static __always_inline void wrprotect_pte(struct folio *folio, unsigned long pf
+ 	} while (!try_cmpxchg((long *)&ptep->pte, (long *)&old_pte, *(long *)&new_pte));
+ }
+
+-#define flush_tlb_fix_spurious_fault(vma, address, ptep) do { } while (0)
++/* Force TLB flush for deterministic execution under hypervisors */
++#define flush_tlb_fix_spurious_fault(vma, address, ptep) flush_tlb_page(vma, address)
+
+ #define  __HAVE_ARCH_PMDP_SET_ACCESS_FLAGS
+ extern int pmdp_set_access_flags(struct vm_area_struct *vma,
+--
+2.39.0

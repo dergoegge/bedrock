@@ -1,0 +1,436 @@
+// SPDX-License-Identifier: GPL-2.0
+
+//! VM run loop implementation.
+//!
+//! This module provides the main VM execution loop, GPR synchronization,
+//! and related functionality for running guests.
+
+#[cfg(not(feature = "cargo"))]
+use super::super::prelude::*;
+#[cfg(feature = "cargo")]
+use crate::prelude::*;
+
+#[cfg(not(feature = "cargo"))]
+use super::super::exits::{handle_exit, inject_pending_interrupt, update_mtf_state};
+#[cfg(feature = "cargo")]
+use crate::exits::{handle_exit, inject_pending_interrupt, update_mtf_state};
+
+#[cfg(not(feature = "cargo"))]
+use super::super::vm_state::VmState;
+#[cfg(feature = "cargo")]
+use crate::vm_state::VmState;
+
+use super::{
+    CowAllocator, InstructionCounter, IrqGuard, Kernel, Machine, Page,
+    ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmRunError, VmRunner, VmxContext,
+};
+
+// ========== GPR Sync Methods ==========
+
+/// Copy GPRs from GeneralPurposeRegisters to VmxContext guest registers.
+/// Also sets up XSAVE area pointers for extended state management.
+pub fn sync_gprs_to_vmx_ctx<V, I>(state: &mut VmState<V, I>)
+where
+    V: VirtualMachineControlStructure,
+    I: InstructionCounter,
+{
+    state.vmx_ctx.guest_rax = state.gprs.rax;
+    state.vmx_ctx.guest_rbx = state.gprs.rbx;
+    state.vmx_ctx.guest_rcx = state.gprs.rcx;
+    state.vmx_ctx.guest_rdx = state.gprs.rdx;
+    state.vmx_ctx.guest_rsi = state.gprs.rsi;
+    state.vmx_ctx.guest_rdi = state.gprs.rdi;
+    state.vmx_ctx.guest_rbp = state.gprs.rbp;
+    state.vmx_ctx.guest_r8 = state.gprs.r8;
+    state.vmx_ctx.guest_r9 = state.gprs.r9;
+    state.vmx_ctx.guest_r10 = state.gprs.r10;
+    state.vmx_ctx.guest_r11 = state.gprs.r11;
+    state.vmx_ctx.guest_r12 = state.gprs.r12;
+    state.vmx_ctx.guest_r13 = state.gprs.r13;
+    state.vmx_ctx.guest_r14 = state.gprs.r14;
+    state.vmx_ctx.guest_r15 = state.gprs.r15;
+    // Note: RSP is handled by VMCS, not VmxContext
+
+    // Set up XSAVE area pointers for extended state (FPU/SSE/AVX) save/restore
+    state.vmx_ctx.guest_xsave_ptr = state.guest_xsave_page.virtual_address().as_u64();
+    state.vmx_ctx.host_xsave_ptr = state.host_xsave_page.virtual_address().as_u64();
+    state.vmx_ctx.xcr0_mask = state.xcr0_mask;
+}
+
+/// Copy GPRs from VmxContext guest registers to GeneralPurposeRegisters.
+pub fn sync_gprs_from_vmx_ctx<V, I>(state: &mut VmState<V, I>)
+where
+    V: VirtualMachineControlStructure,
+    I: InstructionCounter,
+{
+    state.gprs.rax = state.vmx_ctx.guest_rax;
+    state.gprs.rbx = state.vmx_ctx.guest_rbx;
+    state.gprs.rcx = state.vmx_ctx.guest_rcx;
+    state.gprs.rdx = state.vmx_ctx.guest_rdx;
+    state.gprs.rsi = state.vmx_ctx.guest_rsi;
+    state.gprs.rdi = state.vmx_ctx.guest_rdi;
+    state.gprs.rbp = state.vmx_ctx.guest_rbp;
+    state.gprs.r8 = state.vmx_ctx.guest_r8;
+    state.gprs.r9 = state.vmx_ctx.guest_r9;
+    state.gprs.r10 = state.vmx_ctx.guest_r10;
+    state.gprs.r11 = state.vmx_ctx.guest_r11;
+    state.gprs.r12 = state.vmx_ctx.guest_r12;
+    state.gprs.r13 = state.vmx_ctx.guest_r13;
+    state.gprs.r14 = state.vmx_ctx.guest_r14;
+    state.gprs.r15 = state.vmx_ctx.guest_r15;
+    // Note: RSP is handled by VMCS, not VmxContext
+}
+
+// ========== VM Run Methods ==========
+
+/// Run the VM until an exit requiring userspace handling.
+///
+/// This is the main entry point for running the VM. It:
+/// 1. Saves host MSRs (KERNEL_GS_BASE, SYSCALL/SYSRET MSRs)
+/// 2. Loads guest MSRs that don't have VMCS fields
+/// 3. Loads the VMCS and runs the VM loop
+/// 4. Restores host MSRs on exit
+///
+/// # Safety
+///
+/// Caller must ensure:
+/// - VMCS is properly configured
+/// - Interrupts are in appropriate state
+/// - HOST_RIP is correctly set in VMCS
+/// - Preemption is disabled to prevent migration during VM entry/exit
+pub unsafe fn run<Ctx, R, M, A>(
+    ctx: &mut Ctx,
+    runner: &mut R,
+    machine: &M,
+    allocator: &mut A,
+) -> Result<ExitReason, VmRunError>
+where
+    Ctx: VmContext,
+    R: VmRunner<Vmcs = Ctx::Vmcs>,
+    M: Machine,
+    A: CowAllocator<Ctx::CowPage>,
+{
+    let msr = machine.msr_access();
+
+    // Save host KERNEL_GS_BASE (per-thread, changes between runs).
+    let host_kernel_gs_base = msr.read_msr(msr::IA32_KERNEL_GS_BASE).unwrap_or(0);
+
+    // Load guest MSRs that don't have VMCS fields.
+    // SYSCALL/SYSRET and SWAPGS read these directly from hardware.
+    ctx.state().msr_state.syscall.load(msr);
+
+    // Load the VMCS
+    ctx.state().vmcs.load().map_err(VmRunError::VmcsLoad)?;
+
+    // Apply #PF interception to exception bitmap (requires VMCS to be loaded).
+    ctx.state().apply_intercept_pf();
+
+    // Initialize MTF state before the first VM entry. Without this, single-stepping
+    // won't be active until the first deterministic exit triggers update_mtf_state(),
+    // leaving a window of untracked guest execution at the start.
+    update_mtf_state(ctx).map_err(VmRunError::ExitHandler)?;
+
+    // SAFETY: Caller guarantees VMCS is properly configured
+    let result = unsafe { run_loop(ctx, runner, machine, allocator, host_kernel_gs_base) };
+
+    // Clear the VMCS - this MUST succeed for safe re-entry
+    let clear_result = ctx.state().vmcs.clear();
+
+    // Reset launched flag since VMCLEAR transitions VMCS to "clear" state.
+    // Next VM entry will need VMLAUNCH, not VMRESUME.
+    ctx.state_mut().vmx_ctx.launched = 0;
+
+    // Save guest MSRs from hardware after VM exit.
+    // Note: kernel_gs_base is already saved by run_loop on every VM exit.
+    ctx.state_mut().msr_state.syscall = SyscallMsrs::capture(msr);
+
+    // Restore host MSRs before returning to userspace.
+    // This must happen regardless of VMCLEAR success to ensure safe return.
+    ctx.state().host_state.syscall_msrs.load(msr);
+    let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, host_kernel_gs_base);
+
+    // If VMCLEAR failed, return fatal error - the VMCS is in an undefined state
+    // and re-entry would likely cause a host crash.
+    if let Err(e) = clear_result {
+        log_err!("VMCLEAR failed - VMCS in undefined state, cannot continue\n");
+        return Err(VmRunError::VmcsClear(e));
+    }
+
+    result
+}
+
+/// Internal run loop - separated to ensure VMCS clear happens on all exit paths.
+///
+/// `host_kernel_gs_base` is the host's IA32_KERNEL_GS_BASE value, saved by the
+/// caller before loading the guest's value. We restore it after each VM exit so
+/// that host interrupt handlers (serviced during IRQ windows) see the correct
+/// value, then reload the guest's value before each VM entry.
+unsafe fn run_loop<Ctx, R, M, A>(
+    ctx: &mut Ctx,
+    runner: &mut R,
+    machine: &M,
+    allocator: &mut A,
+    host_kernel_gs_base: u64,
+) -> Result<ExitReason, VmRunError>
+where
+    Ctx: VmContext,
+    R: VmRunner<Vmcs = Ctx::Vmcs>,
+    M: Machine,
+    A: CowAllocator<Ctx::CowPage>,
+{
+    // Disable interrupts for the duration of the run loop. The assembly
+    // (vmx_run_guest) switches XCR0 to the guest value before VMRESUME; if a
+    // host interrupt fires in that window, any handler using AVX-512 would #UD
+    // because the guest XCR0 lacks the AVX-512 bits. On VM exit the assembly
+    // restores host XCR0 before returning, so brief IRQ windows between exits
+    // are safe — those are opened via ReverseIrqGuard below.
+    let _irq_guard = IrqGuard::new(machine.kernel());
+
+    loop {
+        // Track total time in run loop (guest + exit handling)
+        let loop_start_tsc = rdtsc();
+
+        // Sync GPRs to VmxContext before entry
+        ctx.sync_gprs_to_vmx_ctx();
+
+        // Update dynamic host state before each VM entry.
+        //
+        // These values can change between VM entries:
+        // - CR3: page table root, changes per process
+        // - FS_BASE/GS_BASE: per-CPU or per-task segment bases
+        // - TR_BASE: TSS base, per-CPU
+        // - GDTR_BASE: GDT base, per-CPU
+        //
+        // TODO: Technically, per-CPU state (FS/GS/TR/GDTR bases) only needs updating
+        // when the VCPU migrates to a different physical CPU. For now we update
+        // everything each iteration for correctness. Performance optimization with
+        // "last CPU" tracking (like bhyve's vmx_set_pcpu_defaults) can be added later.
+        let cr3 = machine
+            .cr_access()
+            .read_cr3()
+            .map_err(|_| VmRunError::ReadHostCr3)?
+            .bits();
+        ctx.state()
+            .vmcs
+            .write_natural(VmcsFieldNatural::HostCr3, cr3)
+            .map_err(VmRunError::WriteHostCr3)?;
+
+        let msr = machine.msr_access();
+        let fs_base = msr.read_msr(msr::IA32_FS_BASE).unwrap_or(0);
+        ctx.state()
+            .vmcs
+            .write_natural(VmcsFieldNatural::HostFsBase, fs_base)
+            .map_err(VmRunError::WriteHostFsBase)?;
+        let gs_base = msr.read_msr(msr::IA32_GS_BASE).unwrap_or(0);
+        ctx.state()
+            .vmcs
+            .write_natural(VmcsFieldNatural::HostGsBase, gs_base)
+            .map_err(VmRunError::WriteHostGsBase)?;
+
+        let dta = machine.descriptor_table_access();
+        ctx.state()
+            .vmcs
+            .write_natural(VmcsFieldNatural::HostTrBase, dta.read_tr_base())
+            .map_err(VmRunError::WriteHostTrBase)?;
+        ctx.state()
+            .vmcs
+            .write_natural(VmcsFieldNatural::HostGdtrBase, dta.read_gdtr().base)
+            .map_err(VmRunError::WriteHostGdtrBase)?;
+
+        // Set HOST_RSP to point to VmxContext for the exit handler
+        let host_rsp = (&mut ctx.state_mut().vmx_ctx as *mut VmxContext) as u64;
+        ctx.state()
+            .vmcs
+            .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
+            .map_err(VmRunError::WriteHostRsp)?;
+
+        // Inject any pending APIC interrupts before VM entry
+        inject_pending_interrupt(ctx).map_err(VmRunError::ExitHandler)?;
+
+        // Configure hardware-assisted perf counter switching if available.
+        // This uses VMCS fields to atomically switch PERF_GLOBAL_CTRL MSR
+        // on VM entry/exit, eliminating instruction counting overhead.
+        if let Some((guest_val, host_val)) =
+            ctx.state().instruction_counter.perf_global_ctrl_values()
+        {
+            // Write the MSR values to VMCS fields
+            let _ = ctx
+                .state()
+                .vmcs
+                .write64(VmcsField64::GuestIa32PerfGlobalCtrl, guest_val);
+            let _ = ctx
+                .state()
+                .vmcs
+                .write64(VmcsField64::HostIa32PerfGlobalCtrl, host_val);
+
+            // Enable the control bits for hardware MSR loading
+            if let Ok(entry_ctrl) = ctx.state().vmcs.read32(VmcsField32::VmEntryControls) {
+                let _ = ctx.state().vmcs.write32(
+                    VmcsField32::VmEntryControls,
+                    entry_ctrl | vm_entry::LOAD_IA32_PERF_GLOBAL_CTRL,
+                );
+            }
+            if let Ok(exit_ctrl) = ctx.state().vmcs.read32(VmcsField32::PrimaryVmExitControls) {
+                let _ = ctx.state().vmcs.write32(
+                    VmcsField32::PrimaryVmExitControls,
+                    exit_ctrl | vm_exit::LOAD_IA32_PERF_GLOBAL_CTRL,
+                );
+            }
+        }
+
+        // Set guest state for perf_guest_cbs before VM entry.
+        // This tells the perf subsystem we're entering guest mode.
+        // With exclude_host=1, the counter only counts when state() returns PERF_GUEST_ACTIVE.
+        // Read guest RIP and determine if guest is in user mode (CPL > 0).
+        let guest_rip = ctx
+            .state()
+            .vmcs
+            .read_natural(VmcsFieldNatural::GuestRip)
+            .unwrap_or(0);
+        // CS access rights bits 5:6 contain the DPL (descriptor privilege level)
+        let guest_cs_ar = ctx
+            .state()
+            .vmcs
+            .read32(VmcsField32::GuestCsAccessRights)
+            .unwrap_or(0);
+        let guest_cpl = (guest_cs_ar >> 5) & 0x3;
+        let guest_user_mode = guest_cpl > 0;
+        ctx.state_mut()
+            .instruction_counter
+            .set_guest_state(guest_user_mode, guest_rip);
+
+        // Record VM entry overhead (time from loop start to just before VM entry)
+        let pre_entry_tsc = rdtsc();
+        ctx.state_mut().exit_stats.vmentry_overhead_cycles +=
+            pre_entry_tsc.saturating_sub(loop_start_tsc);
+
+        // Load guest KERNEL_GS_BASE before VM entry. IA32_KERNEL_GS_BASE has
+        // no VMCS field so VMX does not swap it automatically.
+        let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, ctx.state().kernel_gs_base);
+
+        // Enter the guest
+        // SAFETY: Caller guarantees VMCS is properly configured
+        // We need to split the borrow here to get mutable access to vmx_ctx
+        // while keeping immutable access to vmcs
+        let state = ctx.state_mut();
+        let run_result = unsafe { runner.run(&mut state.vmx_ctx, &state.vmcs) };
+
+        // Save guest KERNEL_GS_BASE immediately after VM exit, before any IRQ
+        // window can let a host interrupt handler overwrite the MSR. Then
+        // restore the host value so interrupt handlers see correct per-CPU data.
+        ctx.state_mut().kernel_gs_base = msr.read_msr(msr::IA32_KERNEL_GS_BASE).unwrap_or(0);
+        let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, host_kernel_gs_base);
+
+        // Record guest execution time (includes VMX entry/exit transitions)
+        let post_exit_tsc = rdtsc();
+        ctx.state_mut().exit_stats.guest_cycles += post_exit_tsc.saturating_sub(pre_entry_tsc);
+
+        // Clear guest state for perf_guest_cbs after VM exit.
+        ctx.state_mut().instruction_counter.clear_guest_state();
+
+        // CPUID to serialize instruction stream before reading the PMU counter.
+        // Per Intel SDM Vol 2B (RDPMC instruction): "The RDPMC instruction is not a
+        // serializing instruction... If an exact event count is desired, software must
+        // insert a serializing instruction (such as the CPUID instruction) before and/or
+        // after the RDPMC instruction."
+        // LFENCE is insufficient; CPUID is a full serializing instruction that ensures
+        // all prior instructions have retired and their counter updates are visible.
+        #[cfg(not(feature = "cargo"))]
+        unsafe {
+            core::arch::asm!(
+                "push rbx",
+                "xor eax, eax",
+                "cpuid",
+                "pop rbx",
+                out("eax") _,
+                out("ecx") _,
+                out("edx") _,
+                options(preserves_flags)
+            );
+        }
+
+        // Briefly enable interrupts to service pending host interrupts (timer
+        // ticks, IPIs) between VM exits. Host XCR0 is already restored by the
+        // assembly exit handler, so AVX-512 is safe to use in interrupt context.
+        {
+            let _irq_window = ReverseIrqGuard::new(machine.kernel());
+            let count = ctx.state().instruction_counter.read();
+            ctx.state_mut().last_instruction_count = count;
+        }
+
+        if let Err(ref e) = run_result {
+            // VM entry failed - try to read error info from VMCS
+            if let Ok(error) = ctx.state().vmcs.read32(VmcsField32::VmInstructionError) {
+                log_err!("VM entry failed: {:?}, VM_INSTRUCTION_ERROR={}", e, error);
+            } else {
+                log_err!("VM entry failed: {:?}, couldn't read error field", e);
+            }
+            return Err(VmRunError::VmEntry(run_result.unwrap_err()));
+        }
+
+        // Sync GPRs from VmxContext after exit
+        ctx.sync_gprs_from_vmx_ctx();
+
+        // Save exit info for userspace before handling (VMCS is still active)
+        ctx.state_mut().last_exit_qualification = ctx
+            .state()
+            .vmcs
+            .read_natural(VmcsFieldNatural::ExitQualification)
+            .unwrap_or(0);
+        ctx.state_mut().last_guest_physical_addr = ctx
+            .state()
+            .vmcs
+            .read64(VmcsField64::GuestPhysicalAddr)
+            .unwrap_or(0);
+
+        // Record VM exit overhead (time from VM exit to just before exit handler)
+        let pre_handler_tsc = rdtsc();
+        ctx.state_mut().exit_stats.vmexit_overhead_cycles +=
+            pre_handler_tsc.saturating_sub(post_exit_tsc);
+
+        // Handle the VM exit
+        let kernel = machine.kernel();
+        match handle_exit(ctx, kernel, allocator) {
+            ExitHandlerResult::Continue => {
+                // Finalize log entry with memory hash (if logging is enabled)
+                ctx.finalize_log_entry(kernel);
+
+                // Record total run loop time for this iteration
+                let loop_end_tsc = rdtsc();
+                ctx.state_mut().exit_stats.total_run_cycles +=
+                    loop_end_tsc.saturating_sub(loop_start_tsc);
+
+                // Exit was fully handled - check if scheduler needs to run before re-entering.
+                // We cannot call cond_resched() here because:
+                // 1. The VMCS is loaded and must stay on this CPU
+                // 2. cond_resched() requires preemption enabled, which could migrate us
+                // Instead, return to userspace - the ioctl return path allows scheduling.
+                if kernel.need_resched() {
+                    return Ok(ExitReason::NeedResched);
+                }
+                continue;
+            }
+            ExitHandlerResult::ExitToUserspace(reason) => {
+                // Finalize log entry with memory hash (if logging is enabled)
+                ctx.finalize_log_entry(machine.kernel());
+
+                // Record total run loop time for this iteration
+                let loop_end_tsc = rdtsc();
+                ctx.state_mut().exit_stats.total_run_cycles +=
+                    loop_end_tsc.saturating_sub(loop_start_tsc);
+
+                // Exit requires userspace handling
+                return Ok(reason);
+            }
+            ExitHandlerResult::Error(e) => {
+                // Record total run loop time even on error
+                let loop_end_tsc = rdtsc();
+                ctx.state_mut().exit_stats.total_run_cycles +=
+                    loop_end_tsc.saturating_sub(loop_start_tsc);
+
+                // Fatal error
+                return Err(VmRunError::ExitHandler(e));
+            }
+        }
+    }
+}

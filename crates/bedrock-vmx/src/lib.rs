@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: GPL-2.0
+
+//! VMX (Virtual Machine Extensions) support for x86-64 virtualization.
+//!
+//! This crate provides platform-agnostic VMX abstractions including:
+//! - VMCS field encodings organized by width (16-bit, 32-bit, 64-bit, natural-width)
+//! - Traits for VMCS operations
+
+#![no_std]
+
+pub mod cow;
+pub mod decoder;
+pub mod devices;
+pub mod exits;
+pub mod fields;
+pub mod handler;
+pub mod host;
+pub mod hypercalls;
+pub mod logging;
+mod prelude;
+pub mod registers;
+pub mod timing;
+pub mod traits;
+pub mod vm;
+pub mod vm_state;
+
+pub use fields::{VmcsField16, VmcsField32, VmcsField64, VmcsFieldNatural};
+pub use host::HostState;
+pub use registers::GeneralPurposeRegisters;
+pub use traits::{
+    cpu_based, pin_based, secondary_exec, vm_entry, vm_exit, InveptError, InvvpidError,
+    MemoryError, VirtualMachineControlStructure, VmContext, VmEntryError, VmRunner, VmcsReadError,
+    VmcsReadResult, VmcsWriteError, VmcsWriteResult, Vmx, VmxCapabilities, VmxContext,
+    VmxInitError, VmxoffError, VmxonError,
+};
+
+// VM implementation
+pub use traits::VmRunError;
+pub use vm::{ForkableVm, ForkedVm, ForkedVmError, ParentVm, RootVm, RootVmError};
+pub use vm_state::{
+    AllExitStats, ExitStats, LogMode, SyscallMsrs, VmState, VmStateError, DEFAULT_TSC_FREQUENCY,
+    PAT_DEFAULT, SERIAL_BUFFER_SIZE,
+};
+
+// Handler
+pub use handler::{BedrockHandler, VmEntry, VmRef};
+
+// COW support
+pub use cow::CowPageMap;
+
+// Exit handling types
+pub use exits::{
+    handle_exit, CrAccessQualification, EptViolationQualification, ExitError, ExitHandlerResult,
+    ExitReason, IoQualification,
+};
+
+/// Test mocks for use in other crates' tests.
+/// Available when the `test-utils` feature is enabled.
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_mocks;
+
+#[cfg(test)]
+mod handler_tests;
+
+#[cfg(test)]
+mod tests;

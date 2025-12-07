@@ -1,0 +1,10 @@
+[package]
+name = "bedrock-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Conditional logging macros for bedrock - uses pr_info!/pr_err! in kernel, println! in tests"
+
+[features]
+default = ["cargo"]
+cargo = []

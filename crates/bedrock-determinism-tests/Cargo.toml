@@ -1,0 +1,15 @@
+[package]
+name = "bedrock-determinism-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Determinism checker for bedrock hypervisor"
+
+[[bin]]
+name = "bedrock-determinism"
+path = "src/bin/determinism.rs"
+
+[dependencies]
+bedrock-vm = { path = "../bedrock-vm" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"

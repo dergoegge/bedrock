@@ -1,0 +1,32 @@
+From: Bedrock <bedrock@example.com>
+Subject: [PATCH 1/3] x86/mm: Force TLB flush on any PTE flag change
+
+For deterministic execution under hypervisors with VPID enabled,
+force TLB flush whenever PTE flags change, not just when permissions
+are demoted. This prevents spurious faults from stale TLB entries.
+
+Signed-off-by: Bedrock <bedrock@example.com>
+---
+ arch/x86/include/asm/tlbflush.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/x86/include/asm/tlbflush.h b/arch/x86/include/asm/tlbflush.h
+index abcdef123..1234567ab 100644
+--- a/arch/x86/include/asm/tlbflush.h
++++ b/arch/x86/include/asm/tlbflush.h
+@@ -417,6 +417,13 @@ static inline bool pte_flags_need_flush(unsigned long oldflags,
+  */
+ static inline bool pte_needs_flush(pte_t oldpte, pte_t newpte)
+ {
++	/*
++	 * Force TLB flush on any flag change for deterministic execution
++	 * under hypervisors with VPID. Avoids spurious faults.
++	 */
++	if (pte_flags(oldpte) != pte_flags(newpte))
++		return true;
++
+ 	/* !PRESENT -> * ; no need for flush */
+ 	if (!(pte_flags(oldpte) & _PAGE_PRESENT))
+ 		return false;
+--
+2.39.0

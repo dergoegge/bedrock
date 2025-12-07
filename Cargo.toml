@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/bedrock-cli",
+    "crates/bedrock-determinism-tests",
+    "crates/bedrock-ept",
+    "crates/bedrock-log",
+    "crates/bedrock-memory",
+    "crates/bedrock-vm",
+    "crates/bedrock-vmx",
+]
+
+# Shared workspace settings
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]

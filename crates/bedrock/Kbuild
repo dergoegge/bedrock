@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
+
+# Build a single module combining Rust and C code
+obj-m := bedrock.o
+
+# Link the Rust main module with C helpers and assembly
+bedrock-y := bedrock_main.o helpers.o vmx_support.o
