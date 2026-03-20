@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! Time-related VM exit handlers (RDTSC, RDTSCP, RDPMC, MWAIT).
+//! Time-related VM exit handlers (RDTSC, RDTSCP, RDPMC, MWAIT, HLT).
 //!
 //! These handlers provide deterministic time emulation by intercepting
 //! time-related instructions and returning controlled values.
@@ -72,13 +72,12 @@ pub fn handle_rdpmc<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     ExitHandlerResult::Continue
 }
 
-/// Handle MWAIT VM exit.
+/// Handle HLT/MWAIT VM exit.
 ///
-/// MWAIT is an idle instruction that waits for a memory write to an address
-/// set up by MONITOR, or for an interrupt. For deterministic execution, we
-/// advance the TSC offset so emulated_tsc reaches the APIC timer deadline,
-/// causing the timer to fire on the next VM entry.
-pub fn handle_mwait<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
+/// Both are idle instructions that wait for an interrupt. For deterministic
+/// execution, we advance the TSC offset so emulated_tsc reaches the APIC timer
+/// deadline, causing the timer to fire on the next VM entry.
+pub fn handle_idle<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     let current_tsc = ctx.state().emulated_tsc;
     let timer_deadline = ctx.state().devices.apic.timer_deadline;
 
@@ -89,7 +88,6 @@ pub fn handle_mwait<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         ctx.state_mut().emulated_tsc = timer_deadline;
     }
 
-    // Advance past MWAIT instruction
     if let Err(e) = advance_rip(ctx) {
         return ExitHandlerResult::Error(e);
     }

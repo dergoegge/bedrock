@@ -375,8 +375,8 @@ fn test_hlt_exit() {
 
     let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
 
-    // HLT should exit to userspace
-    assert_eq!(result, ExitHandlerResult::ExitToUserspace(ExitReason::Hlt));
+    // HLT should continue (like MWAIT) - advances TSC to timer deadline
+    assert_eq!(result, ExitHandlerResult::Continue);
 
     // RIP should be advanced past HLT
     assert_eq!(ctx.get_guest_rip(), Some(0x1001));

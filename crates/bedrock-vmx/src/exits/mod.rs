@@ -55,7 +55,7 @@ use io::handle_io;
 use misc::{dump_triple_fault_state, handle_exception_nmi, handle_xsetbv};
 use msr::{handle_msr_read, handle_msr_write};
 use rdrand::{handle_rdrand, handle_rdseed};
-use time::{handle_mwait, handle_rdpmc, handle_rdtsc, handle_rdtscp};
+use time::{handle_idle, handle_rdpmc, handle_rdtsc, handle_rdtscp};
 use vmcall::handle_vmcall;
 
 #[cfg(not(feature = "cargo"))]
@@ -187,15 +187,9 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         // The exit is already logged above; just continue executing.
         ExitReason::MonitorTrapFlag => ExitHandlerResult::Continue,
 
-        ExitReason::Hlt => {
-            // Advance past HLT instruction
-            if let Err(e) = advance_rip(ctx) {
-                return ExitHandlerResult::Error(e);
-            }
-            ExitHandlerResult::ExitToUserspace(ExitReason::Hlt)
-        }
+        ExitReason::Hlt => handle_idle(ctx),
 
-        ExitReason::Mwait => handle_mwait(ctx),
+        ExitReason::Mwait => handle_idle(ctx),
 
         ExitReason::Monitor => {
             // MONITOR sets up address-range monitoring hardware for use with MWAIT.
