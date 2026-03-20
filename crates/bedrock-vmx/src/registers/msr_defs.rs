@@ -12,6 +12,10 @@ pub mod msr {
     pub const IA32_FEATURE_CONTROL: u32 = 0x3A;
     /// Per logical processor TSC adjust.
     pub const IA32_TSC_ADJUST: u32 = 0x3B;
+    /// Speculation control (IBRS, STIBP, SSBD).
+    pub const IA32_SPEC_CTRL: u32 = 0x48;
+    /// Prediction command (IBPB).
+    pub const IA32_PRED_CMD: u32 = 0x49;
     /// Protected Processor Inventory Number control.
     pub const IA32_PPIN_CTL: u32 = 0x4E;
     /// MKTME Key ID Partitioning (Multi-Key Total Memory Encryption).

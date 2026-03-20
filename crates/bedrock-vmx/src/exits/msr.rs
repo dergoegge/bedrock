@@ -34,6 +34,14 @@ pub fn handle_msr_read<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
             // Return 0 - no machine check support (bhyve approach)
             0
         }
+        msr::IA32_SPEC_CTRL => {
+            // Return 0 - no speculation mitigations (deterministic guest)
+            0
+        }
+        msr::IA32_PRED_CMD => {
+            // Write-only MSR, but return 0 if guest reads it
+            0
+        }
         msr::IA32_TSC_ADJUST => {
             // Return 0 - we don't support TSC adjustment
             // KVM stores per-vCPU value, bhyve exits to userspace
@@ -218,6 +226,12 @@ pub fn handle_msr_write<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         }
         msr::IA32_MCG_CAP | msr::IA32_MCG_STATUS => {
             // Ignore writes - no MCE support
+        }
+        msr::IA32_SPEC_CTRL => {
+            // Ignore writes - no speculation mitigations
+        }
+        msr::IA32_PRED_CMD => {
+            // Ignore writes - IBPB command, no-op for deterministic guest
         }
         msr::IA32_TSC_ADJUST => {
             // Ignore writes - we don't support TSC adjustment
