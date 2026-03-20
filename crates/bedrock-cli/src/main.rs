@@ -506,6 +506,16 @@ fn run() -> io::Result<()> {
                     }
                     ExitKind::UnhandledExit { reason } => {
                         log_vm_exit(&vm, &format!("{} ({})", reason, exit.reason_str()));
+                        if let Ok(regs) = vm.get_regs() {
+                            // For MSR exits, RCX holds the MSR index
+                            if reason == 31 || reason == 32 {
+                                warn!("  MSR index: {:#x} (ECX)", regs.gprs.rcx as u32);
+                            }
+                            warn!(
+                                "  RAX={:#018x} RCX={:#018x} RDX={:#018x}",
+                                regs.gprs.rax, regs.gprs.rcx, regs.gprs.rdx
+                            );
+                        }
                         break;
                     }
                 }
