@@ -3,8 +3,8 @@ set dotenv-load
 
 # Remote host for sync/build (configure in .env)
 # Uses lazy evaluation so local commands work without remote config
-remote_host := `echo $REMOTE_HOST`
-remote_dir := `echo $REMOTE_DIR`
+remote_host := `echo ${REMOTE_HOST:-}`
+remote_dir := `echo ${REMOTE_DIR:-}`
 
 # Default: run tests
 default: test
