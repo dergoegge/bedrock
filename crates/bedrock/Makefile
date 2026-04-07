@@ -5,9 +5,8 @@
 # Then: make KDIR=/nix/store/...-linux-X.Y.Z-dev/lib/modules/X.Y.Z/build
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-# Use clang to match the kernel's compiler
-CC = clang-18
-HOSTCC = clang-18
+# LLVM toolchain suffix (e.g. -18 for clang-18, empty for plain clang)
+LLVM ?= -18
 
 obj-m := bedrock.o
 
@@ -15,7 +14,7 @@ obj-m := bedrock.o
 bedrock-y := helpers.o vmx_support.o
 
 all:
-	$(MAKE) -C $(KDIR) M=$(CURDIR) CC=$(CC) HOSTCC=$(HOSTCC) modules
+	$(MAKE) -C $(KDIR) M=$(CURDIR) LLVM=$(LLVM) modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) clean

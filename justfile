@@ -58,3 +58,18 @@ remote-clean:
 [group: 'local']
 netconsole:
     rmmod netconsole 2>/dev/null; modprobe netconsole netconsole=@/eno1,@`echo $NETCONSOLE_IP`/
+
+# Boot NixOS dev VM with nested KVM
+[group: 'nix']
+vm:
+    nix run .#vm
+
+# Run NixOS integration tests in VM (requires KVM, slow due to nested virt)
+[group: 'nix']
+nix-test:
+    nix run .#test
+
+# Run tests natively on host (requires bedrock module loaded)
+[group: 'nix']
+nix-test-native:
+    nix run .#test-native

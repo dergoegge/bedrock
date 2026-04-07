@@ -1,0 +1,37 @@
+# Userland tools: bedrock-cli and bedrock-determinism
+{ pkgs }:
+
+let
+  src = pkgs.lib.cleanSourceWith {
+    src = ./..;
+    filter = path: type:
+      let baseName = builtins.baseNameOf path; in
+      # Exclude kernel module build artifacts and non-cargo dirs
+      !(baseName == "target" ||
+        baseName == ".git" ||
+        baseName == ".claude" ||
+        baseName == "nix" ||
+        # Exclude the kernel module crate (no Cargo.toml, breaks workspace)
+        (type == "directory" && baseName == "bedrock" &&
+         builtins.match ".*/crates/bedrock$" path != null));
+  };
+in
+{
+  bedrock-cli = pkgs.rustPlatform.buildRustPackage {
+    pname = "bedrock-cli";
+    version = "0.1.0";
+    inherit src;
+    cargoLock.lockFile = ../Cargo.lock;
+    cargoBuildFlags = [ "-p" "bedrock-cli" ];
+    meta.mainProgram = "bedrock-cli";
+  };
+
+  bedrock-determinism = pkgs.rustPlatform.buildRustPackage {
+    pname = "bedrock-determinism";
+    version = "0.1.0";
+    inherit src;
+    cargoLock.lockFile = ../Cargo.lock;
+    cargoBuildFlags = [ "-p" "bedrock-determinism-tests" ];
+    meta.mainProgram = "bedrock-determinism";
+  };
+}
