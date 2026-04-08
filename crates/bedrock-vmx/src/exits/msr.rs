@@ -161,6 +161,29 @@ pub fn handle_msr_read<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
             // Return 0 - Intel PT not supported (bhyve approach).
             0
         }
+        msr::MSR_RAPL_POWER_UNIT => {
+            // Fixed RAPL unit multipliers for determinism:
+            //   Power units  (bits 3:0)  = 0x3 → 1/8 Watts
+            //   Energy units (bits 12:8) = 0x10 → 1/65536 Joules
+            //   Time units   (bits 19:16) = 0xA → 1/1024 seconds
+            0x000A_1003
+        }
+        msr::MSR_PKG_ENERGY_STATUS
+        | msr::MSR_DRAM_ENERGY_STATUS
+        | msr::MSR_PP0_ENERGY_STATUS
+        | msr::MSR_PP1_ENERGY_STATUS => {
+            // Return 0 - no energy consumption visible to guest.
+            0
+        }
+        msr::MSR_PKG_POWER_LIMIT
+        | msr::MSR_PKG_POWER_INFO
+        | msr::MSR_DRAM_POWER_LIMIT
+        | msr::MSR_DRAM_POWER_INFO
+        | msr::MSR_PP0_POWER_LIMIT
+        | msr::MSR_PP1_POWER_LIMIT => {
+            // Return 0 - power limits not supported.
+            0
+        }
         msr::MSR_PKG_CST_CONFIG_CONTROL
         | msr::MSR_POWER_CTL
         | msr::MSR_PPERF
@@ -336,6 +359,19 @@ pub fn handle_msr_write<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         }
         msr::IA32_RTIT_CTL => {
             // Ignore writes - Intel PT not supported.
+        }
+        msr::MSR_RAPL_POWER_UNIT
+        | msr::MSR_PKG_POWER_LIMIT
+        | msr::MSR_PKG_ENERGY_STATUS
+        | msr::MSR_PKG_POWER_INFO
+        | msr::MSR_DRAM_POWER_LIMIT
+        | msr::MSR_DRAM_ENERGY_STATUS
+        | msr::MSR_DRAM_POWER_INFO
+        | msr::MSR_PP0_POWER_LIMIT
+        | msr::MSR_PP0_ENERGY_STATUS
+        | msr::MSR_PP1_POWER_LIMIT
+        | msr::MSR_PP1_ENERGY_STATUS => {
+            // Ignore writes - RAPL not supported.
         }
         msr::MSR_PKG_CST_CONFIG_CONTROL
         | msr::MSR_POWER_CTL

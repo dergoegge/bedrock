@@ -220,6 +220,32 @@ pub mod msr {
 
     /// Intel PT control.
     pub const IA32_RTIT_CTL: u32 = 0x570;
+
+    // RAPL (Running Average Power Limit) MSRs
+    // See Intel SDM Vol 4, Section 16.10
+
+    /// RAPL power unit multipliers (R/O). Reports units for power, energy, time.
+    pub const MSR_RAPL_POWER_UNIT: u32 = 0x606;
+    /// Package power limit control (R/W).
+    pub const MSR_PKG_POWER_LIMIT: u32 = 0x610;
+    /// Package energy status (R/O). Cumulative energy consumed.
+    pub const MSR_PKG_ENERGY_STATUS: u32 = 0x611;
+    /// Package power info (R/O). TDP, min/max power.
+    pub const MSR_PKG_POWER_INFO: u32 = 0x614;
+    /// DRAM energy status (R/O).
+    pub const MSR_DRAM_ENERGY_STATUS: u32 = 0x619;
+    /// DRAM power limit control (R/W).
+    pub const MSR_DRAM_POWER_LIMIT: u32 = 0x618;
+    /// DRAM power info (R/O).
+    pub const MSR_DRAM_POWER_INFO: u32 = 0x61C;
+    /// PP0 (cores) power limit control (R/W).
+    pub const MSR_PP0_POWER_LIMIT: u32 = 0x638;
+    /// PP0 (cores) energy status (R/O).
+    pub const MSR_PP0_ENERGY_STATUS: u32 = 0x639;
+    /// PP1 (uncore/GPU) power limit control (R/W).
+    pub const MSR_PP1_POWER_LIMIT: u32 = 0x640;
+    /// PP1 (uncore/GPU) energy status (R/O).
+    pub const MSR_PP1_ENERGY_STATUS: u32 = 0x641;
 }
 
 /// Error returned by MSR read/write operations.
