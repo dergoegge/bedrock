@@ -303,25 +303,15 @@ where
         // Clear guest state for perf_guest_cbs after VM exit.
         ctx.state_mut().instruction_counter.clear_guest_state();
 
-        // CPUID to serialize instruction stream before reading the PMU counter.
-        // Per Intel SDM Vol 2B (RDPMC instruction): "The RDPMC instruction is not a
-        // serializing instruction... If an exact event count is desired, software must
-        // insert a serializing instruction (such as the CPUID instruction) before and/or
-        // after the RDPMC instruction."
-        // LFENCE is insufficient; CPUID is a full serializing instruction that ensures
-        // all prior instructions have retired and their counter updates are visible.
+        // Serialize instruction stream before reading the PMU counter.
+        // LFENCE guarantees all prior instructions have completed locally and no
+        // later instruction begins until it completes (SDM Vol 3A §10.3 footnote 3,
+        // Vol 2A LFENCE description). This is sufficient for RDPMC which needs prior
+        // instructions to have retired so their counter updates are visible.
+        // CPUID would also work but causes an L0 VM exit in nested virt (~2000 cycles).
         #[cfg(not(feature = "cargo"))]
         unsafe {
-            core::arch::asm!(
-                "push rbx",
-                "xor eax, eax",
-                "cpuid",
-                "pop rbx",
-                out("eax") _,
-                out("ecx") _,
-                out("edx") _,
-                options(preserves_flags)
-            );
+            core::arch::asm!("lfence", options(preserves_flags, nostack));
         }
 
         // Briefly enable interrupts to service pending host interrupts (timer
