@@ -153,33 +153,12 @@ fn read_apic_register(apic: &ApicState, offset: u32) -> u32 {
         0x0E0 => apic.dfr,
         // Spurious Interrupt Vector Register
         0x0F0 => apic.svr,
-        // In-Service Register (8 x 32-bit, offsets 0x100-0x170)
-        0x100 => apic.isr[0],
-        0x110 => apic.isr[1],
-        0x120 => apic.isr[2],
-        0x130 => apic.isr[3],
-        0x140 => apic.isr[4],
-        0x150 => apic.isr[5],
-        0x160 => apic.isr[6],
-        0x170 => apic.isr[7],
-        // Trigger Mode Register (8 x 32-bit, offsets 0x180-0x1F0)
-        0x180 => apic.tmr[0],
-        0x190 => apic.tmr[1],
-        0x1A0 => apic.tmr[2],
-        0x1B0 => apic.tmr[3],
-        0x1C0 => apic.tmr[4],
-        0x1D0 => apic.tmr[5],
-        0x1E0 => apic.tmr[6],
-        0x1F0 => apic.tmr[7],
-        // Interrupt Request Register (8 x 32-bit, offsets 0x200-0x270)
-        0x200 => apic.irr[0],
-        0x210 => apic.irr[1],
-        0x220 => apic.irr[2],
-        0x230 => apic.irr[3],
-        0x240 => apic.irr[4],
-        0x250 => apic.irr[5],
-        0x260 => apic.irr[6],
-        0x270 => apic.irr[7],
+        // In-Service Register (8 x 32-bit, offsets 0x100-0x170, stride 0x10)
+        0x100..=0x170 => apic.isr[((offset - 0x100) >> 4) as usize],
+        // Trigger Mode Register (8 x 32-bit, offsets 0x180-0x1F0, stride 0x10)
+        0x180..=0x1F0 => apic.tmr[((offset - 0x180) >> 4) as usize],
+        // Interrupt Request Register (8 x 32-bit, offsets 0x200-0x270, stride 0x10)
+        0x200..=0x270 => apic.irr[((offset - 0x200) >> 4) as usize],
         // Error Status Register
         0x280 => apic.esr,
         // Interrupt Command Register (low)
