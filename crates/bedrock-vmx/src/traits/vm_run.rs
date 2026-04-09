@@ -186,35 +186,22 @@ where
     // are safe — those are opened via ReverseIrqGuard below.
     let _irq_guard = IrqGuard::new(machine.kernel());
 
-    loop {
-        // Track total time in run loop (guest + exit handling)
-        let loop_start_tsc = rdtsc();
+    // Write host state that is constant for the entire run loop. Preemption
+    // is disabled by the caller, so we cannot migrate to a different CPU —
+    // CR3, per-CPU segment bases, TR, and GDTR are all stable. Writing these
+    // once instead of every iteration avoids per-exit VMWRITE overhead, which
+    // is especially costly in nested virtualisation (each VMWRITE traps to L0).
+    let cr3 = machine
+        .cr_access()
+        .read_cr3()
+        .map_err(|_| VmRunError::ReadHostCr3)?
+        .bits();
+    ctx.state()
+        .vmcs
+        .write_natural(VmcsFieldNatural::HostCr3, cr3)
+        .map_err(VmRunError::WriteHostCr3)?;
 
-        // Sync GPRs to VmxContext before entry
-        ctx.sync_gprs_to_vmx_ctx();
-
-        // Update dynamic host state before each VM entry.
-        //
-        // These values can change between VM entries:
-        // - CR3: page table root, changes per process
-        // - FS_BASE/GS_BASE: per-CPU or per-task segment bases
-        // - TR_BASE: TSS base, per-CPU
-        // - GDTR_BASE: GDT base, per-CPU
-        //
-        // TODO: Technically, per-CPU state (FS/GS/TR/GDTR bases) only needs updating
-        // when the VCPU migrates to a different physical CPU. For now we update
-        // everything each iteration for correctness. Performance optimization with
-        // "last CPU" tracking (like bhyve's vmx_set_pcpu_defaults) can be added later.
-        let cr3 = machine
-            .cr_access()
-            .read_cr3()
-            .map_err(|_| VmRunError::ReadHostCr3)?
-            .bits();
-        ctx.state()
-            .vmcs
-            .write_natural(VmcsFieldNatural::HostCr3, cr3)
-            .map_err(VmRunError::WriteHostCr3)?;
-
+    {
         let msr = machine.msr_access();
         let fs_base = msr.read_msr(msr::IA32_FS_BASE).unwrap_or(0);
         ctx.state()
@@ -226,78 +213,65 @@ where
             .vmcs
             .write_natural(VmcsFieldNatural::HostGsBase, gs_base)
             .map_err(VmRunError::WriteHostGsBase)?;
+    }
 
-        let dta = machine.descriptor_table_access();
-        ctx.state()
-            .vmcs
-            .write_natural(VmcsFieldNatural::HostTrBase, dta.read_tr_base())
-            .map_err(VmRunError::WriteHostTrBase)?;
-        ctx.state()
-            .vmcs
-            .write_natural(VmcsFieldNatural::HostGdtrBase, dta.read_gdtr().base)
-            .map_err(VmRunError::WriteHostGdtrBase)?;
+    let dta = machine.descriptor_table_access();
+    ctx.state()
+        .vmcs
+        .write_natural(VmcsFieldNatural::HostTrBase, dta.read_tr_base())
+        .map_err(VmRunError::WriteHostTrBase)?;
+    ctx.state()
+        .vmcs
+        .write_natural(VmcsFieldNatural::HostGdtrBase, dta.read_gdtr().base)
+        .map_err(VmRunError::WriteHostGdtrBase)?;
 
-        // Set HOST_RSP to point to VmxContext for the exit handler
-        let host_rsp = (&mut ctx.state_mut().vmx_ctx as *mut VmxContext) as u64;
-        ctx.state()
+    // HOST_RSP points to VmxContext which is at a fixed address for the
+    // duration of the run loop.
+    let host_rsp = (&mut ctx.state_mut().vmx_ctx as *mut VmxContext) as u64;
+    ctx.state()
+        .vmcs
+        .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
+        .map_err(VmRunError::WriteHostRsp)?;
+
+    // Configure hardware-assisted perf counter switching if available.
+    // The perf_global_ctrl values and entry/exit control bits are constant
+    // for the entire run loop — write them once to avoid per-exit VMCS
+    // operations (each VMWRITE traps to L0 in nested virt).
+    if let Some((guest_val, host_val)) =
+        ctx.state().instruction_counter.perf_global_ctrl_values()
+    {
+        let _ = ctx
+            .state()
             .vmcs
-            .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
-            .map_err(VmRunError::WriteHostRsp)?;
+            .write64(VmcsField64::GuestIa32PerfGlobalCtrl, guest_val);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write64(VmcsField64::HostIa32PerfGlobalCtrl, host_val);
+
+        if let Ok(entry_ctrl) = ctx.state().vmcs.read32(VmcsField32::VmEntryControls) {
+            let _ = ctx.state().vmcs.write32(
+                VmcsField32::VmEntryControls,
+                entry_ctrl | vm_entry::LOAD_IA32_PERF_GLOBAL_CTRL,
+            );
+        }
+        if let Ok(exit_ctrl) = ctx.state().vmcs.read32(VmcsField32::PrimaryVmExitControls) {
+            let _ = ctx.state().vmcs.write32(
+                VmcsField32::PrimaryVmExitControls,
+                exit_ctrl | vm_exit::LOAD_IA32_PERF_GLOBAL_CTRL,
+            );
+        }
+    }
+
+    loop {
+        // Track total time in run loop (guest + exit handling)
+        let loop_start_tsc = rdtsc();
+
+        // Sync GPRs to VmxContext before entry
+        ctx.sync_gprs_to_vmx_ctx();
 
         // Inject any pending APIC interrupts before VM entry
         inject_pending_interrupt(ctx).map_err(VmRunError::ExitHandler)?;
-
-        // Configure hardware-assisted perf counter switching if available.
-        // This uses VMCS fields to atomically switch PERF_GLOBAL_CTRL MSR
-        // on VM entry/exit, eliminating instruction counting overhead.
-        if let Some((guest_val, host_val)) =
-            ctx.state().instruction_counter.perf_global_ctrl_values()
-        {
-            // Write the MSR values to VMCS fields
-            let _ = ctx
-                .state()
-                .vmcs
-                .write64(VmcsField64::GuestIa32PerfGlobalCtrl, guest_val);
-            let _ = ctx
-                .state()
-                .vmcs
-                .write64(VmcsField64::HostIa32PerfGlobalCtrl, host_val);
-
-            // Enable the control bits for hardware MSR loading
-            if let Ok(entry_ctrl) = ctx.state().vmcs.read32(VmcsField32::VmEntryControls) {
-                let _ = ctx.state().vmcs.write32(
-                    VmcsField32::VmEntryControls,
-                    entry_ctrl | vm_entry::LOAD_IA32_PERF_GLOBAL_CTRL,
-                );
-            }
-            if let Ok(exit_ctrl) = ctx.state().vmcs.read32(VmcsField32::PrimaryVmExitControls) {
-                let _ = ctx.state().vmcs.write32(
-                    VmcsField32::PrimaryVmExitControls,
-                    exit_ctrl | vm_exit::LOAD_IA32_PERF_GLOBAL_CTRL,
-                );
-            }
-        }
-
-        // Set guest state for perf_guest_cbs before VM entry.
-        // This tells the perf subsystem we're entering guest mode.
-        // With exclude_host=1, the counter only counts when state() returns PERF_GUEST_ACTIVE.
-        // Read guest RIP and determine if guest is in user mode (CPL > 0).
-        let guest_rip = ctx
-            .state()
-            .vmcs
-            .read_natural(VmcsFieldNatural::GuestRip)
-            .unwrap_or(0);
-        // CS access rights bits 5:6 contain the DPL (descriptor privilege level)
-        let guest_cs_ar = ctx
-            .state()
-            .vmcs
-            .read32(VmcsField32::GuestCsAccessRights)
-            .unwrap_or(0);
-        let guest_cpl = (guest_cs_ar >> 5) & 0x3;
-        let guest_user_mode = guest_cpl > 0;
-        ctx.state_mut()
-            .instruction_counter
-            .set_guest_state(guest_user_mode, guest_rip);
 
         // Record VM entry overhead (time from loop start to just before VM entry)
         let pre_entry_tsc = rdtsc();
@@ -306,6 +280,7 @@ where
 
         // Load guest KERNEL_GS_BASE before VM entry. IA32_KERNEL_GS_BASE has
         // no VMCS field so VMX does not swap it automatically.
+        let msr = machine.msr_access();
         let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, ctx.state().kernel_gs_base);
 
         // Enter the guest
