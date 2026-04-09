@@ -122,8 +122,10 @@ pub struct ExitStats {
     pub guest_cycles: u64,
     /// Cycles spent in run loop setup before VM entry.
     pub vmentry_overhead_cycles: u64,
-    /// Cycles spent after VM exit before exit handler.
+    /// Cycles spent after VM exit before exit handler (excluding IRQ window).
     pub vmexit_overhead_cycles: u64,
+    /// Cycles spent in the IRQ window between VM exits.
+    pub irq_window_cycles: u64,
 }
 
 impl ExitStats {
@@ -335,6 +337,12 @@ impl fmt::Display for ExitStatsReport<'_> {
             "  VM exit overhead:   {:>16} cycles ({:>5.1}% of run loop)",
             format_count(stats.vmexit_overhead_cycles),
             pct(stats.vmexit_overhead_cycles, run)
+        )?;
+        writeln!(
+            f,
+            "  IRQ window:         {:>16} cycles ({:>5.1}% of run loop)",
+            format_count(stats.irq_window_cycles),
+            pct(stats.irq_window_cycles, run)
         )?;
         writeln!(
             f,
