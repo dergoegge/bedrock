@@ -27,9 +27,9 @@ pub mod vm_state;
 pub use fields::{VmcsField16, VmcsField32, VmcsField64, VmcsFieldNatural};
 pub use handler::{BedrockHandler, VmEntry, VmRef};
 pub use traits::{
-    InveptError, InvvpidError, VirtualMachineControlStructure, VmEntryError, VmRunner, VmxContext,
-    Vmx, VmcsReadError, VmcsReadResult, VmcsWriteError, VmcsWriteResult, VmxCapabilities,
-    VmxInitError, VmxoffError, VmxonError,
+    InveptError, InvvpidError, VirtualMachineControlStructure, VmEntryError, VmRunner,
+    VmcsReadError, VmcsReadResult, VmcsWriteError, VmcsWriteResult, Vmx, VmxCapabilities,
+    VmxContext, VmxInitError, VmxoffError, VmxonError,
 };
 
 // VM implementation

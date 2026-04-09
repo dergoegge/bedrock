@@ -26,4 +26,3 @@ pub(crate) mod structs;
 // Re-export commonly used items
 pub(crate) use core::{read_vm_file_type, BedrockForkedVmFile, BedrockVmFile, VmFileType};
 pub(crate) use fd::{create_forked_vm_fd, create_vm_fd};
-

@@ -277,8 +277,7 @@ pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction, DecodeErro
                     let mod_bits = modrm >> 6;
                     let rm = (modrm & 0x07) | (if rex.b { 0x08 } else { 0 });
 
-                    let modrm_len =
-                        modrm_displacement_length(mod_bits, rm & 0x07, &bytes[pos..])?;
+                    let modrm_len = modrm_displacement_length(mod_bits, rm & 0x07, &bytes[pos..])?;
                     pos += modrm_len;
 
                     if mod_bits == 0b11 {

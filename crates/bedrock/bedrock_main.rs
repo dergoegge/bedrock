@@ -22,22 +22,25 @@ mod instruction_counter;
 mod machine;
 mod memory;
 mod page;
-mod vmcs;
 mod vm_file;
+mod vmcs;
 mod vmx;
 mod vmx_asm;
 mod vmxon;
 
 // Re-exports from internal modules
 use factory::{create_vm, KernelFrameAllocator};
-use machine::MACHINE;
-use vmx::BedrockHandler;
-use vm_file::{create_forked_vm_fd, create_vm_fd, read_vm_file_type, BedrockForkedVmFile, BedrockVmFile, VmFileType};
-use vmx::traits::{Kernel, Machine, Vmx, VmxCpu};
-use vmx::{ForkableVm, ForkedVm};
 use instruction_counter::LinuxInstructionCounter;
-use vmx_asm::VmxContextExt;
+use machine::MACHINE;
+use vm_file::{
+    create_forked_vm_fd, create_vm_fd, read_vm_file_type, BedrockForkedVmFile, BedrockVmFile,
+    VmFileType,
+};
+use vmx::traits::{Kernel, Machine, Vmx, VmxCpu};
+use vmx::BedrockHandler;
 use vmx::VmxoffError;
+use vmx::{ForkableVm, ForkedVm};
+use vmx_asm::VmxContextExt;
 use vmxon::RealVmx;
 
 /// Ioctl magic number for bedrock ('B' for Bedrock).
@@ -70,22 +73,20 @@ fn register_miscdev_with_mode(
     // SAFETY: We properly initialize and register the miscdevice, and the
     // MiscDeviceRegistration's Drop will call misc_deregister.
     unsafe {
-        ::pin_init::pin_init_from_closure(
-            move |slot: *mut MiscDeviceRegistration<BedrockFile>| {
-                // Get a pointer to the inner miscdevice struct
-                let inner_ptr = slot as *mut bindings::miscdevice;
+        ::pin_init::pin_init_from_closure(move |slot: *mut MiscDeviceRegistration<BedrockFile>| {
+            // Get a pointer to the inner miscdevice struct
+            let inner_ptr = slot as *mut bindings::miscdevice;
 
-                // Create the base miscdevice from options
-                let opts = MiscDeviceOptions { name };
-                inner_ptr.write(opts.into_raw::<BedrockFile>());
+            // Create the base miscdevice from options
+            let opts = MiscDeviceOptions { name };
+            inner_ptr.write(opts.into_raw::<BedrockFile>());
 
-                // Set the mode for world-accessible permissions
-                (*inner_ptr).mode = mode;
+            // Set the mode for world-accessible permissions
+            (*inner_ptr).mode = mode;
 
-                // Register the misc device
-                kernel::error::to_result(bindings::misc_register(inner_ptr))
-            },
-        )
+            // Register the misc device
+            kernel::error::to_result(bindings::misc_register(inner_ptr))
+        })
     }
 }
 
@@ -119,7 +120,11 @@ fn handle_create_root_vm(memory_size: usize) -> Result<isize> {
 
     // Create the VM with the specified memory size
     let vm = create_vm(&MACHINE, memory_size).ok_or_else(|| {
-        log_err!("Failed to create VM {} with {} bytes of memory\n", vm_id, memory_size);
+        log_err!(
+            "Failed to create VM {} with {} bytes of memory\n",
+            vm_id,
+            memory_size
+        );
         ENOMEM
     })?;
 
@@ -129,7 +134,12 @@ fn handle_create_root_vm(memory_size: usize) -> Result<isize> {
         e
     })?;
 
-    log_info!("Created VM {} with fd {} ({} bytes memory)\n", vm_id, fd, memory_size);
+    log_info!(
+        "Created VM {} with fd {} ({} bytes memory)\n",
+        vm_id,
+        fd,
+        memory_size
+    );
     Ok(fd as isize)
 }
 
@@ -189,8 +199,12 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
             }
         }
 
-        log_info!("FORK: VM {} - found parent {} (type {:?}), incremented children_count\n",
-            vm_id, parent_vm_id, parent_type as u8);
+        log_info!(
+            "FORK: VM {} - found parent {} (type {:?}), incremented children_count\n",
+            vm_id,
+            parent_vm_id,
+            parent_type as u8
+        );
 
         (vm_id, parent_ref.as_ptr(), parent_type)
     }; // Lock released here - expensive work can now proceed in parallel
@@ -200,8 +214,8 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     let fork_result = {
         let mut allocator = KernelFrameAllocator::new(MACHINE.kernel());
         let exit_handler_rip = vmx::VmxContext::exit_handler_addr();
-        let instruction_counter = LinuxInstructionCounter::new()
-            .unwrap_or_else(LinuxInstructionCounter::null);
+        let instruction_counter =
+            LinuxInstructionCounter::new().unwrap_or_else(LinuxInstructionCounter::null);
 
         match parent_type {
             VmFileType::Root => {
@@ -237,7 +251,11 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     let forked_vm = match fork_result {
         Ok(vm) => vm,
         Err(e) => {
-            log_err!("Failed to create forked VM from parent {}: {:?}\n", parent_vm_id, e);
+            log_err!(
+                "Failed to create forked VM from parent {}: {:?}\n",
+                parent_vm_id,
+                e
+            );
             // Decrement children_count since ForkedVm wasn't created
             // (normally ForkedVm::drop does this, but creation failed)
             match parent_type {
@@ -261,7 +279,12 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
         e
     })?;
 
-    log_info!("Created forked VM {} (from parent {}) with fd {}\n", vm_id, parent_vm_id, fd);
+    log_info!(
+        "Created forked VM {} (from parent {}) with fd {}\n",
+        vm_id,
+        parent_vm_id,
+        fd
+    );
     Ok(fd as isize)
 }
 
@@ -274,12 +297,7 @@ impl MiscDevice for BedrockFile {
         KBox::try_pin_init(try_pin_init!(BedrockFile {}), GFP_KERNEL)
     }
 
-    fn ioctl(
-        _me: Pin<&BedrockFile>,
-        _file: &File,
-        cmd: u32,
-        arg: usize,
-    ) -> Result<isize> {
+    fn ioctl(_me: Pin<&BedrockFile>, _file: &File, cmd: u32, arg: usize) -> Result<isize> {
         match cmd {
             BEDROCK_CREATE_ROOT_VM => handle_create_root_vm(arg),
             BEDROCK_CREATE_FORKED_VM => handle_create_forked_vm(arg as u64),

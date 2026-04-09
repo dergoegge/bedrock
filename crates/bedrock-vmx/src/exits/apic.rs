@@ -116,7 +116,8 @@ pub fn handle_apic_access<C: VmContext>(
     if ctx
         .state()
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRip, new_rip).is_err()
+        .write_natural(VmcsFieldNatural::GuestRip, new_rip)
+        .is_err()
     {
         return ExitHandlerResult::Error(ExitError::Fatal("Failed to advance RIP for APIC access"));
     }
@@ -374,7 +375,8 @@ pub fn handle_ioapic_access<C: VmContext>(
     if ctx
         .state()
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRip, new_rip).is_err()
+        .write_natural(VmcsFieldNatural::GuestRip, new_rip)
+        .is_err()
     {
         return ExitHandlerResult::Error(ExitError::Fatal(
             "Failed to advance RIP for I/O APIC access",

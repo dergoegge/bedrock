@@ -41,7 +41,10 @@ pub(crate) fn create_vm_fd(
     vm_id: u64,
 ) -> Result<i32, kernel::error::Error> {
     // Wrap VM in BedrockVmFile and allocate on heap
-    let vm_file = KBox::new(BedrockVmFile::new(vm, vm_id), kernel::alloc::flags::GFP_KERNEL)?;
+    let vm_file = KBox::new(
+        BedrockVmFile::new(vm, vm_id),
+        kernel::alloc::flags::GFP_KERNEL,
+    )?;
     let vm_ptr = KBox::into_raw(vm_file);
 
     // Register in global vm_list
@@ -99,7 +102,10 @@ pub(crate) fn create_forked_vm_fd(
     vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
     vm_id: u64,
 ) -> Result<i32, kernel::error::Error> {
-    let vm_file = KBox::new(BedrockForkedVmFile::new(vm, vm_id), kernel::alloc::flags::GFP_KERNEL)?;
+    let vm_file = KBox::new(
+        BedrockForkedVmFile::new(vm, vm_id),
+        kernel::alloc::flags::GFP_KERNEL,
+    )?;
     let vm_ptr = KBox::into_raw(vm_file);
 
     // Register in global vm_list

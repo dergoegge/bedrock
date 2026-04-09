@@ -5,12 +5,14 @@
 use kernel::prelude::*;
 
 use super::ept::FrameAllocator;
+use super::instruction_counter::LinuxInstructionCounter;
 use super::machine::{LinuxKernel, LinuxMachine};
 use super::memory::HostPhysAddr;
 use super::page::{alloc_zeroed_page, KernelGuestMemory, KernelPage, PagePool};
 use super::vmcs::RealVmcs;
-use super::instruction_counter::LinuxInstructionCounter;
-use super::vmx::traits::{CowAllocator, GuestMemory, Kernel, Machine, Page, VirtualMachineControlStructure};
+use super::vmx::traits::{
+    CowAllocator, GuestMemory, Kernel, Machine, Page, VirtualMachineControlStructure,
+};
 use super::vmx::RootVm;
 use super::vmx_asm::VmxContextExt;
 
@@ -99,7 +101,10 @@ pub(crate) fn create_vm(
     log_info!("create_vm: VMCS allocated\n");
 
     // Allocate guest memory.
-    log_info!("create_vm: allocating guest memory ({} bytes)\n", memory_size);
+    log_info!(
+        "create_vm: allocating guest memory ({} bytes)\n",
+        memory_size
+    );
     let memory = machine.kernel().alloc_guest_memory(memory_size)?;
     log_info!("create_vm: guest memory allocated\n");
     log_info!(

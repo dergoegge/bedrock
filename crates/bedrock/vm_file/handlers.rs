@@ -14,8 +14,8 @@ use super::super::c_helpers::{bedrock_copy_from_user, bedrock_copy_to_user, Pree
 use super::super::factory::KernelFrameAllocator;
 use super::super::machine::MACHINE;
 use super::super::page::{LogBuffer, PagePool};
-use super::super::vmx::ExitReason;
 use super::super::vmx::traits::{CowAllocator, Machine, VmContext};
+use super::super::vmx::ExitReason;
 use super::super::vmx::{LogMode, RdrandMode};
 use super::super::vmx_asm::RealVmRunner;
 use super::structs::*;
@@ -65,14 +65,22 @@ pub(crate) fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     let _preempt_guard = PreemptionGuard::new();
 
     // Use VmContext::get_registers_guarded to load VMCS, read registers, and clear VMCS
-    let (gprs, control_regs, debug_regs, segment_regs, descriptor_tables, extended_control, rip, rflags) =
-        match vm.get_registers_guarded() {
-            Ok(regs) => regs,
-            Err(e) => {
-                log_err!("GET_REGS failed: {:?}\n", e);
-                return -(bindings::EINVAL as isize);
-            }
-        };
+    let (
+        gprs,
+        control_regs,
+        debug_regs,
+        segment_regs,
+        descriptor_tables,
+        extended_control,
+        rip,
+        rflags,
+    ) = match vm.get_registers_guarded() {
+        Ok(regs) => regs,
+        Err(e) => {
+            log_err!("GET_REGS failed: {:?}\n", e);
+            return -(bindings::EINVAL as isize);
+        }
+    };
 
     let regs = BedrockRegs {
         gprs,
@@ -422,10 +430,19 @@ pub(crate) fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -
     }
 
     // Set the log mode and thresholds
-    vm_file.vm_mut().state_mut().set_log_mode(mode, config.target_tsc);
-    vm_file.vm_mut().state_mut().set_log_start_tsc(config.start_tsc);
+    vm_file
+        .vm_mut()
+        .state_mut()
+        .set_log_mode(mode, config.target_tsc);
+    vm_file
+        .vm_mut()
+        .state_mut()
+        .set_log_start_tsc(config.start_tsc);
     vm_file.vm_mut().state_mut().skip_memory_hash = (config.flags & 1) != 0;
-    vm_file.vm_mut().state_mut().set_intercept_pf((config.flags & 2) != 0);
+    vm_file
+        .vm_mut()
+        .state_mut()
+        .set_intercept_pf((config.flags & 2) != 0);
 
     log_info!(
         "SET_LOG_CONFIG: enabled={}, mode={:?}, target_tsc={}, start_tsc={}, flags={:#x} for VM {}\n",
@@ -558,10 +575,7 @@ pub(crate) fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) 
     } else {
         vm.state_mut().single_step_tsc_range = None;
         vm.state_mut().mtf_enabled = false;
-        log_info!(
-            "SET_SINGLE_STEP: disabled for VM {}\n",
-            vm_file.vm_id()
-        );
+        log_info!("SET_SINGLE_STEP: disabled for VM {}\n", vm_file.vm_id());
     }
 
     0

@@ -19,7 +19,6 @@ use bedrock_vm::{
     LogEntry, RdrandConfig, Vm, VmBuilder, BEDROCK_DEVICE_PATH,
 };
 
-
 use args::{Args, RdrandMode};
 use elf::load_kernel;
 
@@ -290,10 +289,9 @@ fn run() -> io::Result<()> {
     if let Some((start, end)) = args.single_step {
         builder = builder.single_step(start, end);
     }
-    let stop_at_tsc = args.stop_at_tsc.or_else(|| {
-        args.stop_at_vt
-            .map(|vt| (vt * 2_995_200_000.0) as u64)
-    });
+    let stop_at_tsc = args
+        .stop_at_tsc
+        .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64));
     if let Some(tsc) = stop_at_tsc {
         builder = builder.stop_at_tsc(tsc);
     }
@@ -395,18 +393,13 @@ fn run() -> io::Result<()> {
     // Run VM
     info!("Starting VM...");
     let wall_clock_start = std::time::Instant::now();
-    let timeout_duration = args
-        .timeout
-        .map(std::time::Duration::from_secs_f64);
+    let timeout_duration = args.timeout.map(std::time::Duration::from_secs_f64);
 
     loop {
         // Check wall-clock timeout
         if let Some(timeout) = timeout_duration {
             if wall_clock_start.elapsed() >= timeout {
-                info!(
-                    "Wall-clock timeout reached ({:.1}s)",
-                    timeout.as_secs_f64()
-                );
+                info!("Wall-clock timeout reached ({:.1}s)", timeout.as_secs_f64());
                 break;
             }
         }
@@ -541,7 +534,10 @@ fn run() -> io::Result<()> {
     }
     if let Some(ref path) = args.log_jsonl {
         if total_log_count > 0 {
-            info!("Wrote {} deterministic log entries to {}", total_log_count, path);
+            info!(
+                "Wrote {} deterministic log entries to {}",
+                total_log_count, path
+            );
         } else {
             debug!("No deterministic log entries written to {}", path);
         }

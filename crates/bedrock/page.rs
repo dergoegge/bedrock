@@ -53,7 +53,10 @@ unsafe impl Sync for KernelGuestMemory {}
 impl KernelGuestMemory {
     /// Allocate guest memory of the given size.
     pub(crate) fn new(size: usize) -> Option<Self> {
-        log_info!("KernelGuestMemory::new: calling vmalloc_user({} bytes)\n", size);
+        log_info!(
+            "KernelGuestMemory::new: calling vmalloc_user({} bytes)\n",
+            size
+        );
         // SAFETY: bedrock_vmalloc_user allocates zeroed memory that can be mapped to userspace.
         let ptr = unsafe { c_helpers::bedrock_vmalloc_user(size as core::ffi::c_ulong) };
         log_info!("KernelGuestMemory::new: vmalloc_user returned {:p}\n", ptr);
@@ -83,7 +86,8 @@ impl GuestMemory for KernelGuestMemory {
         }
         // SAFETY: ptr + page_offset is within the allocated vmalloc region.
         let page_ptr = unsafe { self.ptr.add(page_offset) };
-        let phys = unsafe { c_helpers::bedrock_vmalloc_to_phys(page_ptr as *mut core::ffi::c_void) };
+        let phys =
+            unsafe { c_helpers::bedrock_vmalloc_to_phys(page_ptr as *mut core::ffi::c_void) };
         if phys == 0 {
             return None;
         }
@@ -138,7 +142,6 @@ impl LogBuffer {
     pub(crate) fn as_ptr(&self) -> *mut u8 {
         self.ptr
     }
-
 }
 
 impl Drop for LogBuffer {
@@ -216,5 +219,4 @@ impl PagePool {
     pub(crate) fn take(&mut self) -> Option<KernelPage> {
         self.pages.pop()
     }
-
 }

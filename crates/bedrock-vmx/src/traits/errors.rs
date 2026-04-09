@@ -114,7 +114,6 @@ pub enum VmxCpuInitError {
     VmxonAllocFailed(VmxonAllocError),
 }
 
-
 /// Error returned by VMREAD instruction.
 ///
 /// VMREAD signals errors via RFLAGS (Carry and Zero flags):
@@ -193,7 +192,6 @@ pub enum VmGetRegistersError {
     VmcsGuard(&'static str),
     VmcsRead(VmcsReadError),
 }
-
 
 /// Error from VM run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,6 +18,7 @@ test:
 [group: 'local']
 fmt:
     cargo fmt
+    rustfmt --edition 2021 crates/bedrock/*.rs crates/bedrock/vm_file/*.rs
 
 # Build the kernel module
 [group: 'local']

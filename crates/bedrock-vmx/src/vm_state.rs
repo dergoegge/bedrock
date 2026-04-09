@@ -287,7 +287,6 @@ impl CowStats {
             }
         }
     }
-
 }
 
 /// Collection of exit statistics for all exit types.

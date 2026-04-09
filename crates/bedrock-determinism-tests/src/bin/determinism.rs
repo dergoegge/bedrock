@@ -154,7 +154,10 @@ struct RunResult {
 
 /// Format a run failure with context from the run directory.
 fn format_run_error(run_num: usize, run_dir: &Path, message: &str) -> String {
-    let mut msg = format!("Run {} failed: {}\n  Run directory: {:?}", run_num, message, run_dir);
+    let mut msg = format!(
+        "Run {} failed: {}\n  Run directory: {:?}",
+        run_num, message, run_dir
+    );
 
     // Include stderr tail if available
     let stderr_file = run_dir.join("stderr.txt");
@@ -443,7 +446,10 @@ fn print_final_summary(
     eprintln!("  \x1b[90m{}\x1b[0m", "\u{2500}".repeat(50));
 
     if divergent == 0 && failed == 0 {
-        eprintln!("  \x1b[1;32mPASS\x1b[0m  \x1b[90m- all {} runs identical\x1b[0m", format_count(total));
+        eprintln!(
+            "  \x1b[1;32mPASS\x1b[0m  \x1b[90m- all {} runs identical\x1b[0m",
+            format_count(total)
+        );
     } else if divergent > 0 {
         eprintln!(
             "  \x1b[1;31mFAIL\x1b[0m  \x1b[90m- {} of {} runs divergent\x1b[0m",
@@ -633,10 +639,7 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::
     let start = Instant::now();
 
     for run_num in 1..=args.runs {
-        eprintln!(
-            "\x1b[1m=== Run {}/{} ===\x1b[0m",
-            run_num, args.runs
-        );
+        eprintln!("\x1b[1m=== Run {}/{} ===\x1b[0m", run_num, args.runs);
 
         let result = match run_vm(args, vmlinux, cli_path, run_num) {
             Ok(r) => r,
@@ -647,7 +650,10 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::
         };
 
         run_times.push(result.wall_time);
-        eprintln!("  \x1b[90mWall time: {}\x1b[0m", format_run_time(result.wall_time));
+        eprintln!(
+            "  \x1b[90mWall time: {}\x1b[0m",
+            format_run_time(result.wall_time)
+        );
 
         // Print log entry or checkpoint summary
         if let Some(ref entry) = result.log_entry {
@@ -672,10 +678,7 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::
                     summary_lines.push(format!("Run {:03}: DIVERGENT", run_num));
                     // Move divergent run directory into workdir for analysis
                     let dest = args.workdir.join(format!("run-{:03}", run_num));
-                    let status = Command::new("mv")
-                        .arg(&result.run_dir)
-                        .arg(&dest)
-                        .status();
+                    let status = Command::new("mv").arg(&result.run_dir).arg(&dest).status();
                     match status {
                         Ok(s) if !s.success() => eprintln!(
                             "\nWarning: failed to move run-{:03} to {:?} (kept at {:?})",
@@ -836,9 +839,9 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::Ex
             let cmdline = args.cmdline.clone();
             let memory = args.memory;
             let seed = args.seed;
-            let stop_at_tsc = args.stop_at_tsc.or_else(|| {
-                args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)
-            });
+            let stop_at_tsc = args
+                .stop_at_tsc
+                .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64));
             let checkpoint_interval = args.checkpoint_interval;
             let single_step = args.single_step;
             let log_after_tsc = args.log_after_tsc;
@@ -999,16 +1002,20 @@ fn write_summary_file(args: &Args, summary_lines: &[String], divergence: Option<
     }
 }
 
-fn run_vm(args: &Args, vmlinux: &str, cli_path: &Path, run_num: usize) -> Result<RunResult, String> {
+fn run_vm(
+    args: &Args,
+    vmlinux: &str,
+    cli_path: &Path,
+    run_num: usize,
+) -> Result<RunResult, String> {
     run_vm_inner(
         vmlinux,
         args.initramfs.as_deref(),
         args.cmdline.as_deref(),
         args.memory,
         args.seed,
-        args.stop_at_tsc.or_else(|| {
-            args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)
-        }),
+        args.stop_at_tsc
+            .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)),
         args.checkpoint_interval,
         args.single_step,
         args.log_after_tsc,
@@ -1050,8 +1057,12 @@ fn run_vm_inner(
     } else {
         std::env::temp_dir().join(format!("{}{:03}", temp_run_prefix(), run_num))
     };
-    fs::create_dir_all(&run_dir)
-        .map_err(|e| format!("Run {}: failed to create directory {:?}: {}", run_num, run_dir, e))?;
+    fs::create_dir_all(&run_dir).map_err(|e| {
+        format!(
+            "Run {}: failed to create directory {:?}: {}",
+            run_num, run_dir, e
+        )
+    })?;
 
     let log_file = run_dir.join("exit-log.jsonl");
     let stdout_file = run_dir.join("stdout.txt");
@@ -1127,7 +1138,8 @@ fn run_vm_inner(
     cmd.stderr(Stdio::from(stderr_handle));
 
     let run_start = Instant::now();
-    let status = cmd.status()
+    let status = cmd
+        .status()
         .map_err(|e| format!("Run {}: failed to execute bedrock-cli: {}", run_num, e))?;
     let wall_time = run_start.elapsed();
 
@@ -1376,7 +1388,11 @@ fn compare_exit_stats(a: &ExitStats, b: &ExitStats) -> Option<String> {
         ("msr_read", a.msr_read.count, b.msr_read.count),
         ("msr_write", a.msr_write.count, b.msr_write.count),
         ("cr_access", a.cr_access.count, b.cr_access.count),
-        ("io_instruction", a.io_instruction.count, b.io_instruction.count),
+        (
+            "io_instruction",
+            a.io_instruction.count,
+            b.io_instruction.count,
+        ),
         ("rdtsc", a.rdtsc.count, b.rdtsc.count),
         ("rdtscp", a.rdtscp.count, b.rdtscp.count),
         ("rdpmc", a.rdpmc.count, b.rdpmc.count),

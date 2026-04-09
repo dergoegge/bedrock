@@ -44,7 +44,7 @@ llvmPackages.stdenv.mkDerivation {
     make \
       KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build \
       LLVM=1 \
-      ${pkgs.lib.optionalString clippy "CLIPPY=1"}
+      ${pkgs.lib.optionalString clippy "CLIPPY=1 KRUSTFLAGS='-D warnings'"}
   '';
 
   installPhase = ''

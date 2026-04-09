@@ -7,9 +7,8 @@
 
 use crate::c_helpers::{
     bedrock_clear_guest_state, bedrock_create_instruction_counter,
-    bedrock_destroy_instruction_counter, bedrock_get_perf_global_ctrl,
-    bedrock_perf_event_disable, bedrock_perf_event_enable,
-    bedrock_perf_event_read, bedrock_set_guest_state, PerfEvent,
+    bedrock_destroy_instruction_counter, bedrock_get_perf_global_ctrl, bedrock_perf_event_disable,
+    bedrock_perf_event_enable, bedrock_perf_event_read, bedrock_set_guest_state, PerfEvent,
 };
 use crate::vmx::traits::InstructionCounter;
 
@@ -142,8 +141,9 @@ impl InstructionCounter for LinuxInstructionCounter {
         let mut host_val: u64 = 0;
 
         // SAFETY: We pass valid pointers to the helper.
-        let found =
-            unsafe { bedrock_get_perf_global_ctrl(&mut guest_val as *mut _, &mut host_val as *mut _) };
+        let found = unsafe {
+            bedrock_get_perf_global_ctrl(&mut guest_val as *mut _, &mut host_val as *mut _)
+        };
 
         if found {
             Some((guest_val, host_val))

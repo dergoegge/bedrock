@@ -152,13 +152,18 @@ extern "C" {
     ) -> core::ffi::c_int;
 
     /// Get VMA start address.
-    pub(crate) fn bedrock_vma_start(vma: *mut kernel::bindings::vm_area_struct) -> core::ffi::c_ulong;
+    pub(crate) fn bedrock_vma_start(
+        vma: *mut kernel::bindings::vm_area_struct,
+    ) -> core::ffi::c_ulong;
 
     /// Get VMA end address.
-    pub(crate) fn bedrock_vma_end(vma: *mut kernel::bindings::vm_area_struct) -> core::ffi::c_ulong;
+    pub(crate) fn bedrock_vma_end(vma: *mut kernel::bindings::vm_area_struct)
+        -> core::ffi::c_ulong;
 
     /// Get VMA page offset.
-    pub(crate) fn bedrock_vma_pgoff(vma: *mut kernel::bindings::vm_area_struct) -> core::ffi::c_ulong;
+    pub(crate) fn bedrock_vma_pgoff(
+        vma: *mut kernel::bindings::vm_area_struct,
+    ) -> core::ffi::c_ulong;
 
     /// Disable preemption on the current CPU.
     pub(crate) fn bedrock_preempt_disable();
@@ -240,11 +245,7 @@ extern "C" {
     pub(crate) fn bedrock_get_perf_global_ctrl(guest_val: *mut u64, host_val: *mut u64) -> bool;
 
     /// One-shot XXH64 hash.
-    pub(crate) fn bedrock_xxh64(
-        input: *const core::ffi::c_void,
-        length: usize,
-        seed: u64,
-    ) -> u64;
+    pub(crate) fn bedrock_xxh64(input: *const core::ffi::c_void, length: usize, seed: u64) -> u64;
 
     /// Reset XXH64 state for streaming hashing.
     pub(crate) fn bedrock_xxh64_reset(state: *mut Xxh64State, seed: u64);
@@ -343,4 +344,3 @@ pub(crate) fn local_irq_disable() {
     // SAFETY: Disabling interrupts is always safe.
     unsafe { bedrock_local_irq_disable() };
 }
-

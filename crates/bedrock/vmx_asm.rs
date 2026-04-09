@@ -5,8 +5,8 @@
 // Re-export VmxContext from vmx crate (the struct definition lives there for testability)
 pub(crate) use super::vmx::VmxContext;
 
-use super::vmx::{VmEntryError, VmRunner};
 use super::vmcs::RealVmcs;
+use super::vmx::{VmEntryError, VmRunner};
 
 extern "C" {
     /// Enter VMX non-root operation (guest mode).

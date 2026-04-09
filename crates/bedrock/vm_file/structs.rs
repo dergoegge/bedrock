@@ -31,7 +31,8 @@ pub(crate) const BEDROCK_VM_RUN: u32 = _IOR::<BedrockVmExit>(BEDROCK_IOC_MAGIC, 
 pub(crate) const BEDROCK_VM_SET_INPUT: u32 = _IOW::<BedrockSerialInput>(BEDROCK_IOC_MAGIC, 4);
 
 /// Ioctl number for SET_RDRAND_CONFIG command - configure RDRAND emulation.
-pub(crate) const BEDROCK_VM_SET_RDRAND_CONFIG: u32 = _IOW::<BedrockRdrandConfig>(BEDROCK_IOC_MAGIC, 5);
+pub(crate) const BEDROCK_VM_SET_RDRAND_CONFIG: u32 =
+    _IOW::<BedrockRdrandConfig>(BEDROCK_IOC_MAGIC, 5);
 
 /// Ioctl number for SET_RDRAND_VALUE command - set pending RDRAND value.
 pub(crate) const BEDROCK_VM_SET_RDRAND_VALUE: u32 = _IOW::<u64>(BEDROCK_IOC_MAGIC, 6);
@@ -41,7 +42,8 @@ pub(crate) const BEDROCK_VM_SET_RDRAND_VALUE: u32 = _IOW::<u64>(BEDROCK_IOC_MAGI
 pub(crate) const BEDROCK_VM_SET_LOG_CONFIG: u32 = _IOW::<BedrockLogConfig>(BEDROCK_IOC_MAGIC, 7);
 
 /// Ioctl number for SET_SINGLE_STEP command - configure MTF single-stepping.
-pub(crate) const BEDROCK_VM_SET_SINGLE_STEP: u32 = _IOW::<BedrockSingleStepConfig>(BEDROCK_IOC_MAGIC, 8);
+pub(crate) const BEDROCK_VM_SET_SINGLE_STEP: u32 =
+    _IOW::<BedrockSingleStepConfig>(BEDROCK_IOC_MAGIC, 8);
 
 /// Ioctl number for GET_EXIT_STATS command - retrieve exit handler performance statistics.
 pub(crate) const BEDROCK_VM_GET_EXIT_STATS: u32 = _IOR::<BedrockExitStats>(BEDROCK_IOC_MAGIC, 9);

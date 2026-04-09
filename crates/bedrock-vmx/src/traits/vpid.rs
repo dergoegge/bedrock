@@ -10,7 +10,7 @@
 //!
 //! VPIDs are recycled when VMs are dropped using a bitmap to track in-use VPIDs.
 
-use core::sync::atomic::{AtomicU64, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 /// Bitmap tracking which VPIDs are in use.
 /// 65536 VPIDs / 64 bits per word = 1024 words = 8KB

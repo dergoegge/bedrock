@@ -13,8 +13,8 @@ use kernel::alloc::KBox;
 use kernel::bindings;
 
 use super::super::c_helpers::{
-    bedrock_copy_from_user, bedrock_remap_page, bedrock_remap_pages,
-    bedrock_remap_vmalloc_range, bedrock_vma_end, bedrock_vma_pgoff, bedrock_vma_start,
+    bedrock_copy_from_user, bedrock_remap_page, bedrock_remap_pages, bedrock_remap_vmalloc_range,
+    bedrock_vma_end, bedrock_vma_pgoff, bedrock_vma_start,
 };
 use super::super::page::{LogBuffer, PagePool, LOG_BUFFER_SIZE};
 use super::super::vmx::traits::GuestMemory;
@@ -217,12 +217,15 @@ unsafe extern "C" fn bedrock_vm_mmap(
             hpas[i] = hpa;
         }
 
-        let ret = unsafe {
-            bedrock_remap_pages(vma, hpas.as_ptr(), feedback_buffer.num_pages as i32)
-        };
+        let ret =
+            unsafe { bedrock_remap_pages(vma, hpas.as_ptr(), feedback_buffer.num_pages as i32) };
 
         if ret != 0 {
-            log_err!("mmap: feedback buffer {} remap failed with {}\n", buffer_index, ret);
+            log_err!(
+                "mmap: feedback buffer {} remap failed with {}\n",
+                buffer_index,
+                ret
+            );
         } else {
             log_info!(
                 "mmap: mapped feedback buffer {} for VM {} ({} pages)\n",
@@ -236,7 +239,10 @@ unsafe extern "C" fn bedrock_vm_mmap(
     } else if offset_bytes as usize == serial_tsc_offset {
         // Serial TSC metadata page mapping
         if requested_size as usize != 4096 {
-            log_err!("mmap: serial TSC page must be exactly 4096 bytes, got {}\n", requested_size);
+            log_err!(
+                "mmap: serial TSC page must be exactly 4096 bytes, got {}\n",
+                requested_size
+            );
             return -(bindings::EINVAL as i32);
         }
 
@@ -251,7 +257,11 @@ unsafe extern "C" fn bedrock_vm_mmap(
     } else if offset_bytes as usize == log_buffer_offset {
         // Log buffer mapping
         if requested_size as usize != LOG_BUFFER_SIZE {
-            log_err!("mmap: log buffer must be exactly {} bytes, got {}\n", LOG_BUFFER_SIZE, requested_size);
+            log_err!(
+                "mmap: log buffer must be exactly {} bytes, got {}\n",
+                LOG_BUFFER_SIZE,
+                requested_size
+            );
             return -(bindings::EINVAL as i32);
         }
 
@@ -276,7 +286,10 @@ unsafe extern "C" fn bedrock_vm_mmap(
     } else if offset_bytes as usize == serial_buffer_offset {
         // Serial buffer mapping
         if requested_size as usize != 4096 {
-            log_err!("mmap: serial buffer must be exactly 4096 bytes, got {}\n", requested_size);
+            log_err!(
+                "mmap: serial buffer must be exactly 4096 bytes, got {}\n",
+                requested_size
+            );
             return -(bindings::EINVAL as i32);
         }
 
@@ -354,7 +367,9 @@ unsafe extern "C" fn bedrock_vm_ioctl(
         BEDROCK_VM_GET_EXIT_STATS => handlers::handle_get_exit_stats(vm_file, arg),
         BEDROCK_VM_SET_STOP_TSC => handlers::handle_set_stop_tsc(vm_file, arg),
         BEDROCK_VM_GET_VM_ID => handlers::handle_get_vm_id(vm_file, arg),
-        BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO => handlers::handle_get_feedback_buffer_info(vm_file, arg),
+        BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO => {
+            handlers::handle_get_feedback_buffer_info(vm_file, arg)
+        }
         _ => -(bindings::ENOTTY as isize),
     }
 }
@@ -393,5 +408,3 @@ fn handle_set_input(vm_file: &mut BedrockVmFile, arg: usize) -> isize {
     log_info!("SET_INPUT: set {} bytes of serial input\n", len);
     0
 }
-
-

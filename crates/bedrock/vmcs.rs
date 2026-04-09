@@ -123,7 +123,10 @@ impl VirtualMachineControlStructure for RealVmcs {
             };
             log_err!(
                 "VMCLEAR failed: addr={:#x} CF={} ZF={} vm_err={}\n",
-                addr, cf, zf, vm_err
+                addr,
+                cf,
+                zf,
+                vm_err
             );
             Err("VMCLEAR failed")
         } else {
@@ -167,7 +170,10 @@ impl VirtualMachineControlStructure for RealVmcs {
             };
             log_err!(
                 "VMPTRLD failed: addr={:#x} CF={} ZF={} vm_err={}\n",
-                addr, cf, zf, vm_err
+                addr,
+                cf,
+                zf,
+                vm_err
             );
             Err("VMPTRLD failed")
         } else {

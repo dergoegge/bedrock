@@ -16,15 +16,15 @@ use super::super::c_helpers::{
     bedrock_kva_to_phys, bedrock_remap_page, bedrock_remap_pages, bedrock_remap_vmalloc_range,
     bedrock_vma_end, bedrock_vma_pgoff, bedrock_vma_start,
 };
-use super::super::vmx::traits::Page;
-use super::super::vmx::{CowPageMap, ParentVm};
-use crate::memory::GuestPhysAddr;
 use super::super::page::{LogBuffer, PagePool, LOG_BUFFER_SIZE};
+use super::super::vmx::traits::Page;
 use super::super::vmx::ForkableVm;
+use super::super::vmx::{CowPageMap, ParentVm};
 use super::super::HANDLER;
 use super::core::BedrockForkedVmFile;
 use super::handlers::{self, VmFileOps};
 use super::structs::*;
+use crate::memory::GuestPhysAddr;
 
 /// Implement VmFileOps for BedrockForkedVmFile.
 impl VmFileOps for BedrockForkedVmFile {
@@ -207,10 +207,9 @@ unsafe extern "C" fn bedrock_forked_vm_mmap(
             let page_gpa = GuestPhysAddr::new(gpa);
 
             // Check if this page is in our COW map
-            if let Some(cow_page) = <CowPageMap<super::super::page::KernelPage>>::get(
-                &vm_file.vm.cow_pages,
-                page_gpa,
-            ) {
+            if let Some(cow_page) =
+                <CowPageMap<super::super::page::KernelPage>>::get(&vm_file.vm.cow_pages, page_gpa)
+            {
                 // Page is in COW map - use its physical address directly
                 hpas[i] = Page::physical_address(cow_page).as_u64();
             } else {
@@ -240,12 +239,15 @@ unsafe extern "C" fn bedrock_forked_vm_mmap(
             }
         }
 
-        let ret = unsafe {
-            bedrock_remap_pages(vma, hpas.as_ptr(), feedback_buffer.num_pages as i32)
-        };
+        let ret =
+            unsafe { bedrock_remap_pages(vma, hpas.as_ptr(), feedback_buffer.num_pages as i32) };
 
         if ret != 0 {
-            log_err!("mmap: feedback buffer {} remap failed with {}\n", buffer_index, ret);
+            log_err!(
+                "mmap: feedback buffer {} remap failed with {}\n",
+                buffer_index,
+                ret
+            );
         } else {
             log_info!(
                 "mmap: mapped feedback buffer {} for forked VM {} ({} pages)\n",
@@ -268,7 +270,10 @@ unsafe extern "C" fn bedrock_forked_vm_mmap(
     } else if offset_bytes == LOG_BUFFER_OFFSET {
         // Log buffer mapping
         if requested_size as usize != LOG_BUFFER_SIZE {
-            log_err!("mmap: log buffer must be exactly {} bytes\n", LOG_BUFFER_SIZE);
+            log_err!(
+                "mmap: log buffer must be exactly {} bytes\n",
+                LOG_BUFFER_SIZE
+            );
             return -(bindings::EINVAL as i32);
         }
 
@@ -327,7 +332,9 @@ unsafe extern "C" fn bedrock_forked_vm_ioctl(
         BEDROCK_VM_GET_EXIT_STATS => handlers::handle_get_exit_stats(vm_file, arg),
         BEDROCK_VM_SET_STOP_TSC => handlers::handle_set_stop_tsc(vm_file, arg),
         BEDROCK_VM_GET_VM_ID => handlers::handle_get_vm_id(vm_file, arg),
-        BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO => handlers::handle_get_feedback_buffer_info(vm_file, arg),
+        BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO => {
+            handlers::handle_get_feedback_buffer_info(vm_file, arg)
+        }
         _ => -(bindings::ENOTTY as isize),
     }
 }
