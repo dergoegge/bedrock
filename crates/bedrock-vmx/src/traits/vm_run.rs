@@ -263,7 +263,7 @@ where
         }
     }
 
-    loop {
+    let loop_result = loop {
         // Track total time in run loop (guest + exit handling)
         let loop_start_tsc = rdtsc();
 
@@ -336,18 +336,6 @@ where
         // Sync GPRs from VmxContext after exit
         ctx.sync_gprs_from_vmx_ctx();
 
-        // Save exit info for userspace before handling (VMCS is still active)
-        ctx.state_mut().last_exit_qualification = ctx
-            .state()
-            .vmcs
-            .read_natural(VmcsFieldNatural::ExitQualification)
-            .unwrap_or(0);
-        ctx.state_mut().last_guest_physical_addr = ctx
-            .state()
-            .vmcs
-            .read64(VmcsField64::GuestPhysicalAddr)
-            .unwrap_or(0);
-
         // Record VM exit overhead (time from VM exit to just before exit handler)
         let pre_handler_tsc = rdtsc();
         ctx.state_mut().exit_stats.vmexit_overhead_cycles +=
@@ -371,7 +359,7 @@ where
                 // 2. cond_resched() requires preemption enabled, which could migrate us
                 // Instead, return to userspace - the ioctl return path allows scheduling.
                 if kernel.need_resched() {
-                    return Ok(ExitReason::NeedResched);
+                    break Ok(ExitReason::NeedResched);
                 }
                 continue;
             }
@@ -385,7 +373,7 @@ where
                     loop_end_tsc.saturating_sub(loop_start_tsc);
 
                 // Exit requires userspace handling
-                return Ok(reason);
+                break Ok(reason);
             }
             ExitHandlerResult::Error(e) => {
                 // Record total run loop time even on error
@@ -394,8 +382,24 @@ where
                     loop_end_tsc.saturating_sub(loop_start_tsc);
 
                 // Fatal error
-                return Err(VmRunError::ExitHandler(e));
+                break Err(VmRunError::ExitHandler(e));
             }
         }
-    }
+    };
+
+    // Save exit info for userspace (VMCS is still loaded).
+    // Deferred to here to avoid 2 VMREAD per iteration — only needed on the
+    // final exit, not the millions of Continue iterations.
+    ctx.state_mut().last_exit_qualification = ctx
+        .state()
+        .vmcs
+        .read_natural(VmcsFieldNatural::ExitQualification)
+        .unwrap_or(0);
+    ctx.state_mut().last_guest_physical_addr = ctx
+        .state()
+        .vmcs
+        .read64(VmcsField64::GuestPhysicalAddr)
+        .unwrap_or(0);
+
+    loop_result
 }
