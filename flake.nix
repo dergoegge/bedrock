@@ -43,6 +43,11 @@
         inherit pkgs kernel rustToolchain;
       };
 
+      bedrockModuleClippy = import ./nix/module.nix {
+        inherit pkgs kernel rustToolchain;
+        clippy = true;
+      };
+
       # Guest kernel with determinism patches (runs under bedrock)
       guestKernel = import ./nix/guest-kernel.nix {
         inherit pkgs linux-src;
@@ -60,6 +65,7 @@
     {
       packages.${system} = {
         inherit kernel bedrockModule guestKernel guestInitrd podmanInitrd;
+        clippy-kernel = bedrockModuleClippy;
         bedrock-cli = userland.bedrock-cli;
         bedrock-determinism = userland.bedrock-determinism;
         default = userland.bedrock-cli;
@@ -140,6 +146,9 @@
       };
 
       checks.${system} = {
+
+        # Clippy for kernel module (runs clippy-driver instead of rustc)
+        clippy-kernel = bedrockModuleClippy;
 
         # Cargo tests (no KVM needed)
         cargo-test = pkgs.rustPlatform.buildRustPackage {

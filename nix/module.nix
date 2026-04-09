@@ -5,6 +5,7 @@
 { pkgs
 , kernel
 , rustToolchain
+, clippy ? false
 }:
 
 let
@@ -42,7 +43,8 @@ llvmPackages.stdenv.mkDerivation {
     cd crates/bedrock
     make \
       KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build \
-      LLVM=1
+      LLVM=1 \
+      ${pkgs.lib.optionalString clippy "CLIPPY=1"}
   '';
 
   installPhase = ''
