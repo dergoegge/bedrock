@@ -77,10 +77,7 @@ runner. The runner needs the same host requirements listed above.
 
 ## Podman Initrd
 
-The podman initrd (`nix build .#podmanInitrd`) uses `proot` to chroot into a
-Debian bookworm base image and `apt-get install` the same packages as the
-Docker-based build (`scripts/initrd-podman/Dockerfile`). It is a fixed-output
-derivation with a pinned hash.
-
-To update packages, set `outputHash = pkgs.lib.fakeHash;` in
-`nix/podman-initrd.nix`, rebuild to get the new hash, then pin it.
+The podman initrd (`nix build .#podmanInitrd`) is built entirely from nixpkgs
+packages (podman, crun, netavark, etc.). The Nix store closure is copied into
+the rootfs with FHS symlinks so the init script and containers find their tools.
+No Docker, proot, or apt involved — the build is fully reproducible.
