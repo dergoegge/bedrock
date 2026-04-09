@@ -10,26 +10,10 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::registers::{
-    ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, DebugRegisters, DescriptorTableRegisters, Efer,
-    ExtendedControlRegisters, Gdtr, Idtr, SegmentRegister, SegmentRegisters,
-};
-#[cfg(feature = "cargo")]
-use crate::registers::{
-    ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, DebugRegisters, DescriptorTableRegisters, Efer,
-    ExtendedControlRegisters, Gdtr, Idtr, SegmentRegister, SegmentRegisters,
-};
-
 use super::{
     InstructionCounter, VirtualMachineControlStructure, VmGetRegistersError, VmSetRegistersError,
     Vmx,
 };
-
-#[cfg(not(feature = "cargo"))]
-use super::super::vm_state::VmState;
-#[cfg(feature = "cargo")]
-use crate::vm_state::VmState;
 
 /// Set guest registers from the provided register structs.
 ///

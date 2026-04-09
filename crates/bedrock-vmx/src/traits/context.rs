@@ -10,22 +10,6 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::registers::{
-    ControlRegisters, DebugRegisters, DescriptorTableRegisters, ExtendedControlRegisters,
-    SegmentRegisters,
-};
-#[cfg(feature = "cargo")]
-use crate::registers::{
-    ControlRegisters, DebugRegisters, DescriptorTableRegisters, ExtendedControlRegisters,
-    SegmentRegisters,
-};
-
-#[cfg(not(feature = "cargo"))]
-use super::super::vm_state::VmState;
-#[cfg(feature = "cargo")]
-use crate::vm_state::VmState;
-
 use super::{
     CowAllocator, InstructionCounter, Kernel, Machine, Page, VirtualMachineControlStructure,
     VmGetRegistersError, VmRunError, VmRunner, VmSetRegistersError, Vmx,

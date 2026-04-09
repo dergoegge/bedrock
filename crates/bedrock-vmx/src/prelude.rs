@@ -31,22 +31,26 @@ pub use crate::host::HostState;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::registers::{
-    msr, xcr0, Cr4, CrAccess, Cstar, DescriptorTableAccess, Fmask, GeneralPurposeRegisters, Lstar,
-    MiscEnable, MsrAccess, MsrError, Star,
+    msr, xcr0, ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, CrAccess, CrError, Cstar,
+    DebugRegisters, DescriptorTableAccess, DescriptorTableRegisters, Efer, ExtendedControlRegisters,
+    Fmask, Gdtr, GeneralPurposeRegisters, Idtr, Lstar, MiscEnable, MsrAccess, MsrError,
+    SegmentRegister, SegmentRegisters, Star,
 };
 #[cfg(feature = "cargo")]
 pub use crate::registers::{
-    msr, xcr0, Cr4, CrAccess, Cstar, DescriptorTableAccess, Fmask, GeneralPurposeRegisters, Lstar,
-    MiscEnable, MsrAccess, MsrError, Star,
+    msr, xcr0, ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, CrAccess, CrError, Cstar,
+    DebugRegisters, DescriptorTableAccess, DescriptorTableRegisters, Efer, ExtendedControlRegisters,
+    Fmask, Gdtr, GeneralPurposeRegisters, Idtr, Lstar, MiscEnable, MsrAccess, MsrError,
+    SegmentRegister, SegmentRegisters, Star,
 };
 
 // =============================================================================
 // Memory address types
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
-pub use crate::memory::{GuestPhysAddr, HostPhysAddr};
+pub use crate::memory::{GuestPhysAddr, HostPhysAddr, VirtAddr};
 #[cfg(feature = "cargo")]
-pub use memory::{GuestPhysAddr, HostPhysAddr};
+pub use memory::{GuestPhysAddr, HostPhysAddr, VirtAddr};
 
 // =============================================================================
 // Device state for emulation
@@ -69,15 +73,16 @@ pub use crate::devices::{
 pub use super::traits::{
     allocate_vpid, cpu_based, deallocate_vpid, secondary_exec, vm_entry, vm_exit, CowAllocator,
     DeviceStates, GuestMemory, GuestMsrState, InstructionCounter, IrqGuard, Kernel, Machine,
-    MemoryError, Page, ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmcsGuard,
-    VmcsReadError, VmcsSetupError, VmcsWriteError, Vmx, VmxContext, VmxCpu,
+    MemoryError, Page, ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmEntryError,
+    VmcsGuard, VmcsReadError, VmcsSetupError, VmcsWriteError, Vmx, VmxContext, VmxCpu,
+    VmxInitError,
 };
 #[cfg(feature = "cargo")]
 pub use crate::traits::{
     allocate_vpid, cpu_based, deallocate_vpid, secondary_exec, vm_entry, vm_exit, CowAllocator,
     DeviceStates, GuestMemory, GuestMsrState, InstructionCounter, IrqGuard, Kernel, Machine,
-    MemoryError, Page, ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmcsReadError,
-    VmcsSetupError, VmcsWriteError, Vmx, VmxContext, VmxCpu,
+    MemoryError, Page, ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmEntryError,
+    VmcsReadError, VmcsSetupError, VmcsWriteError, Vmx, VmxContext, VmxCpu, VmxInitError,
 };
 
 // =============================================================================
@@ -92,9 +97,15 @@ pub use bedrock_ept::{EptMemoryType, EptPageTable, EptPermissions, FrameAllocato
 // Exit handling
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
-pub use super::exits::{ExitError, ExitHandlerResult, ExitReason};
+pub use super::exits::{
+    handle_exit, inject_pending_interrupt, update_mtf_state, ExitError, ExitHandlerResult,
+    ExitReason,
+};
 #[cfg(feature = "cargo")]
-pub use crate::exits::{ExitError, ExitHandlerResult, ExitReason};
+pub use crate::exits::{
+    handle_exit, inject_pending_interrupt, update_mtf_state, ExitError, ExitHandlerResult,
+    ExitReason,
+};
 
 // =============================================================================
 // Logging
@@ -161,3 +172,11 @@ pub use crate::vm_state::{
 pub use super::timing::rdtsc;
 #[cfg(feature = "cargo")]
 pub use crate::timing::rdtsc;
+
+// =============================================================================
+// Platform compatibility (allocation helpers)
+// =============================================================================
+#[cfg(not(feature = "cargo"))]
+pub use super::compat::{heap_box, heap_vec_push, heap_vec_with_capacity, HeapBox, HeapVec, VmallocBox};
+#[cfg(feature = "cargo")]
+pub use crate::compat::{heap_box, heap_vec_push, heap_vec_with_capacity, HeapBox, HeapVec, VmallocBox};

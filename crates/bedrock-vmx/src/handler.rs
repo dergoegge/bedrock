@@ -7,22 +7,11 @@
 //! the handler maintains a list of all VMs for administration purposes.
 
 #[cfg(not(feature = "cargo"))]
-use super::traits::{Vmx, VmxInitError};
+use super::prelude::*;
 #[cfg(feature = "cargo")]
-use crate::{Vmx, VmxInitError};
+use crate::prelude::*;
 
 use core::ptr::NonNull;
-
-// Use kernel KVec in kernel, alloc Vec in userspace tests
-#[cfg(not(feature = "cargo"))]
-use kernel::alloc::KVec;
-#[cfg(not(feature = "cargo"))]
-use kernel::prelude::GFP_KERNEL;
-
-#[cfg(feature = "cargo")]
-extern crate alloc;
-#[cfg(feature = "cargo")]
-use alloc::vec::Vec;
 
 /// Opaque VM reference for tracking in the handler.
 ///
@@ -86,10 +75,7 @@ impl VmEntry {
 pub struct BedrockHandler<'a, X: Vmx, const MAX_VMS: usize = 64> {
     /// Weak references to all active VMs (not owned).
     /// These are raw pointers to VM file structures with their IDs.
-    #[cfg(not(feature = "cargo"))]
-    vm_list: KVec<VmEntry>,
-    #[cfg(feature = "cargo")]
-    vm_list: Vec<VmEntry>,
+    vm_list: HeapVec<VmEntry>,
     /// Next VM ID to assign (monotonically increasing).
     next_vm_id: u64,
     /// Marker for VMX type and lifetime.
@@ -107,11 +93,8 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
     pub fn new(machine: &'a X::M) -> Result<Self, VmxInitError> {
         X::initialize(machine)?;
 
-        #[cfg(not(feature = "cargo"))]
-        let vm_list = KVec::with_capacity(MAX_VMS, GFP_KERNEL)
+        let vm_list = heap_vec_with_capacity(MAX_VMS)
             .map_err(|_| VmxInitError::MemoryAllocationFailed)?;
-        #[cfg(feature = "cargo")]
-        let vm_list = Vec::with_capacity(MAX_VMS);
 
         Ok(Self {
             vm_list,
@@ -155,14 +138,7 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
     pub fn add_vm<T>(&mut self, vm: NonNull<T>, vm_id: u64) {
         let vm_ref = VmRef::new(vm);
         let entry = VmEntry::new(vm_id, vm_ref);
-        #[cfg(not(feature = "cargo"))]
-        {
-            let _ = self.vm_list.push(entry, GFP_KERNEL);
-        }
-        #[cfg(feature = "cargo")]
-        {
-            self.vm_list.push(entry);
-        }
+        heap_vec_push(&mut self.vm_list, entry);
     }
 
     /// Remove a VM from the tracking list.

@@ -3,11 +3,6 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::VmcsSetupError;
-#[cfg(feature = "cargo")]
-use crate::traits::VmcsSetupError;
-
 use super::{
     allocate_vpid, cpu_based, errors::VmcsAllocError, pin_based, secondary_exec, HostPhysAddr,
     Kernel, Machine, Page, VmcsReadResult, VmcsWriteResult, Vmx, VmxCpu,

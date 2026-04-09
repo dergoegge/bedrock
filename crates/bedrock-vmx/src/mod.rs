@@ -7,6 +7,7 @@
 // Some items are only used in tests or by external crates, not the kernel.
 #![allow(unreachable_pub, dead_code, unused_imports, unused_assignments)]
 
+mod compat;
 mod cow;
 mod decoder;
 mod devices;

@@ -10,16 +10,6 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::exits::{handle_exit, inject_pending_interrupt, update_mtf_state};
-#[cfg(feature = "cargo")]
-use crate::exits::{handle_exit, inject_pending_interrupt, update_mtf_state};
-
-#[cfg(not(feature = "cargo"))]
-use super::super::vm_state::VmState;
-#[cfg(feature = "cargo")]
-use crate::vm_state::VmState;
-
 use super::{
     CowAllocator, InstructionCounter, IrqGuard, Kernel, Machine, Page,
     ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmRunError, VmRunner, VmxContext,

@@ -7,6 +7,7 @@
 
 #![allow(unreachable_pub, dead_code)]
 
+mod compat;
 mod entry;
 mod table;
 mod traits;

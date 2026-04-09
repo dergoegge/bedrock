@@ -5,12 +5,10 @@
 //! This trait extends the basic FrameAllocator with the ability to allocate
 //! Page objects, which is needed for COW handling in forked VMs.
 
-use super::Page;
-
 #[cfg(not(feature = "cargo"))]
-use crate::ept::FrameAllocator;
+use super::super::prelude::*;
 #[cfg(feature = "cargo")]
-use bedrock_ept::FrameAllocator;
+use crate::prelude::*;
 
 /// Allocator trait for copy-on-write pages.
 ///

@@ -10,9 +10,9 @@
 //! 3. **Exit to userspace**: Return to userspace on each RDRAND.
 
 #[cfg(not(feature = "cargo"))]
-use super::super::logging::{StateHash, Xxh64Hasher};
+use super::super::prelude::*;
 #[cfg(feature = "cargo")]
-use crate::logging::{StateHash, Xxh64Hasher};
+use crate::prelude::*;
 
 /// RDRAND emulation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

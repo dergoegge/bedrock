@@ -3,11 +3,6 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::registers::Cr0;
-#[cfg(feature = "cargo")]
-use crate::registers::Cr0;
-
 use super::{
     cpu_based, pin_based, secondary_exec, vm_entry, vm_exit, HostPhysAddr, InveptError,
     InvvpidError, Kernel, Machine, Page, VmxBasic, VmxCapabilities,
