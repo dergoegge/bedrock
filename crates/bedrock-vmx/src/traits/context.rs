@@ -121,6 +121,7 @@ pub trait VmContext {
     /// Set guest registers from the provided register structs.
     ///
     /// The VMCS must be loaded before calling this method.
+    #[allow(clippy::too_many_arguments)]
     fn set_registers(
         &mut self,
         gprs: &GeneralPurposeRegisters,
@@ -146,6 +147,7 @@ pub trait VmContext {
     }
 
     /// Set guest registers with VMCS guarded load/clear.
+    #[allow(clippy::too_many_arguments)]
     fn set_registers_guarded(
         &mut self,
         gprs: &GeneralPurposeRegisters,

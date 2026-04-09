@@ -26,6 +26,7 @@ mod cargo_impl {
     }
 
     /// Create a vector with pre-allocated capacity.
+    #[allow(clippy::result_unit_err)]
     pub fn heap_vec_with_capacity<T>(cap: usize) -> Result<HeapVec<T>, ()> {
         Ok(alloc::vec::Vec::with_capacity(cap))
     }
@@ -56,6 +57,7 @@ mod kernel_impl {
     }
 
     /// Create a vector with pre-allocated capacity.
+    #[allow(clippy::result_unit_err)]
     pub fn heap_vec_with_capacity<T>(cap: usize) -> Result<HeapVec<T>, ()> {
         kernel::alloc::KVec::with_capacity(cap, kernel::alloc::flags::GFP_KERNEL).map_err(|_| ())
     }

@@ -349,13 +349,13 @@ mod tests {
 
     #[test]
     fn test_forkedvm_creation() {
-        let (mut root, mut allocator) = create_test_root_vm();
+        let (root, mut allocator) = create_test_root_vm();
         let machine = MockMachine;
         let exit_handler_rip = 0xDEAD_BEEF_0000;
 
         // Fork from root
         let forked = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -386,7 +386,7 @@ mod tests {
 
         // Fork from root
         let forked = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -415,7 +415,7 @@ mod tests {
 
         // Fork from root
         let mut forked = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -454,7 +454,7 @@ mod tests {
 
         // Fork from root
         let mut forked = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -499,7 +499,7 @@ mod tests {
 
         // First fork
         let mut fork1 = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -518,7 +518,7 @@ mod tests {
 
         // Nested fork from fork1
         let fork2 = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut fork1,
+            &fork1,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -556,7 +556,7 @@ mod tests {
 
         // First fork - only modifies page1
         let mut fork1 = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -574,7 +574,7 @@ mod tests {
 
         // Nested fork
         let fork2 = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut fork1,
+            &fork1,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_forkedvm_children_count_tracking() {
-        let (mut root, mut allocator) = create_test_root_vm();
+        let (root, mut allocator) = create_test_root_vm();
         let machine = MockMachine;
         let exit_handler_rip = 0xDEAD_BEEF_0000;
 
@@ -606,7 +606,7 @@ mod tests {
 
         // Create first fork
         let fork1 = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -617,7 +617,7 @@ mod tests {
 
         // Create second fork
         let fork2 = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -648,7 +648,7 @@ mod tests {
 
         // Fork
         let forked = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,
@@ -672,7 +672,7 @@ mod tests {
 
         // Fork
         let mut forked = ForkedVm::<MockVmcs, MockPage, NullInstructionCounter>::new(
-            &mut root,
+            &root,
             &machine,
             &mut allocator,
             exit_handler_rip,

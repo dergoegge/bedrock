@@ -316,7 +316,7 @@ pub trait VmxCpu {
     /// The requested controls are:
     /// - Pin-based: NMI exiting
     /// - CPU-based: HLT exiting, MSR bitmaps, secondary controls, unconditional I/O,
-    ///              CR3 load/store exiting, CR8 load/store exiting
+    ///   CR3 load/store exiting, CR8 load/store exiting
     /// - Secondary: EPT, unrestricted guest
     /// - VM-exit: 64-bit host, save/load EFER
     /// - VM-entry: IA-32e mode, load EFER
@@ -430,7 +430,7 @@ pub trait VmxCpu {
         let mut feature_control = machine
             .msr_access()
             .read_msr(msr::IA32_FEATURE_CONTROL)
-            .map_err(|e| VmxConfigureFeatureControlError::MsrReadFailed(e))?;
+            .map_err(VmxConfigureFeatureControlError::MsrReadFailed)?;
 
         const FEAT_CTL_LOCKED: u64 = 1 << 0;
         const FEAT_CTL_VMX_ENABLED_OUTSIDE_SMX: u64 = 1 << 2;
@@ -454,7 +454,7 @@ pub trait VmxCpu {
         machine
             .msr_access()
             .write_msr(msr::IA32_FEATURE_CONTROL, feature_control)
-            .map_err(|e| VmxConfigureFeatureControlError::MsrWriteFailed(e))?;
+            .map_err(VmxConfigureFeatureControlError::MsrWriteFailed)?;
 
         Ok(())
     }
@@ -463,9 +463,8 @@ pub trait VmxCpu {
         if self.is_vmxon() {
             log_debug!("executing VMXOFF\n");
             // Execute VMXOFF instruction
-            M::V::vmxoff().map_err(|e| {
+            M::V::vmxoff().inspect_err(|&e| {
                 log_err!("VMXOFF failed: {:?}\n", e);
-                e
             })?;
 
             // Disable VMX in CR4 (updates kernel's CR4 shadow too)

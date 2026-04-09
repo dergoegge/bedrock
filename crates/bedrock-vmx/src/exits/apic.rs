@@ -87,12 +87,8 @@ pub fn handle_apic_access<C: VmContext>(
         // APIC read - get value from emulated APIC and write to destination register
         let value = read_apic_register(&ctx.state().devices.apic, offset);
 
-        // Write to the destination register (zero-extended for 32-bit)
-        let reg_value = if decoded.operand_size <= 4 {
-            value as u64
-        } else {
-            value as u64 // APIC registers are 32-bit
-        };
+        // Write to the destination register (zero-extended, APIC registers are 32-bit)
+        let reg_value = value as u64;
 
         set_gpr_value(&mut ctx.state_mut().gprs, decoded.register, reg_value);
 
@@ -117,10 +113,10 @@ pub fn handle_apic_access<C: VmContext>(
 
     // Advance RIP past the instruction
     let new_rip = rip + decoded.length as u64;
-    if let Err(_) = ctx
+    if ctx
         .state()
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRip, new_rip)
+        .write_natural(VmcsFieldNatural::GuestRip, new_rip).is_err()
     {
         return ExitHandlerResult::Error(ExitError::Fatal("Failed to advance RIP for APIC access"));
     }
@@ -318,7 +314,7 @@ pub fn handle_ioapic_access<C: VmContext>(
 
     // Read instruction bytes from guest memory
     let mut instr_bytes = [0u8; 15];
-    if let Err(_) = ctx.read_guest_memory(instr_gpa, &mut instr_bytes) {
+    if ctx.read_guest_memory(instr_gpa, &mut instr_bytes).is_err() {
         return ExitHandlerResult::Error(ExitError::Fatal("Failed to read I/O APIC instruction"));
     }
 
@@ -375,10 +371,10 @@ pub fn handle_ioapic_access<C: VmContext>(
 
     // Advance RIP past the instruction
     let new_rip = rip + decoded.length as u64;
-    if let Err(_) = ctx
+    if ctx
         .state()
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRip, new_rip)
+        .write_natural(VmcsFieldNatural::GuestRip, new_rip).is_err()
     {
         return ExitHandlerResult::Error(ExitError::Fatal(
             "Failed to advance RIP for I/O APIC access",
@@ -401,7 +397,7 @@ fn read_ioapic_register(ioapic: &IoApicState) -> u32 {
             // Arbitration ID (bits 27:24) - use same as ID
             ioapic.id
         }
-        _ if reg >= IOAPIC_REG_REDTBL_BASE && reg < IOAPIC_REG_REDTBL_BASE + 48 => {
+        _ if (IOAPIC_REG_REDTBL_BASE..IOAPIC_REG_REDTBL_BASE + 48).contains(&reg) => {
             // Redirection table entry (24 entries, 2 registers each)
             let entry_idx = ((reg - IOAPIC_REG_REDTBL_BASE) / 2) as usize;
             let is_high = (reg - IOAPIC_REG_REDTBL_BASE) % 2 == 1;
@@ -435,7 +431,7 @@ fn write_ioapic_register<C: VmContext>(ctx: &mut C, value: u32) {
         IOAPIC_REG_VER | IOAPIC_REG_ARB => {
             // Read-only registers
         }
-        _ if reg >= IOAPIC_REG_REDTBL_BASE && reg < IOAPIC_REG_REDTBL_BASE + 48 => {
+        _ if (IOAPIC_REG_REDTBL_BASE..IOAPIC_REG_REDTBL_BASE + 48).contains(&reg) => {
             // Redirection table entry
             let entry_idx = ((reg - IOAPIC_REG_REDTBL_BASE) / 2) as usize;
             let is_high = (reg - IOAPIC_REG_REDTBL_BASE) % 2 == 1;

@@ -477,7 +477,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
         }
 
         let feedback_buffer = match &self.state.feedback_buffers[index] {
-            Some(fb) => fb.clone(),
+            Some(fb) => *fb,
             None => return,
         };
 

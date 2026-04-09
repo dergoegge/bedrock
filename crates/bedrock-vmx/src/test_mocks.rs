@@ -253,6 +253,12 @@ pub struct MockVmxCpu {
     capabilities: VmxCapabilities,
 }
 
+impl Default for MockVmxCpu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockVmxCpu {
     pub const fn new() -> Self {
         Self {

@@ -169,7 +169,8 @@ pub fn setup_mptable(memory: &mut [u8]) {
 
     // === I/O Interrupt Source Entries (8 bytes each) - Entry type 3 ===
     // Route ISA IRQs to I/O APIC - IRQ4 for COM1 serial port
-    for irq in [4u8] {
+    {
+        let irq = 4u8;
         memory[offset] = 3; // Entry type: I/O interrupt source
         offset += 1;
         memory[offset] = 0; // Interrupt type: mp_INT (normal interrupt)

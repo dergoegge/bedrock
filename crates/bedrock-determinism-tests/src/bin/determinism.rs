@@ -392,12 +392,12 @@ impl ProgressDisplay {
         let div_str = if self.divergent > 0 {
             format!("\x1b[31m{} divergent\x1b[0m", format_count(self.divergent))
         } else {
-            format!("\x1b[90m0 divergent\x1b[0m")
+            "\x1b[90m0 divergent\x1b[0m".to_string()
         };
         let fail_str = if self.failed > 0 {
             format!("\x1b[31m{} failed\x1b[0m", format_count(self.failed))
         } else {
-            format!("\x1b[90m0 failed\x1b[0m")
+            "\x1b[90m0 failed\x1b[0m".to_string()
         };
         eprintln!(
             "\x1b[K  {}  \x1b[90m|\x1b[0m  {}  \x1b[90m|\x1b[0m  {}",
@@ -475,12 +475,12 @@ fn print_final_summary(
         if divergent > 0 {
             format!("\x1b[31m{} divergent\x1b[0m", format_count(divergent))
         } else {
-            format!("\x1b[90m0 divergent\x1b[0m")
+            "\x1b[90m0 divergent\x1b[0m".to_string()
         },
         if failed > 0 {
             format!("\x1b[31m{} failed\x1b[0m", format_count(failed))
         } else {
-            format!("\x1b[90m0 failed\x1b[0m")
+            "\x1b[90m0 failed\x1b[0m".to_string()
         },
     );
 
@@ -624,7 +624,7 @@ fn write_config_file(args: &Args, vmlinux: &str, cli_path: &Path) -> io::Result<
     Ok(())
 }
 
-fn run_sequential(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process::ExitCode {
+fn run_sequential(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::ExitCode {
     let mut reference_result: Option<RunResult> = None;
     let mut summary_lines: Vec<String> = Vec::new();
     let mut ok_count = 0;
@@ -797,7 +797,7 @@ fn compare_and_record(
     }
 }
 
-fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process::ExitCode {
+fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::ExitCode {
     let (tx, rx) = mpsc::channel::<Result<RunResult, String>>();
 
     // Spawn worker threads
@@ -827,7 +827,7 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
             active_threads += 1;
 
             let tx = tx.clone();
-            let cli_path = cli_path.clone();
+            let cli_path = cli_path.to_path_buf();
             let workdir = args.workdir.clone();
 
             // Clone args for the thread
@@ -879,30 +879,9 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
             match result {
                 Ok(run_result) => {
                     let run_time = run_result.wall_time;
-                    if reference.is_none() {
-                        if run_result.run_num == 1 {
-                            // Run 1 is always the reference
-                            summary_lines.push("Run 001: REFERENCE".to_string());
-                            reference = Some(run_result);
-                            // Process any results that arrived before run 1
-                            for buffered in pending.drain(..) {
-                                compare_and_record(
-                                    reference.as_ref().unwrap(),
-                                    buffered,
-                                    multi_entry,
-                                    &args.workdir,
-                                    &mut ok_count,
-                                    &mut divergences,
-                                    &mut summary_lines,
-                                );
-                            }
-                        } else {
-                            // Buffer until run 1 arrives
-                            pending.push(run_result);
-                        }
-                    } else {
+                    if let Some(ref_result) = &reference {
                         compare_and_record(
-                            reference.as_ref().unwrap(),
+                            ref_result,
                             run_result,
                             multi_entry,
                             &args.workdir,
@@ -910,6 +889,25 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
                             &mut divergences,
                             &mut summary_lines,
                         );
+                    } else if run_result.run_num == 1 {
+                        // Run 1 is always the reference
+                        summary_lines.push("Run 001: REFERENCE".to_string());
+                        reference = Some(run_result);
+                        // Process any results that arrived before run 1
+                        for buffered in pending.drain(..) {
+                            compare_and_record(
+                                reference.as_ref().unwrap(),
+                                buffered,
+                                multi_entry,
+                                &args.workdir,
+                                &mut ok_count,
+                                &mut divergences,
+                                &mut summary_lines,
+                            );
+                        }
+                    } else {
+                        // Buffer until run 1 arrives
+                        pending.push(run_result);
                     }
                     progress.update(ok_count, divergences.len(), failures.len(), Some(run_time));
                 }
@@ -1001,7 +999,7 @@ fn write_summary_file(args: &Args, summary_lines: &[String], divergence: Option<
     }
 }
 
-fn run_vm(args: &Args, vmlinux: &str, cli_path: &PathBuf, run_num: usize) -> Result<RunResult, String> {
+fn run_vm(args: &Args, vmlinux: &str, cli_path: &Path, run_num: usize) -> Result<RunResult, String> {
     run_vm_inner(
         vmlinux,
         args.initramfs.as_deref(),
@@ -1025,6 +1023,7 @@ fn run_vm(args: &Args, vmlinux: &str, cli_path: &PathBuf, run_num: usize) -> Res
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_vm_inner(
     vmlinux: &str,
     initramfs: Option<&str>,
@@ -1040,8 +1039,8 @@ fn run_vm_inner(
     log_all_exits: bool,
     no_memory_hash: bool,
     intercept_pf: bool,
-    cli_path: &PathBuf,
-    workdir: &PathBuf,
+    cli_path: &Path,
+    workdir: &Path,
     run_num: usize,
 ) -> Result<RunResult, String> {
     // Create run directory: run-001 (reference) goes in workdir, others use a

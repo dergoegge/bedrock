@@ -332,7 +332,7 @@ impl Vmx for MockVmx {
 const MAX_TEST_CPUS: usize = 8;
 
 /// Per-CPU state for multi-CPU simulation.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct MultiCpuState {
     /// Whether VMX is enabled (VMXON executed).
     vmxon: bool,
@@ -343,20 +343,8 @@ struct MultiCpuState {
     /// CR4 value for this CPU.
     cr4: u64,
     /// Feature control MSR value for this CPU.
+    /// Feature control starts unlocked with VMX disabled.
     feature_control: u64,
-}
-
-impl Default for MultiCpuState {
-    fn default() -> Self {
-        Self {
-            vmxon: false,
-            capabilities: VmxCapabilities::default(),
-            has_vmxon_region: false,
-            cr4: 0,
-            // Feature control starts unlocked with VMX disabled
-            feature_control: 0,
-        }
-    }
 }
 
 /// Configuration for MSR behavior in tests.
@@ -673,7 +661,7 @@ impl VmxCpu for MultiCpuVmxCpu {
     fn capabilities(&self) -> &VmxCapabilities {
         // Leak to get 'static lifetime - acceptable in tests
         Box::leak(Box::new(with_state(|s| {
-            s.cpu_states[s.current_cpu].capabilities.clone()
+            s.cpu_states[s.current_cpu].capabilities
         })))
     }
 
@@ -809,7 +797,7 @@ fn setup_multi_cpu_test_with_errors(num_cpus: usize, error_config: ErrorConfig) 
 
 /// Get a snapshot of the CPU states for verification.
 fn get_cpu_states() -> [MultiCpuState; MAX_TEST_CPUS] {
-    with_state(|s| s.cpu_states.clone())
+    with_state(|s| s.cpu_states)
 }
 
 // =============================================================================
@@ -908,8 +896,7 @@ fn test_handler_new_initializes_vmx_on_all_cpus() {
 
     // Verify VMX was initialized on all CPUs
     let cpu_states = get_cpu_states();
-    for cpu_id in 0..4 {
-        let state = &cpu_states[cpu_id];
+    for (cpu_id, state) in cpu_states.iter().enumerate().take(4) {
         assert!(state.vmxon, "CPU {} should have VMXON enabled", cpu_id);
         assert!(
             state.has_vmxon_region,

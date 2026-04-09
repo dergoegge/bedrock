@@ -33,6 +33,7 @@ impl VpidBitmap {
     const fn new() -> Self {
         // Use a const block to initialize the array
         // VPID 0 is reserved, so we set bit 0 in word 0 to mark it as "in use"
+        #[allow(clippy::declare_interior_mutable_const)]
         const INIT_WORD: AtomicU64 = AtomicU64::new(0);
         Self {
             words: [INIT_WORD; BITMAP_WORDS],

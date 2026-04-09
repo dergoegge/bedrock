@@ -28,12 +28,12 @@ pub fn handle_ept_violation<C: VmContext, A: CowAllocator<C::CowPage>>(
         .unwrap_or(0);
 
     // Check if this is a local APIC access
-    if guest_phys >= APIC_BASE && guest_phys < APIC_BASE + APIC_SIZE {
+    if (APIC_BASE..APIC_BASE + APIC_SIZE).contains(&guest_phys) {
         return handle_apic_access(ctx, guest_phys, qual);
     }
 
     // Check if this is an I/O APIC access
-    if guest_phys >= IOAPIC_BASE && guest_phys < IOAPIC_BASE + IOAPIC_SIZE {
+    if (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&guest_phys) {
         return handle_ioapic_access(ctx, guest_phys, qual);
     }
 
@@ -129,10 +129,10 @@ pub fn translate_gva_range_to_gpas<C: VmContext>(
     }
 
     // Translate each page
-    for i in 0..num_pages {
+    for (i, gpa_slot) in gpas.iter_mut().enumerate().take(num_pages) {
         let page_gva = start_page + (i as u64 * PAGE_SIZE);
         let gpa = translate_gva_to_gpa(ctx, page_gva)?;
-        gpas[i] = gpa.as_u64() & !0xFFF; // Store page-aligned GPA
+        *gpa_slot = gpa.as_u64() & !0xFFF; // Store page-aligned GPA
     }
 
     Ok(num_pages)

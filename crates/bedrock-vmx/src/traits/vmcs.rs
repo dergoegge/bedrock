@@ -352,19 +352,19 @@ pub trait VirtualMachineControlStructure: Sized {
         msr_bitmap_addr: Option<HostPhysAddr>,
         host: &HostState,
     ) -> Result<(), VmcsSetupError> {
-        self.clear().map_err(|e| VmcsSetupError::ClearError(e))?;
+        self.clear().map_err(VmcsSetupError::ClearError)?;
 
         {
-            let _guard = VmcsGuard::new(self).map_err(|e| VmcsSetupError::GuardError(e))?;
+            let _guard = VmcsGuard::new(self).map_err(VmcsSetupError::GuardError)?;
 
             self.setup_host_state(host)
-                .map_err(|e| VmcsSetupError::HostStateError(e))?;
+                .map_err(VmcsSetupError::HostStateError)?;
 
             self.setup_controls(msr_bitmap_addr)?;
 
             // Configure EPTP (Extended Page Table Pointer)
             self.write64(VmcsField64::EptPointer, ept_pointer)
-                .map_err(|e| VmcsSetupError::EptPointerError(e))?;
+                .map_err(VmcsSetupError::EptPointerError)?;
             log_info!("Configured EPTP=0x{:x}", ept_pointer);
         }
 

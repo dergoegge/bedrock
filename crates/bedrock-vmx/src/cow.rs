@@ -60,6 +60,7 @@ mod cargo_impl {
         ///
         /// The GPA will be page-aligned before insertion.
         /// Returns Ok(()) on success.
+        #[allow(clippy::result_unit_err)]
         pub fn insert(&mut self, gpa: GuestPhysAddr, page: P) -> Result<(), ()> {
             let page_aligned = gpa.as_u64() & !0xFFF;
             if self.pages.insert(page_aligned, page).is_none() {
@@ -155,6 +156,7 @@ mod kernel_impl {
         ///
         /// The GPA will be page-aligned before insertion.
         /// Returns Ok(()) on success, Err(()) if allocation fails.
+        #[allow(clippy::result_unit_err)]
         pub fn insert(&mut self, gpa: GuestPhysAddr, page: P) -> Result<(), ()> {
             let page_aligned = gpa.as_u64() & !0xFFF;
             // try_create_and_insert allocates a node and inserts it

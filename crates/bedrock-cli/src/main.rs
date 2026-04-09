@@ -300,8 +300,7 @@ fn run() -> io::Result<()> {
 
     // Create VM
     let mut vm: Vm = builder.build().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             format!(
                 "Failed to create VM: {}\nMake sure the bedrock kernel module is loaded:\n  sudo insmod bedrock.ko\nDevice path: {}",
                 e, BEDROCK_DEVICE_PATH
@@ -525,7 +524,7 @@ fn run() -> io::Result<()> {
                 if let Ok(regs) = vm.get_regs() {
                     log::error!("  RIP: {:#018x}, RFLAGS: {:#018x}", regs.rip, regs.rflags);
                 }
-                return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                return Err(io::Error::other(e.to_string()));
             }
         }
     }
@@ -594,5 +593,5 @@ fn read_file(path: &str) -> io::Result<Vec<u8>> {
 }
 
 fn io_error<E: std::fmt::Display>(e: E) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e.to_string())
 }

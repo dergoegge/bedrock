@@ -19,6 +19,7 @@ use super::{
 ///
 /// This writes all guest registers to the VMCS and updates the GPR state.
 /// The VMCS must be loaded before calling this method.
+#[allow(clippy::too_many_arguments)]
 pub fn set_registers<V, I>(
     state: &mut VmState<V, I>,
     gprs: &GeneralPurposeRegisters,
@@ -55,9 +56,9 @@ where
     {
         let vcpu = <V::M as super::Machine>::V::current_vcpu();
         let fixed_cr0 =
-            <V::M as super::Machine>::V::fix_cr0(&control_regs.cr0, &vcpu.capabilities());
+            <V::M as super::Machine>::V::fix_cr0(&control_regs.cr0, vcpu.capabilities());
         let fixed_cr4 =
-            <V::M as super::Machine>::V::fix_cr4(&control_regs.cr4, &vcpu.capabilities());
+            <V::M as super::Machine>::V::fix_cr4(&control_regs.cr4, vcpu.capabilities());
         state
             .vmcs
             .write_natural(VmcsFieldNatural::GuestCr0, fixed_cr0.bits())

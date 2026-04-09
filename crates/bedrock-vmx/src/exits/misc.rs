@@ -293,7 +293,7 @@ pub fn dump_triple_fault_state<C: VmContext>(ctx: &C) {
 pub fn handle_xsetbv<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     let gprs = ctx.state().gprs;
     let xcr_num = gprs.rcx as u32;
-    let value = ((gprs.rdx as u64) << 32) | (gprs.rax as u64 & 0xFFFFFFFF);
+    let value = (gprs.rdx << 32) | (gprs.rax & 0xFFFFFFFF);
 
     // Only XCR0 is currently defined
     if xcr_num != 0 {

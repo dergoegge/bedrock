@@ -139,7 +139,7 @@ fn msr_bitmap_clear_intercept(bitmap: *mut u8, msr: u32) {
     let (read_base, write_base, index) = if msr < 0x2000 {
         // Low MSR range: 0x00000000-0x00001FFF
         (0usize, 2048usize, msr as usize)
-    } else if msr >= 0xC000_0000 && msr < 0xC000_2000 {
+    } else if (0xC000_0000..0xC000_2000).contains(&msr) {
         // High MSR range: 0xC0000000-0xC0001FFF
         (1024usize, 3072usize, (msr - 0xC000_0000) as usize)
     } else {
@@ -487,7 +487,7 @@ pub const SERIAL_METADATA_MAGIC: u16 = 0xCAFE;
 /// The TSC page layout is:
 /// - Bytes 0-3: header (u16 line_count, u16 magic)
 /// - Bytes 4-4095: line entries (10 bytes each)
-/// Available: (4096 - 4) / 10 = 409 entries
+///   Available: (4096 - 4) / 10 = 409 entries
 pub const SERIAL_MAX_LINE_ENTRIES: usize = 409;
 
 /// Offset where line TSC entries start in the TSC page (after header).
@@ -754,7 +754,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         );
 
         vmcs.setup(ept.eptp(), Some(msr_bitmap.physical_address()), &host_state)
-            .map_err(|e| VmStateError::VmcsSetup(e))?;
+            .map_err(VmStateError::VmcsSetup)?;
 
         // Read back the allocated VPID (0 if VPID is disabled)
         let vpid = vmcs.read16(VmcsField16::VirtualProcessorId).unwrap_or(0);
