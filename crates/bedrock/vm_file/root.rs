@@ -13,7 +13,7 @@ use kernel::alloc::KBox;
 use kernel::bindings;
 
 use super::super::c_helpers::{
-    bedrock_copy_from_user, bedrock_copy_to_user, bedrock_remap_page, bedrock_remap_pages,
+    bedrock_copy_from_user, bedrock_remap_page, bedrock_remap_pages,
     bedrock_remap_vmalloc_range, bedrock_vma_end, bedrock_vma_pgoff, bedrock_vma_start,
 };
 use super::super::page::{LogBuffer, PagePool, LOG_BUFFER_SIZE};
@@ -64,17 +64,13 @@ impl VmFileOps for BedrockVmFile {
         self.vm.children_count()
     }
 
-    fn is_root_vm(&self) -> bool {
-        true
-    }
-
     fn vm_and_pool(&mut self) -> (&mut Self::Vm, &mut PagePool) {
         (&mut self.vm, &mut self.page_pool)
     }
 }
 
 /// File operations for bedrock-vm anonymous inodes.
-pub static BEDROCK_VM_FOPS: SyncFileOps = {
+pub(crate) static BEDROCK_VM_FOPS: SyncFileOps = {
     let mut fops: bindings::file_operations = unsafe { SyncFileOps::zeroed() };
     fops.owner = core::ptr::null_mut();
     fops.release = Some(bedrock_vm_release);

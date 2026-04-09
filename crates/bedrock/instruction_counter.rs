@@ -26,7 +26,7 @@ pub(crate) struct LinuxInstructionCounter {
     /// NULL if creation failed.
     event: *mut PerfEvent,
     /// Whether counting is currently enabled.
-    enabled: bool,
+    _enabled: bool,
 }
 
 // SAFETY: LinuxInstructionCounter is tied to a specific CPU via its perf_event.
@@ -54,7 +54,7 @@ impl LinuxInstructionCounter {
 
         Some(Self {
             event,
-            enabled: false,
+            _enabled: false,
         })
     }
 
@@ -64,7 +64,7 @@ impl LinuxInstructionCounter {
     pub(crate) fn null() -> Self {
         Self {
             event: core::ptr::null_mut(),
-            enabled: false,
+            _enabled: false,
         }
     }
 
@@ -101,22 +101,22 @@ impl InstructionCounter for LinuxInstructionCounter {
     }
 
     fn enable(&mut self) {
-        if !self.enabled && self.is_valid() {
+        if !self._enabled && self.is_valid() {
             // SAFETY: event is a valid perf_event pointer.
             unsafe {
                 bedrock_perf_event_enable(self.event);
             }
-            self.enabled = true;
+            self._enabled = true;
         }
     }
 
     fn disable(&mut self) {
-        if self.enabled && self.is_valid() {
+        if self._enabled && self.is_valid() {
             // SAFETY: event is a valid perf_event pointer.
             unsafe {
                 bedrock_perf_event_disable(self.event);
             }
-            self.enabled = false;
+            self._enabled = false;
         }
     }
 

@@ -107,7 +107,6 @@ impl Drop for KernelGuestMemory {
 /// This is a 1MB vmalloc'd buffer that can be mapped to userspace.
 pub(crate) struct LogBuffer {
     ptr: *mut u8,
-    size: usize,
 }
 
 /// Log buffer size: 1MB (256 pages).
@@ -132,7 +131,6 @@ impl LogBuffer {
         log_info!("LogBuffer::new: allocated at {:p}\n", ptr);
         Some(Self {
             ptr: ptr as *mut u8,
-            size: LOG_BUFFER_SIZE,
         })
     }
 
@@ -141,10 +139,6 @@ impl LogBuffer {
         self.ptr
     }
 
-    /// Get the size of the buffer.
-    pub(crate) fn size(&self) -> usize {
-        self.size
-    }
 }
 
 impl Drop for LogBuffer {
@@ -223,7 +217,4 @@ impl PagePool {
         self.pages.pop()
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.pages.len()
-    }
 }

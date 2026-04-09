@@ -36,7 +36,7 @@ use super::root::BEDROCK_VM_FOPS;
 /// On success, returns the new file descriptor (positive integer).
 /// On failure, returns a negative error code and the VM is freed.
 #[inline(never)]
-pub fn create_vm_fd(
+pub(crate) fn create_vm_fd(
     vm: RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>,
     vm_id: u64,
 ) -> Result<i32, kernel::error::Error> {
@@ -95,7 +95,7 @@ pub fn create_vm_fd(
 /// On success, returns the new file descriptor (positive integer).
 /// On failure, returns a negative error code and the ForkedVm is freed.
 #[inline(never)]
-pub fn create_forked_vm_fd(
+pub(crate) fn create_forked_vm_fd(
     vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
     vm_id: u64,
 ) -> Result<i32, kernel::error::Error> {

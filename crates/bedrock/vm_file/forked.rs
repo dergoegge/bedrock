@@ -66,17 +66,13 @@ impl VmFileOps for BedrockForkedVmFile {
         self.vm.children_count()
     }
 
-    fn is_root_vm(&self) -> bool {
-        false
-    }
-
     fn vm_and_pool(&mut self) -> (&mut Self::Vm, &mut PagePool) {
         (&mut self.vm, &mut self.page_pool)
     }
 }
 
 /// File operations for bedrock forked-vm anonymous inodes.
-pub static BEDROCK_FORKED_VM_FOPS: SyncFileOps = {
+pub(crate) static BEDROCK_FORKED_VM_FOPS: SyncFileOps = {
     let mut fops: bindings::file_operations = unsafe { SyncFileOps::zeroed() };
     fops.owner = core::ptr::null_mut();
     fops.release = Some(bedrock_forked_vm_release);

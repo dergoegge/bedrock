@@ -5,7 +5,7 @@
 // In kernel builds, pub items in private modules trigger warnings.
 // These items are pub for the cargo build's public API.
 // Some items are only used in tests or by external crates, not the kernel.
-#![allow(unreachable_pub)]
+#![allow(unreachable_pub, dead_code, unused_imports, unused_assignments)]
 
 mod cow;
 mod decoder;

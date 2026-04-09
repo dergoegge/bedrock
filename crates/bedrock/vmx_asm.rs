@@ -56,7 +56,7 @@ pub(crate) trait VmxContextExt {
 
 impl VmxContextExt for VmxContext {
     fn exit_handler_addr() -> u64 {
-        vmx_exit_handler as u64
+        vmx_exit_handler as *const () as u64
     }
 
     unsafe fn run(&mut self) -> i32 {
