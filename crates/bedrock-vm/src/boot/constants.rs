@@ -76,6 +76,6 @@ pub mod mptable {
 /// Default values for boot configuration.
 pub mod defaults {
     pub const MEMORY_MB: usize = 1024;
-    pub const CMDLINE: &str = "console=ttyS0,keep earlyprintk=serial nopti nokaslr break";
+    pub const CMDLINE: &str = "console=ttyS0,keep earlyprintk=serial nopti nokaslr mitigations=off break";
     pub const RDRAND_SEED: u64 = 0x12345678_deadbeef;
 }
