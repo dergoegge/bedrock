@@ -592,7 +592,7 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// XCR0 mask for XSAVE/XRSTOR operations.
     /// Set to xcr0::SSE_AVX (0x7) for SSE+AVX, 0 to disable XSAVE.
     pub xcr0_mask: u64,
-    /// Last exit qualification (saved during VM exit for userspace).
+    /// Last exit qualification (saved *after* the run loop prior to userspace exit).
     pub last_exit_qualification: u64,
     /// Last guest physical address (saved during VM exit for EPT violations).
     pub last_guest_physical_addr: u64,

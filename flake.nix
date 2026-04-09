@@ -1,0 +1,197 @@
+{
+  description = "Bedrock hypervisor - deterministic x86-64 hypervisor as a Linux kernel module";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    # Linux 6.18 source -- pin to the exact tag
+    linux-src = {
+      url = "github:torvalds/linux/v6.18";
+      flake = false;
+    };
+  };
+
+  outputs = { self, nixpkgs, rust-overlay, linux-src }:
+    let
+      system = "x86_64-linux";
+
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ rust-overlay.overlays.default ];
+      };
+
+      # Rust toolchain for kernel builds.
+      # Must match what kernel.org recommends for Linux 6.18:
+      # https://mirrors.edge.kernel.org/pub/tools/llvm/rust/
+      # Includes rust-src (needed by kernel's Rust build for core/alloc).
+      rustToolchain = pkgs.rust-bin.stable."1.94.0".default.override {
+        extensions = [ "rust-src" "rustfmt" "clippy" ];
+      };
+
+      # -- Derivations --
+
+      kernel = import ./nix/kernel.nix {
+        inherit pkgs linux-src rustToolchain;
+      };
+
+      bedrockModule = import ./nix/module.nix {
+        inherit pkgs kernel rustToolchain;
+      };
+
+      # Guest kernel with determinism patches (runs under bedrock)
+      guestKernel = import ./nix/guest-kernel.nix {
+        inherit pkgs linux-src;
+      };
+
+      # Trivial guest initramfs (boots and immediately shuts down via VMCALL)
+      guestInitrd = import ./nix/trivial-initrd.nix { inherit pkgs; };
+
+      # Full podman initramfs (Bitcoin Core nodes + miner workload)
+      podmanInitrd = import ./nix/podman-initrd.nix { inherit pkgs; };
+
+      userland = import ./nix/userland.nix { inherit pkgs; };
+
+    in
+    {
+      packages.${system} = {
+        inherit kernel bedrockModule guestKernel guestInitrd podmanInitrd;
+        bedrock-cli = userland.bedrock-cli;
+        bedrock-determinism = userland.bedrock-determinism;
+        default = userland.bedrock-cli;
+      };
+
+      apps.${system} = {
+        # Dev VM: nix run .#vm
+        vm = {
+          type = "app";
+          program = let
+            vm = import ./nix/vm.nix {
+              inherit pkgs bedrockModule;
+              bedrockKernel = kernel;
+              bedrockCli = userland.bedrock-cli;
+              bedrockDeterminism = userland.bedrock-determinism;
+            };
+          in "${vm}/bin/run-bedrock-vm-vm";
+        };
+
+        # Integration tests in NixOS VM: nix run .#test
+        test = let
+          testDriver = import ./nix/tests.nix {
+            inherit pkgs bedrockModule guestKernel guestInitrd podmanInitrd;
+            bedrockKernel = kernel;
+            bedrockCli = userland.bedrock-cli;
+            bedrockDeterminism = userland.bedrock-determinism;
+          };
+        in {
+          type = "app";
+          program = "${testDriver}/bin/nixos-test-driver";
+        };
+
+        # Native test (no NixOS VM, runs directly on host): nix run .#test-native
+        # Requires: host kernel 6.18 with bedrock module loaded, /dev/bedrock present
+        test-native = let
+          script = pkgs.writeShellScript "bedrock-test-native" ''
+            set -e
+            export PATH=${pkgs.lib.makeBinPath [ userland.bedrock-cli userland.bedrock-determinism pkgs.coreutils ]}:$PATH
+
+            echo "=== Bedrock native test ==="
+
+            # Check module is loaded
+            if ! lsmod | grep -q bedrock; then
+              echo "ERROR: bedrock module not loaded. Run: insmod bedrock.ko"
+              exit 1
+            fi
+
+            if [ ! -c /dev/bedrock ]; then
+              echo "ERROR: /dev/bedrock not found"
+              exit 1
+            fi
+
+            echo "Module loaded, /dev/bedrock present"
+
+            # Boot trivial guest
+            echo "--- Booting trivial guest (VMCALL shutdown) ---"
+            bedrock-cli -m 3072 \
+              -i ${guestInitrd} \
+              ${guestKernel}/vmlinux \
+              --stop-at-vt 10.0 \
+              --timeout 300
+
+            echo "--- Trivial guest: OK ---"
+
+            # Boot podman guest
+            echo "--- Booting podman guest ---"
+            bedrock-cli -m 3072 \
+              -i ${podmanInitrd} \
+              ${guestKernel}/vmlinux
+
+            echo "--- Podman guest: OK ---"
+            echo "=== All tests passed ==="
+          '';
+        in {
+          type = "app";
+          program = "${script}";
+        };
+      };
+
+      checks.${system} = {
+
+        # Cargo tests (no KVM needed)
+        cargo-test = pkgs.rustPlatform.buildRustPackage {
+          pname = "bedrock-cargo-tests";
+          version = "0.1.0";
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type:
+              let baseName = builtins.baseNameOf path; in
+              !(baseName == "target" || baseName == ".git" ||
+                baseName == ".claude" || baseName == "nix" ||
+                (type == "directory" && baseName == "bedrock" &&
+                 builtins.match ".*/crates/bedrock$" path != null));
+          };
+          cargoLock.lockFile = ./Cargo.lock;
+          # Just run tests, don't install anything
+          doCheck = true;
+          doInstall = false;
+          installPhase = "mkdir -p $out";
+        };
+      };
+
+      # Dev shell: nix develop
+      devShells.${system}.default = pkgs.mkShell {
+        nativeBuildInputs = [
+          rustToolchain
+          pkgs.rust-analyzer
+          pkgs.rust-bindgen
+          pkgs.llvmPackages.clang
+          pkgs.llvmPackages.llvm
+          pkgs.llvmPackages.lld
+          pkgs.just
+          pkgs.gnumake
+        ];
+
+        # Point KDIR at the Nix-built kernel so `just build` works
+        KDIR = "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build";
+
+        # Help clang find the right includes
+        LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+        shellHook = ''
+          echo "bedrock dev shell"
+          echo "  KDIR=$KDIR"
+          echo "  rustc: $(rustc --version)"
+          echo "  clang: $(clang --version | head -1)"
+          echo ""
+          echo "Commands:"
+          echo "  just test    - Run cargo tests"
+          echo "  just build   - Build kernel module (against Nix kernel)"
+          echo "  just vm      - Boot dev VM"
+        '';
+      };
+    };
+}

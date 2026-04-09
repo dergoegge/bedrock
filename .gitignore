@@ -1,5 +1,4 @@
 target/
-Cargo.lock
 
 # Environment configuration
 .env
@@ -10,3 +9,7 @@ freebsd-src/
 *.log
 
 __pycache__/
+
+# Nix
+result
+result-*
