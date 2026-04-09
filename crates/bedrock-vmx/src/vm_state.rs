@@ -344,14 +344,6 @@ impl CowStats {
         }
     }
 
-    /// Get the percentage of faults that were adjacent (within 1 page).
-    pub fn adjacent_1_percent(&self) -> f64 {
-        if self.total_faults > 0 {
-            (self.adjacent_1 as f64 / self.total_faults as f64) * 100.0
-        } else {
-            0.0
-        }
-    }
 }
 
 /// Collection of exit statistics for all exit types.
