@@ -317,11 +317,15 @@ where
         // Briefly enable interrupts to service pending host interrupts (timer
         // ticks, IPIs) between VM exits. Host XCR0 is already restored by the
         // assembly exit handler, so AVX-512 is safe to use in interrupt context.
+        let pre_irq_tsc = rdtsc();
         {
             let _irq_window = ReverseIrqGuard::new(machine.kernel());
             let count = ctx.state().instruction_counter.read();
             ctx.state_mut().last_instruction_count = count;
         }
+        let post_irq_tsc = rdtsc();
+        ctx.state_mut().exit_stats.irq_window_cycles +=
+            post_irq_tsc.saturating_sub(pre_irq_tsc);
 
         if let Err(ref e) = run_result {
             // VM entry failed - try to read error info from VMCS
@@ -336,10 +340,12 @@ where
         // Sync GPRs from VmxContext after exit
         ctx.sync_gprs_from_vmx_ctx();
 
-        // Record VM exit overhead (time from VM exit to just before exit handler)
+        // Record VM exit overhead excluding IRQ window time
         let pre_handler_tsc = rdtsc();
+        let total_exit_overhead = pre_handler_tsc.saturating_sub(post_exit_tsc);
+        let irq_window = post_irq_tsc.saturating_sub(pre_irq_tsc);
         ctx.state_mut().exit_stats.vmexit_overhead_cycles +=
-            pre_handler_tsc.saturating_sub(post_exit_tsc);
+            total_exit_overhead.saturating_sub(irq_window);
 
         // Handle the VM exit
         let kernel = machine.kernel();

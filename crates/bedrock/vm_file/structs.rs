@@ -214,8 +214,10 @@ pub struct BedrockExitStats {
     pub guest_cycles: u64,
     /// Cycles spent in run loop setup before VM entry.
     pub vmentry_overhead_cycles: u64,
-    /// Cycles spent after VM exit before exit handler.
+    /// Cycles spent after VM exit before exit handler (excluding IRQ window).
     pub vmexit_overhead_cycles: u64,
+    /// Cycles spent in the IRQ window between VM exits.
+    pub irq_window_cycles: u64,
 }
 
 /// VM exit information returned to userspace from RUN ioctl.

@@ -479,6 +479,7 @@ pub fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
         guest_cycles: stats.guest_cycles,
         vmentry_overhead_cycles: stats.vmentry_overhead_cycles,
         vmexit_overhead_cycles: stats.vmexit_overhead_cycles,
+        irq_window_cycles: stats.irq_window_cycles,
     };
 
     let not_copied = unsafe {

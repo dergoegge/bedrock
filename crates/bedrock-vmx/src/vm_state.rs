@@ -407,8 +407,12 @@ pub struct AllExitStats {
     pub guest_cycles: u64,
     /// Cycles spent in run loop setup before VM entry (VMCS updates, GPR sync).
     pub vmentry_overhead_cycles: u64,
-    /// Cycles spent after VM exit before exit handler (perf read, GPR sync, etc).
+    /// Cycles spent after VM exit before exit handler (GPR sync, LFENCE, etc),
+    /// excluding time in the IRQ window.
     pub vmexit_overhead_cycles: u64,
+    /// Cycles spent in the IRQ window between VM exits (host interrupt servicing
+    /// and perf counter read).
+    pub irq_window_cycles: u64,
     /// Copy-on-write page allocation statistics.
     pub cow: CowStats,
 }
