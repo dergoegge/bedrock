@@ -143,23 +143,6 @@ pub fn exception_name(vector: u8) -> &'static str {
     }
 }
 
-/// Read TSC.
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-fn rdtsc() -> u64 {
-    unsafe {
-        let lo: u32;
-        let hi: u32;
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, preserves_flags));
-        ((hi as u64) << 32) | (lo as u64)
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[allow(dead_code)]
-fn rdtsc() -> u64 {
-    0
-}
 
 // =============================================================================
 // Triple Fault Debugging
