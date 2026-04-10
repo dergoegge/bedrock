@@ -183,10 +183,6 @@ extern "C" {
     /// Returns non-zero if TIF_NEED_RESCHED is set.
     pub(crate) fn bedrock_need_resched() -> core::ffi::c_int;
 
-    /// Get the current real time as a Unix timestamp (seconds since 1970).
-    #[allow(dead_code)]
-    pub(crate) fn bedrock_get_real_time_secs() -> u64;
-
     /// Register bedrock's perf guest callbacks.
     /// Call this during module initialization.
     pub(crate) fn bedrock_register_perf_callbacks();
@@ -202,19 +198,6 @@ extern "C" {
     /// Mark that we've exited guest mode on the current CPU.
     /// Call this just after VM exit (with preemption still disabled).
     pub(crate) fn bedrock_clear_guest_state();
-
-    /// Mark current task as running a virtual CPU (sets PF_VCPU flag).
-    ///
-    /// When PF_VCPU is set, the kernel's time accounting automatically treats
-    /// CPU time as guest time. This makes htop show guest time in orange.
-    /// Call this before VM entry.
-    #[allow(dead_code)]
-    pub(crate) fn bedrock_enter_guest();
-
-    /// Clear VCPU flag when leaving guest mode.
-    /// Call this after VM exit.
-    #[allow(dead_code)]
-    pub(crate) fn bedrock_leave_guest();
 
     /// Create an instruction counter for guest instruction counting.
     ///
