@@ -8,8 +8,8 @@
 // Re-export all register types from bedrock-vmx
 pub use bedrock_vmx::registers::{
     ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, DebugRegisters, DescriptorTableRegisters, Efer,
-    ExtendedControlRegisters, Gdtr, GeneralPurposeRegisters, Idtr, SegmentAccessRights,
-    SegmentRegister, SegmentRegisters, SegmentSelector,
+    ExtendedControlRegisters, Gdtr, GeneralPurposeRegisters, GuestRegisters, Idtr,
+    SegmentAccessRights, SegmentRegister, SegmentRegisters, SegmentSelector,
 };
 
 // Local constants for control registers used by userspace tools.

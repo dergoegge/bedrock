@@ -13,6 +13,10 @@ mod xcr;
 
 // Re-export all public types
 
+// Aggregate register state
+pub use guest::GuestRegisters;
+mod guest;
+
 // General-purpose registers
 pub use gpr::GeneralPurposeRegisters;
 

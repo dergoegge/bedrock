@@ -118,62 +118,21 @@ pub trait VmContext {
 
     // ========== Register Methods ==========
 
-    /// Set guest registers from the provided register structs.
+    /// Set guest registers from the provided register struct.
     ///
     /// The VMCS must be loaded before calling this method.
-    #[allow(clippy::too_many_arguments)]
-    fn set_registers(
-        &mut self,
-        gprs: &GeneralPurposeRegisters,
-        control_regs: &ControlRegisters,
-        debug_regs: &DebugRegisters,
-        segment_regs: &SegmentRegisters,
-        descriptor_tables: &DescriptorTableRegisters,
-        extended_control_regs: &ExtendedControlRegisters,
-        rip: u64,
-        rflags: u64,
-    ) -> Result<(), VmSetRegistersError> {
-        set_registers(
-            self.state_mut(),
-            gprs,
-            control_regs,
-            debug_regs,
-            segment_regs,
-            descriptor_tables,
-            extended_control_regs,
-            rip,
-            rflags,
-        )
+    fn set_registers(&mut self, regs: &GuestRegisters) -> Result<(), VmSetRegistersError> {
+        set_registers(self.state_mut(), regs)
     }
 
     /// Set guest registers with VMCS guarded load/clear.
-    #[allow(clippy::too_many_arguments)]
-    fn set_registers_guarded(
-        &mut self,
-        gprs: &GeneralPurposeRegisters,
-        control_regs: &ControlRegisters,
-        debug_regs: &DebugRegisters,
-        segment_regs: &SegmentRegisters,
-        descriptor_tables: &DescriptorTableRegisters,
-        extended_control_regs: &ExtendedControlRegisters,
-        rip: u64,
-        rflags: u64,
-    ) -> Result<(), VmSetRegistersError> {
+    fn set_registers_guarded(&mut self, regs: &GuestRegisters) -> Result<(), VmSetRegistersError> {
         self.state()
             .vmcs
             .load()
             .map_err(VmSetRegistersError::VmcsGuard)?;
 
-        let result = self.set_registers(
-            gprs,
-            control_regs,
-            debug_regs,
-            segment_regs,
-            descriptor_tables,
-            extended_control_regs,
-            rip,
-            rflags,
-        );
+        let result = self.set_registers(regs);
 
         self.state()
             .vmcs
@@ -186,42 +145,12 @@ pub trait VmContext {
     /// Get all guest registers from VMCS and GPR state.
     ///
     /// The VMCS must be loaded before calling this method.
-    #[allow(clippy::type_complexity)]
-    fn get_registers(
-        &self,
-    ) -> Result<
-        (
-            GeneralPurposeRegisters,
-            ControlRegisters,
-            DebugRegisters,
-            SegmentRegisters,
-            DescriptorTableRegisters,
-            ExtendedControlRegisters,
-            u64, // rip
-            u64, // rflags
-        ),
-        VmGetRegistersError,
-    > {
+    fn get_registers(&self) -> Result<GuestRegisters, VmGetRegistersError> {
         get_registers(self.state())
     }
 
     /// Get all guest registers with VMCS guarded load/clear.
-    #[allow(clippy::type_complexity)]
-    fn get_registers_guarded(
-        &self,
-    ) -> Result<
-        (
-            GeneralPurposeRegisters,
-            ControlRegisters,
-            DebugRegisters,
-            SegmentRegisters,
-            DescriptorTableRegisters,
-            ExtendedControlRegisters,
-            u64, // rip
-            u64, // rflags
-        ),
-        VmGetRegistersError,
-    > {
+    fn get_registers_guarded(&self) -> Result<GuestRegisters, VmGetRegistersError> {
         self.state()
             .vmcs
             .load()

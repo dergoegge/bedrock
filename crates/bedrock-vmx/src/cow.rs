@@ -8,6 +8,10 @@
 //! In cargo builds, uses `alloc::collections::BTreeMap`.
 //! In kernel builds, uses `kernel::rbtree::RBTree`.
 
+/// Error returned when inserting a COW page fails (e.g., allocation failure).
+#[derive(Debug, Clone, Copy)]
+pub struct CowInsertError;
+
 // ============================================================================
 // Cargo build: Use alloc::collections::BTreeMap
 // ============================================================================
@@ -59,9 +63,7 @@ mod cargo_impl {
         /// Insert a new COW page for the given GPA.
         ///
         /// The GPA will be page-aligned before insertion.
-        /// Returns Ok(()) on success.
-        #[allow(clippy::result_unit_err)]
-        pub fn insert(&mut self, gpa: GuestPhysAddr, page: P) -> Result<(), ()> {
+        pub fn insert(&mut self, gpa: GuestPhysAddr, page: P) -> Result<(), super::CowInsertError> {
             let page_aligned = gpa.as_u64() & !0xFFF;
             if self.pages.insert(page_aligned, page).is_none() {
                 self.count += 1;
@@ -155,9 +157,8 @@ mod kernel_impl {
         /// Insert a new COW page for the given GPA.
         ///
         /// The GPA will be page-aligned before insertion.
-        /// Returns Ok(()) on success, Err(()) if allocation fails.
-        #[allow(clippy::result_unit_err)]
-        pub fn insert(&mut self, gpa: GuestPhysAddr, page: P) -> Result<(), ()> {
+        /// Returns `Err` if allocation fails.
+        pub fn insert(&mut self, gpa: GuestPhysAddr, page: P) -> Result<(), super::CowInsertError> {
             let page_aligned = gpa.as_u64() & !0xFFF;
             // try_create_and_insert allocates a node and inserts it
             match self
@@ -168,7 +169,7 @@ mod kernel_impl {
                     self.count += 1;
                     Ok(())
                 }
-                Err(_) => Err(()),
+                Err(_) => Err(super::CowInsertError),
             }
         }
 

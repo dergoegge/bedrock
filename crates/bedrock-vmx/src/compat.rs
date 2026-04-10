@@ -6,6 +6,10 @@
 //! different allocation APIs between cargo (userspace) and kernel builds.
 //! All cfg gates for allocation are isolated here.
 
+/// Error returned when heap allocation fails.
+#[derive(Debug, Clone, Copy)]
+pub struct AllocError;
+
 #[cfg(feature = "cargo")]
 mod cargo_impl {
     extern crate alloc;
@@ -26,8 +30,7 @@ mod cargo_impl {
     }
 
     /// Create a vector with pre-allocated capacity.
-    #[allow(clippy::result_unit_err)]
-    pub fn heap_vec_with_capacity<T>(cap: usize) -> Result<HeapVec<T>, ()> {
+    pub fn heap_vec_with_capacity<T>(cap: usize) -> Result<HeapVec<T>, super::AllocError> {
         Ok(alloc::vec::Vec::with_capacity(cap))
     }
 
@@ -57,9 +60,9 @@ mod kernel_impl {
     }
 
     /// Create a vector with pre-allocated capacity.
-    #[allow(clippy::result_unit_err)]
-    pub fn heap_vec_with_capacity<T>(cap: usize) -> Result<HeapVec<T>, ()> {
-        kernel::alloc::KVec::with_capacity(cap, kernel::alloc::flags::GFP_KERNEL).map_err(|_| ())
+    pub fn heap_vec_with_capacity<T>(cap: usize) -> Result<HeapVec<T>, super::AllocError> {
+        kernel::alloc::KVec::with_capacity(cap, kernel::alloc::flags::GFP_KERNEL)
+            .map_err(|_| super::AllocError)
     }
 
     /// Push a value onto a vector.
