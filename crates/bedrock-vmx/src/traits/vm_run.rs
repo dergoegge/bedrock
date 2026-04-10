@@ -12,7 +12,7 @@ use crate::prelude::*;
 
 use super::{
     CowAllocator, InstructionCounter, IrqGuard, Kernel, Machine, Page, ReverseIrqGuard,
-    VirtualMachineControlStructure, VmContext, VmRunError, VmRunner, VmxContext,
+    VirtualMachineControlStructure, VmContext, VmRunError, VmRunner,
 };
 
 // ========== GPR Sync Methods ==========
@@ -217,7 +217,7 @@ where
 
     // HOST_RSP points to VmxContext which is at a fixed address for the
     // duration of the run loop.
-    let host_rsp = (&mut ctx.state_mut().vmx_ctx as *mut VmxContext) as u64;
+    let host_rsp = core::ptr::from_mut(&mut ctx.state_mut().vmx_ctx) as u64;
     ctx.state()
         .vmcs
         .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
@@ -271,11 +271,12 @@ where
         let msr = machine.msr_access();
         let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, ctx.state().kernel_gs_base);
 
-        // Enter the guest
-        // SAFETY: Caller guarantees VMCS is properly configured
+        // Enter the guest.
         // We need to split the borrow here to get mutable access to vmx_ctx
-        // while keeping immutable access to vmcs
+        // while keeping immutable access to vmcs.
         let state = ctx.state_mut();
+        // SAFETY: Caller guarantees VMCS is properly configured and loaded,
+        // interrupts are disabled, and preemption cannot migrate us.
         let run_result = unsafe { runner.run(&mut state.vmx_ctx, &state.vmcs) };
 
         // Save guest KERNEL_GS_BASE immediately after VM exit, before any IRQ
@@ -297,6 +298,8 @@ where
         // Vol 2A LFENCE description). This is sufficient for RDPMC which needs prior
         // instructions to have retired so their counter updates are visible.
         // CPUID would also work but causes an L0 VM exit in nested virt (~2000 cycles).
+        // SAFETY: LFENCE is a safe serializing instruction that ensures all prior
+        // instructions have retired before RDPMC reads the performance counter.
         #[cfg(not(feature = "cargo"))]
         unsafe {
             core::arch::asm!("lfence", options(preserves_flags, nostack));

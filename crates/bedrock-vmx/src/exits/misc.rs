@@ -29,6 +29,8 @@ pub fn handle_exception_nmi<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         // Invoke the host's NMI handler via software interrupt.
         // In kernel builds, this calls the actual NMI handler.
         // In cargo builds (tests), this is a no-op since NMIs won't actually occur.
+        // SAFETY: INT 2 invokes the host NMI handler to service the NMI that
+        // triggered a VM exit. This is necessary for host watchdog and system stability.
         #[cfg(all(target_arch = "x86_64", not(feature = "cargo")))]
         unsafe {
             core::arch::asm!("int $2", options(nomem, nostack));

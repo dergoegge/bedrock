@@ -38,6 +38,8 @@ impl<Frame> EptPageTable<Frame> {
 
         // Zero out the PML4 table
         let pml4_virt = allocator.phys_to_virt(pml4_phys);
+        // SAFETY: pml4_virt points to a freshly allocated 4KB-aligned frame, and we
+        // zero the entire page to initialize the PML4 table entries.
         unsafe {
             core::ptr::write_bytes(pml4_virt, 0, 4096);
         }
@@ -71,25 +73,45 @@ impl<Frame> EptPageTable<Frame> {
         let guest_virt = VirtAddr::new(guest_phys.as_u64());
 
         // Walk the page table hierarchy
-        let pml4 = allocator.phys_to_virt(self.pml4_phys) as *const EptEntry;
+        let pml4 = allocator
+            .phys_to_virt(self.pml4_phys)
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pml4 points to a valid PML4 table and the index is masked to 0..511,
+        // so the resulting pointer is within the 4KB page.
         let pml4e = unsafe { &*pml4.add(guest_virt.pml4_index()) };
         if !pml4e.is_present() {
             return None;
         }
 
-        let pdpt = allocator.phys_to_virt(pml4e.addr()) as *const EptEntry;
+        let pdpt = allocator
+            .phys_to_virt(pml4e.addr())
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pdpt points to a valid PDPT table (pml4e is present) and the index
+        // is masked to 0..511, so the resulting pointer is within the 4KB page.
         let pdpte = unsafe { &*pdpt.add(guest_virt.pdpt_index()) };
         if !pdpte.is_present() {
             return None;
         }
 
-        let pd = allocator.phys_to_virt(pdpte.addr()) as *const EptEntry;
+        let pd = allocator
+            .phys_to_virt(pdpte.addr())
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pd points to a valid PD table (pdpte is present) and the index
+        // is masked to 0..511, so the resulting pointer is within the 4KB page.
         let pde = unsafe { &*pd.add(guest_virt.pd_index()) };
         if !pde.is_present() {
             return None;
         }
 
-        let pt = allocator.phys_to_virt(pde.addr()) as *const EptEntry;
+        let pt = allocator
+            .phys_to_virt(pde.addr())
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pt points to a valid PT table (pde is present) and the index
+        // is masked to 0..511, so the resulting pointer is within the 4KB page.
         let pte = unsafe { &*pt.add(guest_virt.pt_index()) };
         if !pte.is_present() {
             return None;
@@ -122,6 +144,8 @@ impl<Frame> EptPageTable<Frame> {
 
         // Set the final PT entry
         let pt_entry = self.get_entry_mut(allocator, pt_phys, guest_virt.pt_index());
+        // SAFETY: pt_entry points to a valid, aligned EptEntry within an allocated PT
+        // page, obtained via get_entry_mut which ensures the pointer is in bounds.
         unsafe {
             *pt_entry = EptEntry::page_entry_4k(host_phys, perms, mem_type);
         }
@@ -149,25 +173,42 @@ impl<Frame> EptPageTable<Frame> {
         let guest_virt = VirtAddr::new(guest_phys.as_u64());
 
         // Walk the page table hierarchy (all levels must exist)
-        let pml4 = allocator.phys_to_virt(self.pml4_phys) as *const EptEntry;
+        let pml4 = allocator
+            .phys_to_virt(self.pml4_phys)
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pml4 points to a valid PML4 table and the index is masked to 0..511,
+        // so the resulting pointer is within the 4KB page.
         let pml4e = unsafe { &*pml4.add(guest_virt.pml4_index()) };
         if !pml4e.is_present() {
             return Err(EptRemapError::NotMapped);
         }
 
-        let pdpt = allocator.phys_to_virt(pml4e.addr()) as *const EptEntry;
+        let pdpt = allocator
+            .phys_to_virt(pml4e.addr())
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pdpt points to a valid PDPT table (pml4e is present) and the index
+        // is masked to 0..511, so the resulting pointer is within the 4KB page.
         let pdpte = unsafe { &*pdpt.add(guest_virt.pdpt_index()) };
         if !pdpte.is_present() {
             return Err(EptRemapError::NotMapped);
         }
 
-        let pd = allocator.phys_to_virt(pdpte.addr()) as *const EptEntry;
+        let pd = allocator
+            .phys_to_virt(pdpte.addr())
+            .cast::<EptEntry>()
+            .cast_const();
+        // SAFETY: pd points to a valid PD table (pdpte is present) and the index
+        // is masked to 0..511, so the resulting pointer is within the 4KB page.
         let pde = unsafe { &*pd.add(guest_virt.pd_index()) };
         if !pde.is_present() {
             return Err(EptRemapError::NotMapped);
         }
 
-        let pt = allocator.phys_to_virt(pde.addr()) as *mut EptEntry;
+        let pt = allocator.phys_to_virt(pde.addr()).cast::<EptEntry>();
+        // SAFETY: pt points to a valid PT table (pde is present) and the index
+        // is masked to 0..511. We need a mutable reference to update the mapping.
         let pte = unsafe { &mut *pt.add(guest_virt.pt_index()) };
         if !pte.is_present() {
             return Err(EptRemapError::NotMapped);
@@ -185,7 +226,9 @@ impl<Frame> EptPageTable<Frame> {
         table_phys: HostPhysAddr,
         index: usize,
     ) -> *mut EptEntry {
-        let table_virt = allocator.phys_to_virt(table_phys) as *mut EptEntry;
+        let table_virt = allocator.phys_to_virt(table_phys).cast::<EptEntry>();
+        // SAFETY: table_virt points to a valid EPT table page and index is in 0..511,
+        // so the resulting pointer is within the allocated 4KB page.
         unsafe { table_virt.add(index) }
     }
 
@@ -206,6 +249,8 @@ impl<Frame> EptPageTable<Frame> {
         entry: *mut EptEntry,
         perms: EptPermissions,
     ) -> Result<HostPhysAddr, A::Error> {
+        // SAFETY: entry is a valid, aligned pointer to an EptEntry within an allocated
+        // EPT page, obtained from get_entry_mut.
         let current = unsafe { *entry };
 
         if current.is_present() {
@@ -217,11 +262,15 @@ impl<Frame> EptPageTable<Frame> {
 
             // Zero it out
             let table_virt = allocator.phys_to_virt(new_phys);
+            // SAFETY: table_virt points to a freshly allocated 4KB-aligned frame, and
+            // we zero the entire page to initialize all table entries.
             unsafe {
                 core::ptr::write_bytes(table_virt, 0, 4096);
             }
 
             // Set the entry to point to the new table
+            // SAFETY: entry is a valid, aligned, writable pointer to an EptEntry
+            // obtained from get_entry_mut. Writing the new table entry is safe.
             unsafe {
                 *entry = EptEntry::table_entry(new_phys, perms);
             }
@@ -256,17 +305,24 @@ impl<Frame> EptPageTable<Frame> {
         let new_pml4_frame = allocator.allocate_frame()?;
         let new_pml4_phys = A::frame_phys_addr(&new_pml4_frame);
         let new_pml4_virt = allocator.phys_to_virt(new_pml4_phys);
+        // SAFETY: new_pml4_virt points to a freshly allocated 4KB-aligned frame, and
+        // we zero the entire page to initialize all PML4 entries.
         unsafe {
             core::ptr::write_bytes(new_pml4_virt, 0, 4096);
         }
 
         ept_vec_push(&mut frames, new_pml4_frame);
 
-        let src_pml4 = allocator.phys_to_virt(self.pml4_phys) as *const EptEntry;
-        let dst_pml4 = new_pml4_virt as *mut EptEntry;
+        let src_pml4 = allocator
+            .phys_to_virt(self.pml4_phys)
+            .cast::<EptEntry>()
+            .cast_const();
+        let dst_pml4 = new_pml4_virt.cast::<EptEntry>();
 
         // Walk source PML4
         for pml4_idx in 0..512 {
+            // SAFETY: src_pml4 points to a valid PML4 table and pml4_idx is in 0..511,
+            // so the resulting pointer is within the 4KB page.
             let src_pml4e = unsafe { &*src_pml4.add(pml4_idx) };
             if !src_pml4e.is_present() {
                 continue;
@@ -276,6 +332,8 @@ impl<Frame> EptPageTable<Frame> {
             let new_pdpt_frame = allocator.allocate_frame()?;
             let new_pdpt_phys = A::frame_phys_addr(&new_pdpt_frame);
             let new_pdpt_virt = allocator.phys_to_virt(new_pdpt_phys);
+            // SAFETY: new_pdpt_virt points to a freshly allocated 4KB-aligned frame,
+            // and we zero the entire page to initialize all PDPT entries.
             unsafe {
                 core::ptr::write_bytes(new_pdpt_virt, 0, 4096);
             }
@@ -283,16 +341,23 @@ impl<Frame> EptPageTable<Frame> {
             ept_vec_push(&mut frames, new_pdpt_frame);
 
             // Set PML4 entry pointing to new PDPT (same permissions as source)
+            // SAFETY: dst_pml4 points to a valid PML4 table and pml4_idx is in 0..511,
+            // so the write target is within the allocated page.
             unsafe {
                 *dst_pml4.add(pml4_idx) =
                     EptEntry::table_entry(new_pdpt_phys, src_pml4e.permissions());
             }
 
-            let src_pdpt = allocator.phys_to_virt(src_pml4e.addr()) as *const EptEntry;
-            let dst_pdpt = new_pdpt_virt as *mut EptEntry;
+            let src_pdpt = allocator
+                .phys_to_virt(src_pml4e.addr())
+                .cast::<EptEntry>()
+                .cast_const();
+            let dst_pdpt = new_pdpt_virt.cast::<EptEntry>();
 
             // Walk source PDPT
             for pdpt_idx in 0..512 {
+                // SAFETY: src_pdpt points to a valid PDPT table and pdpt_idx is in 0..511,
+                // so the resulting pointer is within the 4KB page.
                 let src_pdpte = unsafe { &*src_pdpt.add(pdpt_idx) };
                 if !src_pdpte.is_present() {
                     continue;
@@ -302,6 +367,8 @@ impl<Frame> EptPageTable<Frame> {
                 let new_pd_frame = allocator.allocate_frame()?;
                 let new_pd_phys = A::frame_phys_addr(&new_pd_frame);
                 let new_pd_virt = allocator.phys_to_virt(new_pd_phys);
+                // SAFETY: new_pd_virt points to a freshly allocated 4KB-aligned frame,
+                // and we zero the entire page to initialize all PD entries.
                 unsafe {
                     core::ptr::write_bytes(new_pd_virt, 0, 4096);
                 }
@@ -309,16 +376,23 @@ impl<Frame> EptPageTable<Frame> {
                 ept_vec_push(&mut frames, new_pd_frame);
 
                 // Set PDPT entry pointing to new PD
+                // SAFETY: dst_pdpt points to a valid PDPT table and pdpt_idx is in
+                // 0..511, so the write target is within the allocated page.
                 unsafe {
                     *dst_pdpt.add(pdpt_idx) =
                         EptEntry::table_entry(new_pd_phys, src_pdpte.permissions());
                 }
 
-                let src_pd = allocator.phys_to_virt(src_pdpte.addr()) as *const EptEntry;
-                let dst_pd = new_pd_virt as *mut EptEntry;
+                let src_pd = allocator
+                    .phys_to_virt(src_pdpte.addr())
+                    .cast::<EptEntry>()
+                    .cast_const();
+                let dst_pd = new_pd_virt.cast::<EptEntry>();
 
                 // Walk source PD
                 for pd_idx in 0..512 {
+                    // SAFETY: src_pd points to a valid PD table and pd_idx is in 0..511,
+                    // so the resulting pointer is within the 4KB page.
                     let src_pde = unsafe { &*src_pd.add(pd_idx) };
                     if !src_pde.is_present() {
                         continue;
@@ -328,6 +402,8 @@ impl<Frame> EptPageTable<Frame> {
                     let new_pt_frame = allocator.allocate_frame()?;
                     let new_pt_phys = A::frame_phys_addr(&new_pt_frame);
                     let new_pt_virt = allocator.phys_to_virt(new_pt_phys);
+                    // SAFETY: new_pt_virt points to a freshly allocated 4KB-aligned frame,
+                    // and we zero the entire page to initialize all PT entries.
                     unsafe {
                         core::ptr::write_bytes(new_pt_virt, 0, 4096);
                     }
@@ -335,16 +411,23 @@ impl<Frame> EptPageTable<Frame> {
                     ept_vec_push(&mut frames, new_pt_frame);
 
                     // Set PD entry pointing to new PT
+                    // SAFETY: dst_pd points to a valid PD table and pd_idx is in 0..511,
+                    // so the write target is within the allocated page.
                     unsafe {
                         *dst_pd.add(pd_idx) =
                             EptEntry::table_entry(new_pt_phys, src_pde.permissions());
                     }
 
-                    let src_pt = allocator.phys_to_virt(src_pde.addr()) as *const EptEntry;
-                    let dst_pt = new_pt_virt as *mut EptEntry;
+                    let src_pt = allocator
+                        .phys_to_virt(src_pde.addr())
+                        .cast::<EptEntry>()
+                        .cast_const();
+                    let dst_pt = new_pt_virt.cast::<EptEntry>();
 
                     // Copy PT entries, changing permissions to READ_EXECUTE
                     for pt_idx in 0..512 {
+                        // SAFETY: src_pt points to a valid PT table and pt_idx is in 0..511,
+                        // so the resulting pointer is within the 4KB page.
                         let src_pte = unsafe { *src_pt.add(pt_idx) };
                         if !src_pte.is_present() {
                             continue;
@@ -359,6 +442,8 @@ impl<Frame> EptPageTable<Frame> {
                             EptMemoryType::WriteBack,
                         );
 
+                        // SAFETY: dst_pt points to a valid, newly allocated PT table and
+                        // pt_idx is in 0..511, so the write target is within the page.
                         unsafe {
                             *dst_pt.add(pt_idx) = new_entry;
                         }

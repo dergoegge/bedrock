@@ -32,6 +32,7 @@ impl RealVmcs {
     fn vmread(&self, field: u64) -> VmcsReadResult<u64> {
         let value: u64;
         let rflags: u64;
+        // SAFETY: VMREAD is valid when a VMCS is loaded; caller ensures the VMCS is active.
         unsafe {
             asm!(
                 "vmread {0}, {1}",
@@ -44,7 +45,7 @@ impl RealVmcs {
             );
         }
 
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 {
@@ -58,6 +59,7 @@ impl RealVmcs {
 
     fn vmwrite(&self, field: u64, value: u64) -> VmcsWriteResult {
         let rflags: u64;
+        // SAFETY: VMWRITE is valid when a VMCS is loaded; caller ensures the VMCS is active.
         unsafe {
             asm!(
                 "vmwrite {0}, {1}",
@@ -70,7 +72,7 @@ impl RealVmcs {
             );
         }
 
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 {
@@ -91,6 +93,7 @@ impl VirtualMachineControlStructure for RealVmcs {
         let addr = self.phys_addr().as_u64();
 
         let rflags: u64;
+        // SAFETY: VMCLEAR with a valid physical address clears the VMCS launch state.
         unsafe {
             asm!(
                 "vmclear [{0}]",
@@ -102,13 +105,14 @@ impl VirtualMachineControlStructure for RealVmcs {
             );
         }
 
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 || zf == 1 {
             // Try to read VM instruction error if ZF is set
             let vm_err: u64 = if zf == 1 {
                 let err: u64;
+                // SAFETY: VMREAD of the error field is valid after a failed VM instruction.
                 unsafe {
                     asm!(
                         "vmread {0}, {1}",
@@ -138,6 +142,7 @@ impl VirtualMachineControlStructure for RealVmcs {
         let addr = self.phys_addr().as_u64();
 
         let rflags: u64;
+        // SAFETY: VMPTRLD with a valid physical address loads the VMCS as active.
         unsafe {
             asm!(
                 "vmptrld [{0}]",
@@ -149,13 +154,14 @@ impl VirtualMachineControlStructure for RealVmcs {
             );
         }
 
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 || zf == 1 {
             // Try to read VM instruction error if ZF is set
             let vm_err: u64 = if zf == 1 {
                 let err: u64;
+                // SAFETY: VMREAD of the error field is valid after a failed VM instruction.
                 unsafe {
                     asm!(
                         "vmread {0}, {1}",
@@ -198,11 +204,11 @@ impl VirtualMachineControlStructure for RealVmcs {
     }
 
     fn write16(&self, field: VmcsField16, value: u16) -> VmcsWriteResult {
-        self.vmwrite(field as u64, value as u64)
+        self.vmwrite(field as u64, u64::from(value))
     }
 
     fn write32(&self, field: VmcsField32, value: u32) -> VmcsWriteResult {
-        self.vmwrite(field as u64, value as u64)
+        self.vmwrite(field as u64, u64::from(value))
     }
 
     fn write64(&self, field: VmcsField64, value: u64) -> VmcsWriteResult {

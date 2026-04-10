@@ -161,11 +161,11 @@ pub enum VmcsAllocError {
 /// Error returned during VMCS setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmcsSetupError {
-    ClearError(&'static str),
-    GuardError(&'static str),
-    HostStateError(VmcsWriteError),
-    ControlsError(VmcsWriteError),
-    EptPointerError(VmcsWriteError),
+    Clear(&'static str),
+    Guard(&'static str),
+    HostState(VmcsWriteError),
+    Controls(VmcsWriteError),
+    EptPointer(VmcsWriteError),
 }
 
 /// Error type for memory access operations.

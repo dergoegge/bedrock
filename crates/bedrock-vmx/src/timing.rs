@@ -30,7 +30,7 @@ pub fn rdtsc() -> u64 {
             options(nostack, nomem)
         );
     }
-    ((hi as u64) << 32) | (lo as u64)
+    (u64::from(hi) << 32) | u64::from(lo)
 }
 
 /// Read the CPU timestamp counter (TSC) - stub version for tests.

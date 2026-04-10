@@ -175,6 +175,8 @@ pub fn handle_cpuid<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         0x80000002..=0x80000004 => {
             // Processor brand string
             let brand = b"Bedrock VM CPU  ";
+            // SAFETY: brand is a 16-byte array, which has the same size and alignment
+            // as [u32; 4]. The transmute reinterprets the bytes as little-endian u32s.
             let brand_dwords: &[u32; 4] = unsafe { core::mem::transmute(brand) };
             if leaf == 0x80000002 {
                 eax = brand_dwords[0];
@@ -238,10 +240,10 @@ pub fn handle_cpuid<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     // Write results back
     {
         let gprs = &mut ctx.state_mut().gprs;
-        gprs.rax = eax as u64;
-        gprs.rbx = ebx as u64;
-        gprs.rcx = ecx as u64;
-        gprs.rdx = edx as u64;
+        gprs.rax = u64::from(eax);
+        gprs.rbx = u64::from(ebx);
+        gprs.rcx = u64::from(ecx);
+        gprs.rdx = u64::from(edx);
     }
 
     // Advance RIP
@@ -259,6 +261,8 @@ fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
     let ebx: u32;
     let ecx: u32;
     let edx: u32;
+    // SAFETY: CPUID is a safe instruction that reads processor identification data.
+    // RBX is saved/restored because it is callee-saved and CPUID clobbers it.
     unsafe {
         core::arch::asm!(
             "push rbx",

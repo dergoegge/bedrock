@@ -142,7 +142,10 @@ impl InstructionCounter for LinuxInstructionCounter {
 
         // SAFETY: We pass valid pointers to the helper.
         let found = unsafe {
-            bedrock_get_perf_global_ctrl(&mut guest_val as *mut _, &mut host_val as *mut _)
+            bedrock_get_perf_global_ctrl(
+                core::ptr::from_mut(&mut guest_val),
+                core::ptr::from_mut(&mut host_val),
+            )
         };
 
         if found {

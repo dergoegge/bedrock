@@ -75,7 +75,7 @@ fn register_miscdev_with_mode(
     unsafe {
         ::pin_init::pin_init_from_closure(move |slot: *mut MiscDeviceRegistration<BedrockFile>| {
             // Get a pointer to the inner miscdevice struct
-            let inner_ptr = slot as *mut bindings::miscdevice;
+            let inner_ptr = slot.cast::<bindings::miscdevice>();
 
             // Create the base miscdevice from options
             let opts = MiscDeviceOptions { name };
@@ -129,9 +129,8 @@ fn handle_create_root_vm(memory_size: usize) -> Result<isize> {
     })?;
 
     // Create anonymous inode FD for the VM
-    let fd = create_vm_fd(vm, vm_id).map_err(|e| {
+    let fd = create_vm_fd(vm, vm_id).inspect_err(|e| {
         log_err!("Failed to create VM FD: {:?}\n", e);
-        e
     })?;
 
     log_info!(
@@ -190,10 +189,14 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
         // The atomic increment is the key synchronization point.
         match parent_type {
             VmFileType::Root => {
+                // SAFETY: parent_ref points to a valid BedrockVmFile registered via add_vm.
+                // BedrockVmFile has vm_file_type as its first field (#[repr(C)]). We hold the handler lock.
                 let parent_file = unsafe { &*(parent_ref.as_ptr() as *const BedrockVmFile) };
                 parent_file.vm.add_child();
             }
             VmFileType::Forked => {
+                // SAFETY: parent_ref points to a valid BedrockForkedVmFile registered via add_vm.
+                // BedrockForkedVmFile has vm_file_type as its first field (#[repr(C)]). We hold the handler lock.
                 let parent_file = unsafe { &*(parent_ref.as_ptr() as *const BedrockForkedVmFile) };
                 parent_file.vm.add_child();
             }
@@ -235,6 +238,8 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
                 )
             }
             VmFileType::Forked => {
+                // SAFETY: parent_ptr is valid because we found it in the handler's vm_list while
+                // holding the lock and children_count > 0 prevents it from being run or freed.
                 let parent_file = unsafe { &*(parent_ptr as *const BedrockForkedVmFile) };
                 ForkedVm::new_with_incremented_parent(
                     &parent_file.vm,
@@ -260,10 +265,16 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
             // (normally ForkedVm::drop does this, but creation failed)
             match parent_type {
                 VmFileType::Root => {
+                    // SAFETY: parent_ptr is valid - it was found in the handler's vm_list and
+                    // children_count > 0 prevents it from being freed. We need to decrement
+                    // because ForkedVm creation failed.
                     let parent_file = unsafe { &*(parent_ptr as *const BedrockVmFile) };
                     parent_file.vm.remove_child();
                 }
                 VmFileType::Forked => {
+                    // SAFETY: parent_ptr is valid - it was found in the handler's vm_list and
+                    // children_count > 0 prevents it from being freed. We need to decrement
+                    // because ForkedVm creation failed.
                     let parent_file = unsafe { &*(parent_ptr as *const BedrockForkedVmFile) };
                     parent_file.vm.remove_child();
                 }
@@ -274,9 +285,8 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
 
     // Phase 3: Create FD (re-acquires lock briefly to register VM)
     log_info!("FORK: Creating FD for forked VM {}\n", vm_id);
-    let fd = create_forked_vm_fd(forked_vm, vm_id).map_err(|e| {
+    let fd = create_forked_vm_fd(forked_vm, vm_id).inspect_err(|e| {
         log_err!("Failed to create forked VM FD: {:?}\n", e);
-        e
     })?;
 
     log_info!(
@@ -381,7 +391,7 @@ impl PinnedDrop for Bedrock {
                 Ok(())
             },
         ) {
-            Ok(_) => log_info!("VMX deinitialized successfully\n"),
+            Ok(()) => log_info!("VMX deinitialized successfully\n"),
             Err(e) => log_err!("Error during VMX deinit: {:?}\n", e),
         }
 

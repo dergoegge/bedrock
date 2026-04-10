@@ -33,6 +33,8 @@ pub trait VmxOnRegion {
         log_debug!("VMXON region allocated at phys={:#x}\n", phys_addr.as_u64());
 
         let revision_id = <Self::M as Machine>::V::basic_info().vmcs_revision_id & 0x7fff_ffff;
+        // SAFETY: page is a freshly-allocated zeroed page. Writing the 4-byte
+        // revision ID at the start of the page is within bounds.
         unsafe {
             let region_ptr = page.virtual_address().as_u64() as *mut u32;
             *region_ptr = revision_id;

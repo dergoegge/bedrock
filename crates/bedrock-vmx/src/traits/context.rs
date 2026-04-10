@@ -276,6 +276,8 @@ pub trait VmContext {
     where
         Self: Sized,
     {
+        // SAFETY: The caller upholds all safety requirements documented on this method:
+        // VMCS is configured, interrupts are appropriate, and preemption is disabled.
         unsafe { run(self, runner, machine, allocator) }
     }
 }

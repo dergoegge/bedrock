@@ -94,7 +94,7 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
         X::initialize(machine)?;
 
         let vm_list =
-            heap_vec_with_capacity(MAX_VMS).map_err(|_| VmxInitError::MemoryAllocationFailed)?;
+            heap_vec_with_capacity(MAX_VMS).map_err(|()| VmxInitError::MemoryAllocationFailed)?;
 
         Ok(Self {
             vm_list,
@@ -146,7 +146,7 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
     /// This removes the weak reference to the VM. Should be called when
     /// the VM's file descriptor is being closed.
     pub fn remove_vm<T>(&mut self, vm: *mut T) {
-        let vm_ptr = vm as *mut ();
+        let vm_ptr = vm.cast::<()>();
         self.vm_list.retain(|e| e.vm_ref.as_ptr() != vm_ptr);
     }
 

@@ -106,19 +106,19 @@ pub fn handle_io<C: VmContext>(ctx: &mut C, qual: IoQualification) -> ExitHandle
                 0x3F8 => {
                     if dlab {
                         // Divisor Latch Low
-                        ctx.state().devices.serial.dll as u32
+                        u32::from(ctx.state().devices.serial.dll)
                     } else {
                         // RX data (RBR) - return byte from input buffer
-                        ctx.state_mut().devices.serial.read_input() as u32
+                        u32::from(ctx.state_mut().devices.serial.read_input())
                     }
                 }
                 0x3F9 => {
                     if dlab {
                         // Divisor Latch High
-                        ctx.state().devices.serial.dlh as u32
+                        u32::from(ctx.state().devices.serial.dlh)
                     } else {
                         // Interrupt Enable Register
-                        ctx.state().devices.serial.ier as u32
+                        u32::from(ctx.state().devices.serial.ier)
                     }
                 }
                 0x3FA => {
@@ -138,11 +138,11 @@ pub fn handle_io<C: VmContext>(ctx: &mut C, qual: IoQualification) -> ExitHandle
                 }
                 0x3FB => {
                     // Line Control Register
-                    ctx.state().devices.serial.lcr as u32
+                    u32::from(ctx.state().devices.serial.lcr)
                 }
                 0x3FC => {
                     // Modem Control Register
-                    ctx.state().devices.serial.mcr as u32
+                    u32::from(ctx.state().devices.serial.mcr)
                 }
                 0x3FD => {
                     // Line Status Register (LSR)
@@ -163,7 +163,7 @@ pub fn handle_io<C: VmContext>(ctx: &mut C, qual: IoQualification) -> ExitHandle
                 }
                 0x3FF => {
                     // Scratch Register - return what was written
-                    ctx.state().devices.serial.scr as u32
+                    u32::from(ctx.state().devices.serial.scr)
                 }
                 0xCFC..=0xCFF => {
                     // PCI config data - no device
@@ -185,18 +185,19 @@ pub fn handle_io<C: VmContext>(ctx: &mut C, qual: IoQualification) -> ExitHandle
                     // Use emulated TSC for deterministic time
                     let emulated_tsc = ctx.state().emulated_tsc;
                     let tsc_frequency = ctx.state().tsc_frequency;
-                    ctx.state()
-                        .devices
-                        .rtc
-                        .read_register_with_tsc(emulated_tsc, tsc_frequency)
-                        as u32
+                    u32::from(
+                        ctx.state()
+                            .devices
+                            .rtc
+                            .read_register_with_tsc(emulated_tsc, tsc_frequency),
+                    )
                 }
                 _ => 0,
             };
 
             let mask = (1u64 << (size * 8)) - 1;
             let gprs = &mut ctx.state_mut().gprs;
-            gprs.rax = (gprs.rax & !mask) | (value as u64 & mask);
+            gprs.rax = (gprs.rax & !mask) | (u64::from(value) & mask);
         }
     }
 

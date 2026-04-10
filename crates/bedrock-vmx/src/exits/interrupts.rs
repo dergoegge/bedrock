@@ -50,7 +50,7 @@ pub fn check_apic_timer<C: VmContext>(ctx: &mut C) {
     if (apic.lvt_timer & (1 << 17)) != 0 {
         // Periodic: reset deadline for next period
         let divisor = apic_timer_divisor(apic.timer_divide);
-        let ticks = (apic.timer_initial as u64) * (divisor as u64);
+        let ticks = u64::from(apic.timer_initial) * u64::from(divisor);
         apic.timer_deadline = current_tsc.wrapping_add(ticks);
     } else {
         // One-shot: stop timer
@@ -299,6 +299,8 @@ pub fn ioapic_deliver_irq<C: VmContext>(ctx: &mut C, irq: u8) {
 #[inline]
 pub fn handle_external_interrupt<K: Kernel>(kernel: &K) {
     let _irq_window = ReverseIrqGuard::new(kernel);
+    // SAFETY: NOP is a safe instruction; the IRQ window opened by ReverseIrqGuard
+    // allows pending host interrupts to be delivered through the IDT.
     unsafe {
         asm!("nop", options(nomem, nostack, preserves_flags));
     }
