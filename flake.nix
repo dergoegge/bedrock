@@ -61,11 +61,36 @@
 
       userland = import ./nix/userland.nix { inherit pkgs; };
 
+      rustfilt = let
+        src = pkgs.fetchFromGitHub {
+          owner = "luser";
+          repo = "rustfilt";
+          rev = "0.2.1";
+          hash = "sha256-zb1tkeWmeMq7aM8hWssS/UpvGzGbfsaVYCOKBnAKwiQ=";
+        };
+      in pkgs.rustPlatform.buildRustPackage {
+        pname = "rustfilt";
+        version = "0.2.1";
+        inherit src;
+        cargoLock.lockFile = "${src}/Cargo.lock";
+      };
+
+      # Stack usage analysis on the built kernel module
+      checkStack = let
+        koPath = "${bedrockModule}/lib/modules/${kernel.modDirVersion}/extra/bedrock.ko";
+      in pkgs.runCommand "bedrock-check-stack" {
+        nativeBuildInputs = [ pkgs.python3 pkgs.binutils-unwrapped rustfilt ];
+      } ''
+        python3 ${./scripts/check_stack.py} ${koPath}
+        touch $out
+      '';
+
     in
     {
       packages.${system} = {
-        inherit kernel bedrockModule guestKernel guestInitrd podmanInitrd;
+        inherit kernel bedrockModule guestKernel guestInitrd podmanInitrd checkStack;
         clippy-kernel = bedrockModuleClippy;
+        check-stack = checkStack;
         bedrock-cli = userland.bedrock-cli;
         bedrock-determinism = userland.bedrock-determinism;
         default = userland.bedrock-cli;
@@ -149,6 +174,9 @@
 
         # Clippy for kernel module (runs clippy-driver instead of rustc)
         clippy-kernel = bedrockModuleClippy;
+
+        # Stack usage analysis (ensures 8KB kernel stack limit is respected)
+        check-stack = checkStack;
 
         # Cargo tests (no KVM needed)
         cargo-test = pkgs.rustPlatform.buildRustPackage {
