@@ -22,6 +22,7 @@ jobs:
           name: bedrock
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - run: nix build .#bedrockModule
+      - run: nix build .#check-stack
 
   clippy:
     name: Clippy (kernel module)
