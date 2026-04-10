@@ -7,9 +7,8 @@
 
 use crate::c_helpers::{
     bedrock_clear_guest_state, bedrock_create_instruction_counter,
-    bedrock_destroy_instruction_counter, bedrock_get_perf_global_ctrl,
-    bedrock_perf_event_disable, bedrock_perf_event_enable,
-    bedrock_perf_event_read, bedrock_set_guest_state, PerfEvent,
+    bedrock_destroy_instruction_counter, bedrock_get_perf_global_ctrl, bedrock_perf_event_disable,
+    bedrock_perf_event_enable, bedrock_perf_event_read, bedrock_set_guest_state, PerfEvent,
 };
 use crate::vmx::traits::InstructionCounter;
 
@@ -26,7 +25,7 @@ pub(crate) struct LinuxInstructionCounter {
     /// NULL if creation failed.
     event: *mut PerfEvent,
     /// Whether counting is currently enabled.
-    enabled: bool,
+    _enabled: bool,
 }
 
 // SAFETY: LinuxInstructionCounter is tied to a specific CPU via its perf_event.
@@ -54,7 +53,7 @@ impl LinuxInstructionCounter {
 
         Some(Self {
             event,
-            enabled: false,
+            _enabled: false,
         })
     }
 
@@ -64,7 +63,7 @@ impl LinuxInstructionCounter {
     pub(crate) fn null() -> Self {
         Self {
             event: core::ptr::null_mut(),
-            enabled: false,
+            _enabled: false,
         }
     }
 
@@ -101,22 +100,22 @@ impl InstructionCounter for LinuxInstructionCounter {
     }
 
     fn enable(&mut self) {
-        if !self.enabled && self.is_valid() {
+        if !self._enabled && self.is_valid() {
             // SAFETY: event is a valid perf_event pointer.
             unsafe {
                 bedrock_perf_event_enable(self.event);
             }
-            self.enabled = true;
+            self._enabled = true;
         }
     }
 
     fn disable(&mut self) {
-        if self.enabled && self.is_valid() {
+        if self._enabled && self.is_valid() {
             // SAFETY: event is a valid perf_event pointer.
             unsafe {
                 bedrock_perf_event_disable(self.event);
             }
-            self.enabled = false;
+            self._enabled = false;
         }
     }
 
@@ -142,8 +141,9 @@ impl InstructionCounter for LinuxInstructionCounter {
         let mut host_val: u64 = 0;
 
         // SAFETY: We pass valid pointers to the helper.
-        let found =
-            unsafe { bedrock_get_perf_global_ctrl(&mut guest_val as *mut _, &mut host_val as *mut _) };
+        let found = unsafe {
+            bedrock_get_perf_global_ctrl(&mut guest_val as *mut _, &mut host_val as *mut _)
+        };
 
         if found {
             Some((guest_val, host_val))

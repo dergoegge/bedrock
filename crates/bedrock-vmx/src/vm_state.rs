@@ -6,63 +6,25 @@
 //! Both `RootVm` and `ForkedVm` use `VmState` to share common fields like VMCS,
 //! registers, EPT, device state, and MSR state.
 
-#[cfg(feature = "cargo")]
-extern crate alloc;
-
 #[cfg(not(feature = "cargo"))]
 use super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-// Boxing helpers for DeviceStates - different API between cargo and kernel
-#[cfg(feature = "cargo")]
-fn box_device_states(d: DeviceStates) -> alloc::boxed::Box<DeviceStates> {
-    alloc::boxed::Box::new(d)
-}
+type DeviceStatesBox = HeapBox<DeviceStates>;
+type ExitStatsBox = HeapBox<AllExitStats>;
 
-#[cfg(not(feature = "cargo"))]
-fn box_device_states(d: DeviceStates) -> kernel::alloc::KBox<DeviceStates> {
-    // Note: In kernel, KBox::new can fail. We unwrap here since device state
-    // allocation failure during VM creation is fatal anyway.
-    kernel::alloc::KBox::new(d, kernel::alloc::flags::GFP_KERNEL)
-        .expect("Failed to allocate DeviceStates")
-}
-
-#[cfg(feature = "cargo")]
-type DeviceStatesBox = alloc::boxed::Box<DeviceStates>;
-#[cfg(not(feature = "cargo"))]
-type DeviceStatesBox = kernel::alloc::KBox<DeviceStates>;
-
-// Boxing helpers for AllExitStats
-#[cfg(feature = "cargo")]
-fn box_exit_stats(s: AllExitStats) -> alloc::boxed::Box<AllExitStats> {
-    alloc::boxed::Box::new(s)
-}
-
-#[cfg(not(feature = "cargo"))]
-fn box_exit_stats(s: AllExitStats) -> kernel::alloc::KBox<AllExitStats> {
-    kernel::alloc::KBox::new(s, kernel::alloc::flags::GFP_KERNEL)
-        .expect("Failed to allocate AllExitStats")
-}
-
-#[cfg(feature = "cargo")]
-type ExitStatsBox = alloc::boxed::Box<AllExitStats>;
-#[cfg(not(feature = "cargo"))]
-type ExitStatsBox = kernel::alloc::KBox<AllExitStats>;
-
-// Feedback buffers array type - boxed to avoid large stack allocation
-// Each FeedbackBufferInfo is ~2KB (256 * 8 bytes for GPAs), so 16 of them = ~32KB
+// Feedback buffers array type - boxed to avoid large stack allocation.
+// Each FeedbackBufferInfo is ~2KB (256 * 8 bytes for GPAs), so 16 of them = ~32KB.
+// Uses VmallocBox (kvmalloc in kernel) because kmalloc requires physically
+// contiguous pages (order:4) which can fail under watermark_boost pressure.
 pub type FeedbackBuffersArray = [Option<FeedbackBufferInfo>; MAX_FEEDBACK_BUFFERS];
+pub type FeedbackBuffersBox = VmallocBox<FeedbackBuffersArray>;
 
-#[cfg(feature = "cargo")]
-pub type FeedbackBuffersBox = alloc::boxed::Box<FeedbackBuffersArray>;
-#[cfg(not(feature = "cargo"))]
-pub type FeedbackBuffersBox = kernel::alloc::KVBox<FeedbackBuffersArray>;
-
-/// Allocate feedback buffers directly on the heap without stack intermediary.
-/// Uses Vec to build incrementally, then converts to boxed array.
+/// Allocate feedback buffers directly on the heap, zeroed (all None).
 #[cfg(feature = "cargo")]
 fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
+    extern crate alloc;
     use alloc::vec::Vec;
     let mut v: Vec<Option<FeedbackBufferInfo>> = Vec::with_capacity(MAX_FEEDBACK_BUFFERS);
     for _ in 0..MAX_FEEDBACK_BUFFERS {
@@ -76,16 +38,11 @@ fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
 
 #[cfg(not(feature = "cargo"))]
 fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
-    // Allocate uninit memory and zero it.
     // SAFETY: Option<FeedbackBufferInfo> with None variant is all zeros
     // (the discriminant for None is 0, and the rest is padding).
-    // Use KVBox (kvmalloc) instead of KBox (kmalloc) because FeedbackBuffersArray is ~33KB.
-    // kmalloc requires physically contiguous pages (order:4) which can fail under
-    // watermark_boost pressure. kvmalloc falls back to vmalloc which uses individual pages.
     let mut boxed: kernel::alloc::KVBox<core::mem::MaybeUninit<FeedbackBuffersArray>> =
         kernel::alloc::KVBox::new_uninit(kernel::alloc::flags::GFP_KERNEL)
             .expect("Failed to allocate feedback buffers");
-    // Zero the memory
     unsafe {
         let ptr = boxed.as_mut_ptr() as *mut u8;
         core::ptr::write_bytes(ptr, 0, core::mem::size_of::<FeedbackBuffersArray>());
@@ -96,6 +53,7 @@ fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
 /// Clone feedback buffers from parent, allocating directly on heap.
 #[cfg(feature = "cargo")]
 fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBox {
+    extern crate alloc;
     use alloc::vec::Vec;
     let mut v: Vec<Option<FeedbackBufferInfo>> = Vec::with_capacity(MAX_FEEDBACK_BUFFERS);
     for item in parent.iter() {
@@ -108,8 +66,6 @@ fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBo
 
 #[cfg(not(feature = "cargo"))]
 fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBox {
-    // Allocate uninit memory and copy from parent.
-    // Use KVBox (kvmalloc) - see box_feedback_buffers_empty for rationale.
     let mut boxed: kernel::alloc::KVBox<core::mem::MaybeUninit<FeedbackBuffersArray>> =
         kernel::alloc::KVBox::new_uninit(kernel::alloc::flags::GFP_KERNEL)
             .expect("Failed to allocate feedback buffers");
@@ -121,26 +77,14 @@ fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBo
     }
 }
 
-// Boxed VmState type alias - used by RootVm and ForkedVm to reduce stack usage
-#[cfg(feature = "cargo")]
-pub type VmStateBox<V, I> = alloc::boxed::Box<VmState<V, I>>;
-#[cfg(not(feature = "cargo"))]
-pub type VmStateBox<V, I> = kernel::alloc::KBox<VmState<V, I>>;
+/// Boxed VmState type alias - used by RootVm and ForkedVm to reduce stack usage.
+pub type VmStateBox<V, I> = HeapBox<VmState<V, I>>;
 
-/// Box a VmState for heap allocation
-#[cfg(feature = "cargo")]
+/// Box a VmState for heap allocation.
 pub fn box_vm_state<V: VirtualMachineControlStructure, I: InstructionCounter>(
     state: VmState<V, I>,
 ) -> VmStateBox<V, I> {
-    alloc::boxed::Box::new(state)
-}
-
-#[cfg(not(feature = "cargo"))]
-pub fn box_vm_state<V: VirtualMachineControlStructure, I: InstructionCounter>(
-    state: VmState<V, I>,
-) -> VmStateBox<V, I> {
-    kernel::alloc::KBox::new(state, kernel::alloc::flags::GFP_KERNEL)
-        .expect("Failed to allocate VmState")
+    heap_box(state)
 }
 
 const PAGE_SIZE: usize = 4096;
@@ -195,7 +139,7 @@ fn msr_bitmap_clear_intercept(bitmap: *mut u8, msr: u32) {
     let (read_base, write_base, index) = if msr < 0x2000 {
         // Low MSR range: 0x00000000-0x00001FFF
         (0usize, 2048usize, msr as usize)
-    } else if msr >= 0xC000_0000 && msr < 0xC000_2000 {
+    } else if (0xC000_0000..0xC000_2000).contains(&msr) {
         // High MSR range: 0xC0000000-0xC0001FFF
         (1024usize, 3072usize, (msr - 0xC000_0000) as usize)
     } else {
@@ -341,15 +285,6 @@ impl CowStats {
             if dist <= 8 {
                 self.adjacent_8 += 1;
             }
-        }
-    }
-
-    /// Get the percentage of faults that were adjacent (within 1 page).
-    pub fn adjacent_1_percent(&self) -> f64 {
-        if self.total_faults > 0 {
-            (self.adjacent_1 as f64 / self.total_faults as f64) * 100.0
-        } else {
-            0.0
         }
     }
 }
@@ -551,7 +486,7 @@ pub const SERIAL_METADATA_MAGIC: u16 = 0xCAFE;
 /// The TSC page layout is:
 /// - Bytes 0-3: header (u16 line_count, u16 magic)
 /// - Bytes 4-4095: line entries (10 bytes each)
-/// Available: (4096 - 4) / 10 = 409 entries
+///   Available: (4096 - 4) / 10 = 409 entries
 pub const SERIAL_MAX_LINE_ENTRIES: usize = 409;
 
 /// Offset where line TSC entries start in the TSC page (after header).
@@ -818,7 +753,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         );
 
         vmcs.setup(ept.eptp(), Some(msr_bitmap.physical_address()), &host_state)
-            .map_err(|e| VmStateError::VmcsSetup(e))?;
+            .map_err(VmStateError::VmcsSetup)?;
 
         // Read back the allocated VPID (0 if VPID is disabled)
         let vpid = vmcs.read16(VmcsField16::VirtualProcessorId).unwrap_or(0);
@@ -849,7 +784,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             xcr0_mask: xcr0::SSE_AVX,
             last_exit_qualification: 0,
             last_guest_physical_addr: 0,
-            devices: box_device_states(DeviceStates::default()),
+            devices: heap_box(DeviceStates::default()),
             host_state,
             msr_state: GuestMsrState::new(),
             kernel_gs_base: 0,
@@ -869,7 +804,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             single_step_tsc_range: None,
             mtf_enabled: false,
             stop_at_tsc: None,
-            exit_stats: box_exit_stats(AllExitStats::default()),
+            exit_stats: heap_box(AllExitStats::default()),
             last_checkpoint_idx: 0,
             last_exit_deterministic: true,
             feedback_buffers: box_feedback_buffers_empty(),
@@ -1386,7 +1321,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             xcr0_mask: 0x7, // x87 + SSE + AVX
             last_exit_qualification: 0,
             last_guest_physical_addr: 0,
-            devices: box_device_states(DeviceStates::default()),
+            devices: heap_box(DeviceStates::default()),
             host_state: HostState::default(),
             msr_state: GuestMsrState::new(),
             kernel_gs_base: 0,
@@ -1406,7 +1341,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             single_step_tsc_range: None,
             mtf_enabled: false,
             stop_at_tsc: None,
-            exit_stats: box_exit_stats(AllExitStats::default()),
+            exit_stats: heap_box(AllExitStats::default()),
             last_checkpoint_idx: 0,
             last_exit_deterministic: true,
             feedback_buffers: box_feedback_buffers_empty(),
@@ -1600,7 +1535,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             xcr0_mask: parent_state.xcr0_mask,
             last_exit_qualification: 0,
             last_guest_physical_addr: 0,
-            devices: box_device_states((*parent_state.devices).clone()),
+            devices: heap_box((*parent_state.devices).clone()),
             host_state: parent_state.host_state.clone(), // Copy host state from parent
             msr_state: parent_state.msr_state,           // Copy MSR state
             kernel_gs_base: parent_state.kernel_gs_base,
@@ -1620,7 +1555,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             single_step_tsc_range: None,
             mtf_enabled: false,
             stop_at_tsc: None,
-            exit_stats: box_exit_stats(AllExitStats::default()), // Forked VMs start with fresh stats
+            exit_stats: heap_box(AllExitStats::default()), // Forked VMs start with fresh stats
             last_checkpoint_idx: 0, // Forked VMs start checkpoint tracking fresh
             last_exit_deterministic: true,
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent

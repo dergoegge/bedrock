@@ -65,7 +65,7 @@ pub fn handle_msr_read<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
             let index = offset / 2;
             if index < MTRR_VAR_MAX {
                 let (base, mask) = ctx.state().devices.mtrr.var[index];
-                if offset % 2 == 0 {
+                if offset.is_multiple_of(2) {
                     base
                 } else {
                     mask
@@ -274,7 +274,7 @@ pub fn handle_msr_write<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
             let offset = (msr_num - msr::IA32_MTRR_PHYSBASE0) as usize;
             let index = offset / 2;
             if index < MTRR_VAR_MAX {
-                if offset % 2 == 0 {
+                if offset.is_multiple_of(2) {
                     ctx.state_mut().devices.mtrr.var[index].0 = value; // base
                 } else {
                     ctx.state_mut().devices.mtrr.var[index].1 = value; // mask

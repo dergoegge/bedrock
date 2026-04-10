@@ -132,14 +132,20 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
     };
 
     let non_deterministic_exit = match reason {
-        ExitReason::ExternalInterrupt | ExitReason::VmxPreemptionTimer | ExitReason::ExceptionNmi => true,
+        ExitReason::ExternalInterrupt
+        | ExitReason::VmxPreemptionTimer
+        | ExitReason::ExceptionNmi => true,
         // Non-APIC EPT violations (COW faults, stale TLB hits) are treated as
         // non-deterministic — they don't advance the emulated TSC or get logged.
         // APIC/IOAPIC MMIO EPT violations are deterministic (device emulation).
         ExitReason::EptViolation => {
-            let gpa = ctx.state().vmcs.read64(VmcsField64::GuestPhysicalAddr).unwrap_or(0);
-            !((gpa >= APIC_BASE && gpa < APIC_BASE + APIC_SIZE)
-                || (gpa >= IOAPIC_BASE && gpa < IOAPIC_BASE + IOAPIC_SIZE))
+            let gpa = ctx
+                .state()
+                .vmcs
+                .read64(VmcsField64::GuestPhysicalAddr)
+                .unwrap_or(0);
+            !((APIC_BASE..APIC_BASE + APIC_SIZE).contains(&gpa)
+                || (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&gpa))
         }
         _ => false,
     };
@@ -234,10 +240,11 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         // check for signals. Userspace should just call RUN again.
         ExitReason::VmxPreemptionTimer => {
             // Reset the preemption timer for the next run (~10ms)
-            if let Err(_) = ctx
+            if ctx
                 .state()
                 .vmcs
                 .write32(VmcsField32::VmxPreemptionTimerValue, 0x100000)
+                .is_err()
             {
                 return ExitHandlerResult::Error(EE::Fatal("Failed to reset preemption timer"));
             }

@@ -88,7 +88,7 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> R
         // Map all guest memory pages into the EPT
         // Guest physical address = offset into guest memory (identity mapped from 0)
         let mem_size = memory.size();
-        let num_pages = (mem_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        let num_pages = mem_size.div_ceil(PAGE_SIZE);
 
         for page_idx in 0..num_pages {
             let page_offset = page_idx * PAGE_SIZE;

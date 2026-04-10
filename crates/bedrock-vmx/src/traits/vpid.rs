@@ -10,7 +10,7 @@
 //!
 //! VPIDs are recycled when VMs are dropped using a bitmap to track in-use VPIDs.
 
-use core::sync::atomic::{AtomicU64, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 /// Bitmap tracking which VPIDs are in use.
 /// 65536 VPIDs / 64 bits per word = 1024 words = 8KB
@@ -33,6 +33,7 @@ impl VpidBitmap {
     const fn new() -> Self {
         // Use a const block to initialize the array
         // VPID 0 is reserved, so we set bit 0 in word 0 to mark it as "in use"
+        #[allow(clippy::declare_interior_mutable_const)]
         const INIT_WORD: AtomicU64 = AtomicU64::new(0);
         Self {
             words: [INIT_WORD; BITMAP_WORDS],

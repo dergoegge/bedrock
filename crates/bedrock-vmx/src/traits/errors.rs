@@ -1,8 +1,7 @@
 #[cfg(not(feature = "cargo"))]
-use super::super::registers::MsrError;
-
+use super::super::prelude::*;
 #[cfg(feature = "cargo")]
-use crate::registers::MsrError;
+use crate::prelude::*;
 
 /// Error returned during VMX initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,12 +114,6 @@ pub enum VmxCpuInitError {
     VmxonAllocFailed(VmxonAllocError),
 }
 
-#[cfg(not(feature = "cargo"))]
-use super::super::registers::CrError;
-
-#[cfg(feature = "cargo")]
-use crate::registers::CrError;
-
 /// Error returned by VMREAD instruction.
 ///
 /// VMREAD signals errors via RFLAGS (Carry and Zero flags):
@@ -199,16 +192,6 @@ pub enum VmGetRegistersError {
     VmcsGuard(&'static str),
     VmcsRead(VmcsReadError),
 }
-
-#[cfg(not(feature = "cargo"))]
-use super::machine::VmEntryError;
-#[cfg(feature = "cargo")]
-use crate::traits::machine::VmEntryError;
-
-#[cfg(not(feature = "cargo"))]
-use super::super::exits::ExitError;
-#[cfg(feature = "cargo")]
-use crate::exits::ExitError;
 
 /// Error from VM run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

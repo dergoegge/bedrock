@@ -53,7 +53,10 @@ unsafe impl Sync for KernelGuestMemory {}
 impl KernelGuestMemory {
     /// Allocate guest memory of the given size.
     pub(crate) fn new(size: usize) -> Option<Self> {
-        log_info!("KernelGuestMemory::new: calling vmalloc_user({} bytes)\n", size);
+        log_info!(
+            "KernelGuestMemory::new: calling vmalloc_user({} bytes)\n",
+            size
+        );
         // SAFETY: bedrock_vmalloc_user allocates zeroed memory that can be mapped to userspace.
         let ptr = unsafe { c_helpers::bedrock_vmalloc_user(size as core::ffi::c_ulong) };
         log_info!("KernelGuestMemory::new: vmalloc_user returned {:p}\n", ptr);
@@ -83,7 +86,8 @@ impl GuestMemory for KernelGuestMemory {
         }
         // SAFETY: ptr + page_offset is within the allocated vmalloc region.
         let page_ptr = unsafe { self.ptr.add(page_offset) };
-        let phys = unsafe { c_helpers::bedrock_vmalloc_to_phys(page_ptr as *mut core::ffi::c_void) };
+        let phys =
+            unsafe { c_helpers::bedrock_vmalloc_to_phys(page_ptr as *mut core::ffi::c_void) };
         if phys == 0 {
             return None;
         }
@@ -107,7 +111,6 @@ impl Drop for KernelGuestMemory {
 /// This is a 1MB vmalloc'd buffer that can be mapped to userspace.
 pub(crate) struct LogBuffer {
     ptr: *mut u8,
-    size: usize,
 }
 
 /// Log buffer size: 1MB (256 pages).
@@ -132,18 +135,12 @@ impl LogBuffer {
         log_info!("LogBuffer::new: allocated at {:p}\n", ptr);
         Some(Self {
             ptr: ptr as *mut u8,
-            size: LOG_BUFFER_SIZE,
         })
     }
 
     /// Get the pointer to the buffer.
     pub(crate) fn as_ptr(&self) -> *mut u8 {
         self.ptr
-    }
-
-    /// Get the size of the buffer.
-    pub(crate) fn size(&self) -> usize {
-        self.size
     }
 }
 
@@ -221,9 +218,5 @@ impl PagePool {
     /// Take a page from the pool. O(1), no allocation.
     pub(crate) fn take(&mut self) -> Option<KernelPage> {
         self.pages.pop()
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.pages.len()
     }
 }

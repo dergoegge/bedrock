@@ -7,9 +7,9 @@
 //! return previously written values.
 
 #[cfg(not(feature = "cargo"))]
-use super::super::logging::{StateHash, Xxh64Hasher};
+use super::super::prelude::*;
 #[cfg(feature = "cargo")]
-use crate::logging::{StateHash, Xxh64Hasher};
+use crate::prelude::*;
 
 /// Maximum size of serial input buffer.
 pub const SERIAL_INPUT_MAX_SIZE: usize = 256;

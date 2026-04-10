@@ -5,8 +5,9 @@
 //! Note: `extern crate alloc` must be declared at the kernel crate root
 //! (bedrock_main.rs) for alloc types to be available here.
 
-#![allow(unreachable_pub)]
+#![allow(unreachable_pub, dead_code)]
 
+mod compat;
 mod entry;
 mod table;
 mod traits;

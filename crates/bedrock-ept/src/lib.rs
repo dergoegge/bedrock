@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+mod compat;
 mod entry;
 mod table;
 mod traits;

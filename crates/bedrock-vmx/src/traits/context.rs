@@ -10,22 +10,6 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::registers::{
-    ControlRegisters, DebugRegisters, DescriptorTableRegisters, ExtendedControlRegisters,
-    SegmentRegisters,
-};
-#[cfg(feature = "cargo")]
-use crate::registers::{
-    ControlRegisters, DebugRegisters, DescriptorTableRegisters, ExtendedControlRegisters,
-    SegmentRegisters,
-};
-
-#[cfg(not(feature = "cargo"))]
-use super::super::vm_state::VmState;
-#[cfg(feature = "cargo")]
-use crate::vm_state::VmState;
-
 use super::{
     CowAllocator, InstructionCounter, Kernel, Machine, Page, VirtualMachineControlStructure,
     VmGetRegistersError, VmRunError, VmRunner, VmSetRegistersError, Vmx,
@@ -137,6 +121,7 @@ pub trait VmContext {
     /// Set guest registers from the provided register structs.
     ///
     /// The VMCS must be loaded before calling this method.
+    #[allow(clippy::too_many_arguments)]
     fn set_registers(
         &mut self,
         gprs: &GeneralPurposeRegisters,
@@ -162,6 +147,7 @@ pub trait VmContext {
     }
 
     /// Set guest registers with VMCS guarded load/clear.
+    #[allow(clippy::too_many_arguments)]
     fn set_registers_guarded(
         &mut self,
         gprs: &GeneralPurposeRegisters,

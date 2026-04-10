@@ -477,7 +477,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
         }
 
         let feedback_buffer = match &self.state.feedback_buffers[index] {
-            Some(fb) => fb.clone(),
+            Some(fb) => *fb,
             None => return,
         };
 
@@ -561,7 +561,11 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
             0
         } else {
             match self.state.log_mode {
-                LogMode::AtTsc | LogMode::AtShutdown | LogMode::AllExits | LogMode::Checkpoints | LogMode::TscRange => {
+                LogMode::AtTsc
+                | LogMode::AtShutdown
+                | LogMode::AllExits
+                | LogMode::Checkpoints
+                | LogMode::TscRange => {
                     // Hash only COW (modified) pages for forked VMs.
                     // This captures the delta from parent, which is what matters
                     // for comparing forked VM states.

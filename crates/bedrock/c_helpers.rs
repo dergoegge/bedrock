@@ -17,7 +17,7 @@ pub(crate) struct PerfEvent {
 ///
 /// Matches the kernel's struct xxh64_state from <linux/xxhash.h>.
 #[repr(C)]
-pub struct Xxh64State {
+pub(crate) struct Xxh64State {
     pub total_len: u64,
     pub v1: u64,
     pub v2: u64,
@@ -52,6 +52,7 @@ pub(crate) struct BedrockVmxCaps {
     pub(crate) has_vpid: bool,
 }
 
+#[allow(improper_ctypes)]
 extern "C" {
     /// Convert a struct page pointer to its physical address.
     pub(crate) fn bedrock_page_to_phys(page: *mut page) -> phys_addr_t;
@@ -151,13 +152,18 @@ extern "C" {
     ) -> core::ffi::c_int;
 
     /// Get VMA start address.
-    pub(crate) fn bedrock_vma_start(vma: *mut kernel::bindings::vm_area_struct) -> core::ffi::c_ulong;
+    pub(crate) fn bedrock_vma_start(
+        vma: *mut kernel::bindings::vm_area_struct,
+    ) -> core::ffi::c_ulong;
 
     /// Get VMA end address.
-    pub(crate) fn bedrock_vma_end(vma: *mut kernel::bindings::vm_area_struct) -> core::ffi::c_ulong;
+    pub(crate) fn bedrock_vma_end(vma: *mut kernel::bindings::vm_area_struct)
+        -> core::ffi::c_ulong;
 
     /// Get VMA page offset.
-    pub(crate) fn bedrock_vma_pgoff(vma: *mut kernel::bindings::vm_area_struct) -> core::ffi::c_ulong;
+    pub(crate) fn bedrock_vma_pgoff(
+        vma: *mut kernel::bindings::vm_area_struct,
+    ) -> core::ffi::c_ulong;
 
     /// Disable preemption on the current CPU.
     pub(crate) fn bedrock_preempt_disable();
@@ -178,6 +184,7 @@ extern "C" {
     pub(crate) fn bedrock_need_resched() -> core::ffi::c_int;
 
     /// Get the current real time as a Unix timestamp (seconds since 1970).
+    #[allow(dead_code)]
     pub(crate) fn bedrock_get_real_time_secs() -> u64;
 
     /// Register bedrock's perf guest callbacks.
@@ -201,10 +208,12 @@ extern "C" {
     /// When PF_VCPU is set, the kernel's time accounting automatically treats
     /// CPU time as guest time. This makes htop show guest time in orange.
     /// Call this before VM entry.
+    #[allow(dead_code)]
     pub(crate) fn bedrock_enter_guest();
 
     /// Clear VCPU flag when leaving guest mode.
     /// Call this after VM exit.
+    #[allow(dead_code)]
     pub(crate) fn bedrock_leave_guest();
 
     /// Create an instruction counter for guest instruction counting.
@@ -236,24 +245,20 @@ extern "C" {
     pub(crate) fn bedrock_get_perf_global_ctrl(guest_val: *mut u64, host_val: *mut u64) -> bool;
 
     /// One-shot XXH64 hash.
-    pub fn bedrock_xxh64(
-        input: *const core::ffi::c_void,
-        length: usize,
-        seed: u64,
-    ) -> u64;
+    pub(crate) fn bedrock_xxh64(input: *const core::ffi::c_void, length: usize, seed: u64) -> u64;
 
     /// Reset XXH64 state for streaming hashing.
-    pub fn bedrock_xxh64_reset(state: *mut Xxh64State, seed: u64);
+    pub(crate) fn bedrock_xxh64_reset(state: *mut Xxh64State, seed: u64);
 
     /// Update XXH64 state with more data.
-    pub fn bedrock_xxh64_update(
+    pub(crate) fn bedrock_xxh64_update(
         state: *mut Xxh64State,
         input: *const core::ffi::c_void,
         length: usize,
     );
 
     /// Finalize and return the XXH64 hash.
-    pub fn bedrock_xxh64_digest(state: *const Xxh64State) -> u64;
+    pub(crate) fn bedrock_xxh64_digest(state: *const Xxh64State) -> u64;
 
     /// Check if VMX is enabled on the current CPU.
     /// Must be called with preemption disabled.
@@ -339,4 +344,3 @@ pub(crate) fn local_irq_disable() {
     // SAFETY: Disabling interrupts is always safe.
     unsafe { bedrock_local_irq_disable() };
 }
-

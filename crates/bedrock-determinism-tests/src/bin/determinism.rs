@@ -154,7 +154,10 @@ struct RunResult {
 
 /// Format a run failure with context from the run directory.
 fn format_run_error(run_num: usize, run_dir: &Path, message: &str) -> String {
-    let mut msg = format!("Run {} failed: {}\n  Run directory: {:?}", run_num, message, run_dir);
+    let mut msg = format!(
+        "Run {} failed: {}\n  Run directory: {:?}",
+        run_num, message, run_dir
+    );
 
     // Include stderr tail if available
     let stderr_file = run_dir.join("stderr.txt");
@@ -392,12 +395,12 @@ impl ProgressDisplay {
         let div_str = if self.divergent > 0 {
             format!("\x1b[31m{} divergent\x1b[0m", format_count(self.divergent))
         } else {
-            format!("\x1b[90m0 divergent\x1b[0m")
+            "\x1b[90m0 divergent\x1b[0m".to_string()
         };
         let fail_str = if self.failed > 0 {
             format!("\x1b[31m{} failed\x1b[0m", format_count(self.failed))
         } else {
-            format!("\x1b[90m0 failed\x1b[0m")
+            "\x1b[90m0 failed\x1b[0m".to_string()
         };
         eprintln!(
             "\x1b[K  {}  \x1b[90m|\x1b[0m  {}  \x1b[90m|\x1b[0m  {}",
@@ -443,7 +446,10 @@ fn print_final_summary(
     eprintln!("  \x1b[90m{}\x1b[0m", "\u{2500}".repeat(50));
 
     if divergent == 0 && failed == 0 {
-        eprintln!("  \x1b[1;32mPASS\x1b[0m  \x1b[90m- all {} runs identical\x1b[0m", format_count(total));
+        eprintln!(
+            "  \x1b[1;32mPASS\x1b[0m  \x1b[90m- all {} runs identical\x1b[0m",
+            format_count(total)
+        );
     } else if divergent > 0 {
         eprintln!(
             "  \x1b[1;31mFAIL\x1b[0m  \x1b[90m- {} of {} runs divergent\x1b[0m",
@@ -475,12 +481,12 @@ fn print_final_summary(
         if divergent > 0 {
             format!("\x1b[31m{} divergent\x1b[0m", format_count(divergent))
         } else {
-            format!("\x1b[90m0 divergent\x1b[0m")
+            "\x1b[90m0 divergent\x1b[0m".to_string()
         },
         if failed > 0 {
             format!("\x1b[31m{} failed\x1b[0m", format_count(failed))
         } else {
-            format!("\x1b[90m0 failed\x1b[0m")
+            "\x1b[90m0 failed\x1b[0m".to_string()
         },
     );
 
@@ -624,7 +630,7 @@ fn write_config_file(args: &Args, vmlinux: &str, cli_path: &Path) -> io::Result<
     Ok(())
 }
 
-fn run_sequential(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process::ExitCode {
+fn run_sequential(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::ExitCode {
     let mut reference_result: Option<RunResult> = None;
     let mut summary_lines: Vec<String> = Vec::new();
     let mut ok_count = 0;
@@ -633,10 +639,7 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::proces
     let start = Instant::now();
 
     for run_num in 1..=args.runs {
-        eprintln!(
-            "\x1b[1m=== Run {}/{} ===\x1b[0m",
-            run_num, args.runs
-        );
+        eprintln!("\x1b[1m=== Run {}/{} ===\x1b[0m", run_num, args.runs);
 
         let result = match run_vm(args, vmlinux, cli_path, run_num) {
             Ok(r) => r,
@@ -647,7 +650,10 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::proces
         };
 
         run_times.push(result.wall_time);
-        eprintln!("  \x1b[90mWall time: {}\x1b[0m", format_run_time(result.wall_time));
+        eprintln!(
+            "  \x1b[90mWall time: {}\x1b[0m",
+            format_run_time(result.wall_time)
+        );
 
         // Print log entry or checkpoint summary
         if let Some(ref entry) = result.log_entry {
@@ -672,10 +678,7 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::proces
                     summary_lines.push(format!("Run {:03}: DIVERGENT", run_num));
                     // Move divergent run directory into workdir for analysis
                     let dest = args.workdir.join(format!("run-{:03}", run_num));
-                    let status = Command::new("mv")
-                        .arg(&result.run_dir)
-                        .arg(&dest)
-                        .status();
+                    let status = Command::new("mv").arg(&result.run_dir).arg(&dest).status();
                     match status {
                         Ok(s) if !s.success() => eprintln!(
                             "\nWarning: failed to move run-{:03} to {:?} (kept at {:?})",
@@ -797,7 +800,7 @@ fn compare_and_record(
     }
 }
 
-fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process::ExitCode {
+fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::ExitCode {
     let (tx, rx) = mpsc::channel::<Result<RunResult, String>>();
 
     // Spawn worker threads
@@ -827,7 +830,7 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
             active_threads += 1;
 
             let tx = tx.clone();
-            let cli_path = cli_path.clone();
+            let cli_path = cli_path.to_path_buf();
             let workdir = args.workdir.clone();
 
             // Clone args for the thread
@@ -836,9 +839,9 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
             let cmdline = args.cmdline.clone();
             let memory = args.memory;
             let seed = args.seed;
-            let stop_at_tsc = args.stop_at_tsc.or_else(|| {
-                args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)
-            });
+            let stop_at_tsc = args
+                .stop_at_tsc
+                .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64));
             let checkpoint_interval = args.checkpoint_interval;
             let single_step = args.single_step;
             let log_after_tsc = args.log_after_tsc;
@@ -879,30 +882,9 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
             match result {
                 Ok(run_result) => {
                     let run_time = run_result.wall_time;
-                    if reference.is_none() {
-                        if run_result.run_num == 1 {
-                            // Run 1 is always the reference
-                            summary_lines.push("Run 001: REFERENCE".to_string());
-                            reference = Some(run_result);
-                            // Process any results that arrived before run 1
-                            for buffered in pending.drain(..) {
-                                compare_and_record(
-                                    reference.as_ref().unwrap(),
-                                    buffered,
-                                    multi_entry,
-                                    &args.workdir,
-                                    &mut ok_count,
-                                    &mut divergences,
-                                    &mut summary_lines,
-                                );
-                            }
-                        } else {
-                            // Buffer until run 1 arrives
-                            pending.push(run_result);
-                        }
-                    } else {
+                    if let Some(ref_result) = &reference {
                         compare_and_record(
-                            reference.as_ref().unwrap(),
+                            ref_result,
                             run_result,
                             multi_entry,
                             &args.workdir,
@@ -910,6 +892,25 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &PathBuf) -> std::process:
                             &mut divergences,
                             &mut summary_lines,
                         );
+                    } else if run_result.run_num == 1 {
+                        // Run 1 is always the reference
+                        summary_lines.push("Run 001: REFERENCE".to_string());
+                        reference = Some(run_result);
+                        // Process any results that arrived before run 1
+                        for buffered in pending.drain(..) {
+                            compare_and_record(
+                                reference.as_ref().unwrap(),
+                                buffered,
+                                multi_entry,
+                                &args.workdir,
+                                &mut ok_count,
+                                &mut divergences,
+                                &mut summary_lines,
+                            );
+                        }
+                    } else {
+                        // Buffer until run 1 arrives
+                        pending.push(run_result);
                     }
                     progress.update(ok_count, divergences.len(), failures.len(), Some(run_time));
                 }
@@ -1001,16 +1002,20 @@ fn write_summary_file(args: &Args, summary_lines: &[String], divergence: Option<
     }
 }
 
-fn run_vm(args: &Args, vmlinux: &str, cli_path: &PathBuf, run_num: usize) -> Result<RunResult, String> {
+fn run_vm(
+    args: &Args,
+    vmlinux: &str,
+    cli_path: &Path,
+    run_num: usize,
+) -> Result<RunResult, String> {
     run_vm_inner(
         vmlinux,
         args.initramfs.as_deref(),
         args.cmdline.as_deref(),
         args.memory,
         args.seed,
-        args.stop_at_tsc.or_else(|| {
-            args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)
-        }),
+        args.stop_at_tsc
+            .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)),
         args.checkpoint_interval,
         args.single_step,
         args.log_after_tsc,
@@ -1025,6 +1030,7 @@ fn run_vm(args: &Args, vmlinux: &str, cli_path: &PathBuf, run_num: usize) -> Res
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_vm_inner(
     vmlinux: &str,
     initramfs: Option<&str>,
@@ -1040,8 +1046,8 @@ fn run_vm_inner(
     log_all_exits: bool,
     no_memory_hash: bool,
     intercept_pf: bool,
-    cli_path: &PathBuf,
-    workdir: &PathBuf,
+    cli_path: &Path,
+    workdir: &Path,
     run_num: usize,
 ) -> Result<RunResult, String> {
     // Create run directory: run-001 (reference) goes in workdir, others use a
@@ -1051,8 +1057,12 @@ fn run_vm_inner(
     } else {
         std::env::temp_dir().join(format!("{}{:03}", temp_run_prefix(), run_num))
     };
-    fs::create_dir_all(&run_dir)
-        .map_err(|e| format!("Run {}: failed to create directory {:?}: {}", run_num, run_dir, e))?;
+    fs::create_dir_all(&run_dir).map_err(|e| {
+        format!(
+            "Run {}: failed to create directory {:?}: {}",
+            run_num, run_dir, e
+        )
+    })?;
 
     let log_file = run_dir.join("exit-log.jsonl");
     let stdout_file = run_dir.join("stdout.txt");
@@ -1128,7 +1138,8 @@ fn run_vm_inner(
     cmd.stderr(Stdio::from(stderr_handle));
 
     let run_start = Instant::now();
-    let status = cmd.status()
+    let status = cmd
+        .status()
         .map_err(|e| format!("Run {}: failed to execute bedrock-cli: {}", run_num, e))?;
     let wall_time = run_start.elapsed();
 
@@ -1377,7 +1388,11 @@ fn compare_exit_stats(a: &ExitStats, b: &ExitStats) -> Option<String> {
         ("msr_read", a.msr_read.count, b.msr_read.count),
         ("msr_write", a.msr_write.count, b.msr_write.count),
         ("cr_access", a.cr_access.count, b.cr_access.count),
-        ("io_instruction", a.io_instruction.count, b.io_instruction.count),
+        (
+            "io_instruction",
+            a.io_instruction.count,
+            b.io_instruction.count,
+        ),
         ("rdtsc", a.rdtsc.count, b.rdtsc.count),
         ("rdtscp", a.rdtscp.count, b.rdtscp.count),
         ("rdpmc", a.rdpmc.count, b.rdpmc.count),

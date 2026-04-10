@@ -32,9 +32,7 @@ impl Default for IoApicState {
     fn default() -> Self {
         // Initialize all redirection entries as masked (bit 16 = 1)
         let mut redtbl = [0u64; IOAPIC_NUM_PINS];
-        for entry in &mut redtbl {
-            *entry = 1 << 16; // Masked
-        }
+        redtbl.fill(1 << 16);
         Self {
             ioregsel: 0,
             id: 0,

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 
 extern crate alloc;
-use alloc::vec::Vec;
 use super::*;
+use alloc::vec::Vec;
 
 #[test]
 fn test_vpid_allocation() {

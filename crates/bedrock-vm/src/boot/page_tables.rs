@@ -18,7 +18,7 @@ pub fn setup_page_tables(memory: &mut [u8], memory_size: usize) {
     let mb2 = 2 * 1024 * 1024usize;
 
     // Use 2MB pages - need one PD per GB
-    let num_gb = (memory_size + gb - 1) / gb;
+    let num_gb = memory_size.div_ceil(gb);
     let num_gb = num_gb.max(4); // Map at least 4GB for kernel
 
     // Clear page table area (PML4 through all PDs we'll use)

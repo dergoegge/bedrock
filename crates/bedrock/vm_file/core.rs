@@ -17,7 +17,7 @@ use super::super::vmx::{ForkedVm, RootVm};
 /// allowing safe type identification through a raw pointer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum VmFileType {
+pub(crate) enum VmFileType {
     /// Root VM that owns its memory.
     Root = 0,
     /// Forked VM using copy-on-write from a parent.
@@ -30,7 +30,7 @@ pub enum VmFileType {
 /// When the file descriptor is closed, this struct is dropped, freeing all VM
 /// resources.
 #[repr(C)]
-pub struct BedrockVmFile {
+pub(crate) struct BedrockVmFile {
     /// Type discriminant - MUST be first field for safe type identification.
     pub vm_file_type: VmFileType,
     /// The actual VM with VMCS, guest memory, EPT, etc.
@@ -50,7 +50,7 @@ pub struct BedrockVmFile {
 
 impl BedrockVmFile {
     /// Create a new BedrockVmFile wrapping a RootVm.
-    pub fn new(
+    pub(crate) fn new(
         vm: RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>,
         vm_id: u64,
     ) -> Self {
@@ -71,7 +71,7 @@ impl BedrockVmFile {
 /// When the file descriptor is closed, this struct is dropped, freeing all VM
 /// resources and decrementing the parent's children count.
 #[repr(C)]
-pub struct BedrockForkedVmFile {
+pub(crate) struct BedrockForkedVmFile {
     /// Type discriminant - MUST be first field for safe type identification.
     pub vm_file_type: VmFileType,
     /// The forked VM with COW memory.
@@ -88,11 +88,11 @@ pub struct BedrockForkedVmFile {
 
 /// Number of pages to pre-allocate in the COW page pool for forked VMs.
 /// 512 pages = 2MB. The pool is refilled when it drops below 5% of target.
-pub const COW_POOL_SIZE: usize = 512;
+pub(crate) const COW_POOL_SIZE: usize = 512;
 
 impl BedrockForkedVmFile {
     /// Create a new BedrockForkedVmFile wrapping a ForkedVm.
-    pub fn new(
+    pub(crate) fn new(
         vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
         vm_id: u64,
     ) -> Self {
@@ -113,7 +113,7 @@ impl BedrockForkedVmFile {
 ///
 /// The pointer must point to either a valid `BedrockVmFile` or `BedrockForkedVmFile`.
 /// Both structs must have `vm_file_type` as their first field.
-pub unsafe fn read_vm_file_type(ptr: *const ()) -> VmFileType {
+pub(crate) unsafe fn read_vm_file_type(ptr: *const ()) -> VmFileType {
     // SAFETY: Both BedrockVmFile and BedrockForkedVmFile have vm_file_type as their
     // first field (enforced by #[repr(C)] and struct layout), so we can safely read
     // the first byte to determine the type.

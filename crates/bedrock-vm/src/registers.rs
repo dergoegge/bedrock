@@ -168,10 +168,10 @@ impl Regs {
 
     /// Create a new Regs with reasonable defaults for real mode.
     pub fn real_mode() -> Self {
-        let mut regs = Self::default();
-
-        // RFLAGS: reserved bit must be set
-        regs.rflags = Self::RFLAGS_RESERVED;
+        let mut regs = Self {
+            rflags: Self::RFLAGS_RESERVED,
+            ..Default::default()
+        };
 
         // CR0: just protection and cache settings
         regs.control_regs.cr0 = Cr0::new(cr0::NE | cr0::ET);
@@ -201,10 +201,10 @@ impl Regs {
 
     /// Create a new Regs for 64-bit long mode.
     pub fn long_mode() -> Self {
-        let mut regs = Self::default();
-
-        // RFLAGS: reserved bit must be set
-        regs.rflags = Self::RFLAGS_RESERVED;
+        let mut regs = Self {
+            rflags: Self::RFLAGS_RESERVED,
+            ..Default::default()
+        };
 
         // CR0: PE + PG + NE + ET
         regs.control_regs.cr0 = Cr0::new(cr0::PE | cr0::PG | cr0::NE | cr0::ET);

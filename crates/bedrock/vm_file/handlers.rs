@@ -14,8 +14,8 @@ use super::super::c_helpers::{bedrock_copy_from_user, bedrock_copy_to_user, Pree
 use super::super::factory::KernelFrameAllocator;
 use super::super::machine::MACHINE;
 use super::super::page::{LogBuffer, PagePool};
-use super::super::vmx::ExitReason;
 use super::super::vmx::traits::{CowAllocator, Machine, VmContext};
+use super::super::vmx::ExitReason;
 use super::super::vmx::{LogMode, RdrandMode};
 use super::super::vmx_asm::RealVmRunner;
 use super::structs::*;
@@ -52,30 +52,35 @@ pub(crate) trait VmFileOps {
     /// Get the children count (for error messages).
     fn children_count(&self) -> usize;
 
-    /// Returns true if this is a root VM (has guest memory for mmap).
-    fn is_root_vm(&self) -> bool;
-
     /// Get mutable references to both the VM and page pool.
     /// Enables split-borrow: vm and pool are disjoint fields.
     fn vm_and_pool(&mut self) -> (&mut Self::Vm, &mut PagePool);
 }
 
 /// Handle GET_REGS ioctl - copy all VM registers to userspace.
-pub fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
+pub(crate) fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     let vm = vm_file.vm();
 
     // Disable preemption to ensure we stay on the same CPU during VMCS operations
     let _preempt_guard = PreemptionGuard::new();
 
     // Use VmContext::get_registers_guarded to load VMCS, read registers, and clear VMCS
-    let (gprs, control_regs, debug_regs, segment_regs, descriptor_tables, extended_control, rip, rflags) =
-        match vm.get_registers_guarded() {
-            Ok(regs) => regs,
-            Err(e) => {
-                log_err!("GET_REGS failed: {:?}\n", e);
-                return -(bindings::EINVAL as isize);
-            }
-        };
+    let (
+        gprs,
+        control_regs,
+        debug_regs,
+        segment_regs,
+        descriptor_tables,
+        extended_control,
+        rip,
+        rflags,
+    ) = match vm.get_registers_guarded() {
+        Ok(regs) => regs,
+        Err(e) => {
+            log_err!("GET_REGS failed: {:?}\n", e);
+            return -(bindings::EINVAL as isize);
+        }
+    };
 
     let regs = BedrockRegs {
         gprs,
@@ -105,7 +110,7 @@ pub fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
 }
 
 /// Handle SET_REGS ioctl - copy all VM registers from userspace.
-pub fn handle_set_regs<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+pub(crate) fn handle_set_regs<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut regs = core::mem::MaybeUninit::<BedrockRegs>::uninit();
 
     // Copy from userspace
@@ -154,7 +159,7 @@ use super::super::vmcs::RealVmcs;
 /// Uses a refill loop: before each VM entry, the page pool is refilled in
 /// sleepable context. If the pool is exhausted mid-run (PoolExhausted exit),
 /// the run loop exits back to sleepable context, refills, and re-enters.
-pub fn handle_run<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize
+pub(crate) fn handle_run<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize
 where
     F::Vm: VmContext<Vmcs = RealVmcs>,
     for<'a> KernelFrameAllocator<'a>: CowAllocator<<F::Vm as VmContext>::CowPage>,
@@ -205,7 +210,6 @@ where
     let exit_reason = loop {
         // Refill pool in sleepable context (before disabling preemption)
         if pool_exhausted {
-            pool_exhausted = false;
             let (_, pool) = vm_file.vm_and_pool();
             if !pool.refill() {
                 return -(bindings::ENOMEM as isize);
@@ -281,7 +285,7 @@ where
 }
 
 /// Handle GET_VM_ID ioctl - return the VM's unique identifier.
-pub fn handle_get_vm_id<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
+pub(crate) fn handle_get_vm_id<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     let vm_id = vm_file.vm_id();
 
     let not_copied = unsafe {
@@ -300,7 +304,7 @@ pub fn handle_get_vm_id<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
 }
 
 /// Handle SET_RDRAND_CONFIG ioctl - configure RDRAND emulation mode.
-pub fn handle_set_rdrand_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+pub(crate) fn handle_set_rdrand_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut config = core::mem::MaybeUninit::<BedrockRdrandConfig>::uninit();
 
     let not_copied = unsafe {
@@ -341,7 +345,7 @@ pub fn handle_set_rdrand_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> is
 }
 
 /// Handle SET_RDRAND_VALUE ioctl - set pending RDRAND value.
-pub fn handle_set_rdrand_value<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+pub(crate) fn handle_set_rdrand_value<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut value: u64 = 0;
 
     let not_copied = unsafe {
@@ -369,7 +373,7 @@ pub fn handle_set_rdrand_value<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isi
 /// - SET_LOG_MODE (mode and target_tsc)
 /// - SET_LOG_START_TSC (start threshold)
 /// - SET_LOG_THRESHOLD (legacy, now uses start_tsc)
-pub fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+pub(crate) fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut config = core::mem::MaybeUninit::<BedrockLogConfig>::uninit();
 
     let not_copied = unsafe {
@@ -426,10 +430,19 @@ pub fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize
     }
 
     // Set the log mode and thresholds
-    vm_file.vm_mut().state_mut().set_log_mode(mode, config.target_tsc);
-    vm_file.vm_mut().state_mut().set_log_start_tsc(config.start_tsc);
+    vm_file
+        .vm_mut()
+        .state_mut()
+        .set_log_mode(mode, config.target_tsc);
+    vm_file
+        .vm_mut()
+        .state_mut()
+        .set_log_start_tsc(config.start_tsc);
     vm_file.vm_mut().state_mut().skip_memory_hash = (config.flags & 1) != 0;
-    vm_file.vm_mut().state_mut().set_intercept_pf((config.flags & 2) != 0);
+    vm_file
+        .vm_mut()
+        .state_mut()
+        .set_intercept_pf((config.flags & 2) != 0);
 
     log_info!(
         "SET_LOG_CONFIG: enabled={}, mode={:?}, target_tsc={}, start_tsc={}, flags={:#x} for VM {}\n",
@@ -444,7 +457,7 @@ pub fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize
 }
 
 /// Handle GET_EXIT_STATS ioctl - retrieve exit handler performance statistics.
-pub fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
+pub(crate) fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     let stats = &vm_file.vm().state().exit_stats;
 
     // Helper to convert ExitStats to BedrockExitStatEntry
@@ -498,7 +511,7 @@ pub fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
 }
 
 /// Handle SET_STOP_TSC ioctl - set TSC value at which VM should stop.
-pub fn handle_set_stop_tsc<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+pub(crate) fn handle_set_stop_tsc<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut value = core::mem::MaybeUninit::<u64>::uninit();
 
     let not_copied = unsafe {
@@ -533,7 +546,7 @@ pub fn handle_set_stop_tsc<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
 }
 
 /// Handle SET_SINGLE_STEP ioctl - configure MTF single-stepping.
-pub fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+pub(crate) fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut config = core::mem::MaybeUninit::<BedrockSingleStepConfig>::uninit();
 
     let not_copied = unsafe {
@@ -562,10 +575,7 @@ pub fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isiz
     } else {
         vm.state_mut().single_step_tsc_range = None;
         vm.state_mut().mtf_enabled = false;
-        log_info!(
-            "SET_SINGLE_STEP: disabled for VM {}\n",
-            vm_file.vm_id()
-        );
+        log_info!("SET_SINGLE_STEP: disabled for VM {}\n", vm_file.vm_id());
     }
 
     0
@@ -575,7 +585,7 @@ pub fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isiz
 ///
 /// Takes a BedrockFeedbackBufferInfoRequest with the buffer index, returns
 /// BedrockFeedbackBufferInfo for that index.
-pub fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
+pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     // First read the request to get the buffer index
     let mut request = core::mem::MaybeUninit::<BedrockFeedbackBufferInfoRequest>::uninit();
 

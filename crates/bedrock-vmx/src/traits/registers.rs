@@ -10,31 +10,16 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::registers::{
-    ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, DebugRegisters, DescriptorTableRegisters, Efer,
-    ExtendedControlRegisters, Gdtr, Idtr, SegmentRegister, SegmentRegisters,
-};
-#[cfg(feature = "cargo")]
-use crate::registers::{
-    ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, DebugRegisters, DescriptorTableRegisters, Efer,
-    ExtendedControlRegisters, Gdtr, Idtr, SegmentRegister, SegmentRegisters,
-};
-
 use super::{
     InstructionCounter, VirtualMachineControlStructure, VmGetRegistersError, VmSetRegistersError,
     Vmx,
 };
 
-#[cfg(not(feature = "cargo"))]
-use super::super::vm_state::VmState;
-#[cfg(feature = "cargo")]
-use crate::vm_state::VmState;
-
 /// Set guest registers from the provided register structs.
 ///
 /// This writes all guest registers to the VMCS and updates the GPR state.
 /// The VMCS must be loaded before calling this method.
+#[allow(clippy::too_many_arguments)]
 pub fn set_registers<V, I>(
     state: &mut VmState<V, I>,
     gprs: &GeneralPurposeRegisters,
@@ -71,9 +56,9 @@ where
     {
         let vcpu = <V::M as super::Machine>::V::current_vcpu();
         let fixed_cr0 =
-            <V::M as super::Machine>::V::fix_cr0(&control_regs.cr0, &vcpu.capabilities());
+            <V::M as super::Machine>::V::fix_cr0(&control_regs.cr0, vcpu.capabilities());
         let fixed_cr4 =
-            <V::M as super::Machine>::V::fix_cr4(&control_regs.cr4, &vcpu.capabilities());
+            <V::M as super::Machine>::V::fix_cr4(&control_regs.cr4, vcpu.capabilities());
         state
             .vmcs
             .write_natural(VmcsFieldNatural::GuestCr0, fixed_cr0.bits())

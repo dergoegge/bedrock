@@ -81,6 +81,12 @@ pub struct VmxContext {
     pub guest_cr2: u64,
 }
 
+impl Default for VmxContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VmxContext {
     /// Create a new VmxContext with all registers zeroed.
     pub const fn new() -> Self {

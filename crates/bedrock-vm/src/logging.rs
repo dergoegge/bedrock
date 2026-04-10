@@ -191,8 +191,7 @@ impl LogEntry {
 /// The number of entries written.
 pub fn write_jsonl<W: Write>(writer: &mut W, entries: &[LogEntry]) -> io::Result<usize> {
     for entry in entries {
-        serde_json::to_writer(&mut *writer, entry)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        serde_json::to_writer(&mut *writer, entry).map_err(io::Error::other)?;
         writeln!(writer)?;
     }
     Ok(entries.len())

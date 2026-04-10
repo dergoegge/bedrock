@@ -115,17 +115,19 @@ pub fn handle_cr_access<C: VmContext>(
                 Ok(v) => v & !(1 << 3),
                 Err(e) => return ExitHandlerResult::Error(ExitError::VmcsReadError(e)),
             };
-            if let Err(_) = ctx
+            if ctx
                 .state()
                 .vmcs
                 .write_natural(VmcsFieldNatural::GuestCr0, cr0)
+                .is_err()
             {
                 return ExitHandlerResult::Error(ExitError::Fatal("Failed to write CR0 for CLTS"));
             }
-            if let Err(_) = ctx
+            if ctx
                 .state()
                 .vmcs
                 .write_natural(VmcsFieldNatural::Cr0ReadShadow, cr0)
+                .is_err()
             {
                 return ExitHandlerResult::Error(ExitError::Fatal(
                     "Failed to write CR0 shadow for CLTS",
@@ -139,17 +141,19 @@ pub fn handle_cr_access<C: VmContext>(
                 Ok(v) => (v & 0xFFFFFFF0) | ((msw as u64) & 0xF),
                 Err(e) => return ExitHandlerResult::Error(ExitError::VmcsReadError(e)),
             };
-            if let Err(_) = ctx
+            if ctx
                 .state()
                 .vmcs
                 .write_natural(VmcsFieldNatural::GuestCr0, cr0)
+                .is_err()
             {
                 return ExitHandlerResult::Error(ExitError::Fatal("Failed to write CR0 for LMSW"));
             }
-            if let Err(_) = ctx
+            if ctx
                 .state()
                 .vmcs
                 .write_natural(VmcsFieldNatural::Cr0ReadShadow, cr0)
+                .is_err()
             {
                 return ExitHandlerResult::Error(ExitError::Fatal(
                     "Failed to write CR0 shadow for LMSW",

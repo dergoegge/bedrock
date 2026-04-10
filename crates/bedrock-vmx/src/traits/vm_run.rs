@@ -10,19 +10,9 @@ use super::super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-#[cfg(not(feature = "cargo"))]
-use super::super::exits::{handle_exit, inject_pending_interrupt, update_mtf_state};
-#[cfg(feature = "cargo")]
-use crate::exits::{handle_exit, inject_pending_interrupt, update_mtf_state};
-
-#[cfg(not(feature = "cargo"))]
-use super::super::vm_state::VmState;
-#[cfg(feature = "cargo")]
-use crate::vm_state::VmState;
-
 use super::{
-    CowAllocator, InstructionCounter, IrqGuard, Kernel, Machine, Page,
-    ReverseIrqGuard, VirtualMachineControlStructure, VmContext, VmRunError, VmRunner, VmxContext,
+    CowAllocator, InstructionCounter, IrqGuard, Kernel, Machine, Page, ReverseIrqGuard,
+    VirtualMachineControlStructure, VmContext, VmRunError, VmRunner, VmxContext,
 };
 
 // ========== GPR Sync Methods ==========
@@ -237,9 +227,7 @@ where
     // The perf_global_ctrl values and entry/exit control bits are constant
     // for the entire run loop — write them once to avoid per-exit VMCS
     // operations (each VMWRITE traps to L0 in nested virt).
-    if let Some((guest_val, host_val)) =
-        ctx.state().instruction_counter.perf_global_ctrl_values()
-    {
+    if let Some((guest_val, host_val)) = ctx.state().instruction_counter.perf_global_ctrl_values() {
         let _ = ctx
             .state()
             .vmcs
@@ -324,8 +312,7 @@ where
             ctx.state_mut().last_instruction_count = count;
         }
         let post_irq_tsc = rdtsc();
-        ctx.state_mut().exit_stats.irq_window_cycles +=
-            post_irq_tsc.saturating_sub(pre_irq_tsc);
+        ctx.state_mut().exit_stats.irq_window_cycles += post_irq_tsc.saturating_sub(pre_irq_tsc);
 
         if let Err(ref e) = run_result {
             // VM entry failed - try to read error info from VMCS

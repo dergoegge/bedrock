@@ -25,23 +25,12 @@ fn test_null_counter_is_copy() {
 }
 
 /// Mock counter for testing VM code that uses instruction counting.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MockInstructionCounter {
     pub count: u64,
     pub enabled: bool,
     pub enable_count: u32,
     pub disable_count: u32,
-}
-
-impl Default for MockInstructionCounter {
-    fn default() -> Self {
-        Self {
-            count: 0,
-            enabled: false,
-            enable_count: 0,
-            disable_count: 0,
-        }
-    }
 }
 
 impl MockInstructionCounter {

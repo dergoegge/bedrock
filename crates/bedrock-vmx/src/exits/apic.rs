@@ -87,12 +87,8 @@ pub fn handle_apic_access<C: VmContext>(
         // APIC read - get value from emulated APIC and write to destination register
         let value = read_apic_register(&ctx.state().devices.apic, offset);
 
-        // Write to the destination register (zero-extended for 32-bit)
-        let reg_value = if decoded.operand_size <= 4 {
-            value as u64
-        } else {
-            value as u64 // APIC registers are 32-bit
-        };
+        // Write to the destination register (zero-extended, APIC registers are 32-bit)
+        let reg_value = value as u64;
 
         set_gpr_value(&mut ctx.state_mut().gprs, decoded.register, reg_value);
 
@@ -117,10 +113,11 @@ pub fn handle_apic_access<C: VmContext>(
 
     // Advance RIP past the instruction
     let new_rip = rip + decoded.length as u64;
-    if let Err(_) = ctx
+    if ctx
         .state()
         .vmcs
         .write_natural(VmcsFieldNatural::GuestRip, new_rip)
+        .is_err()
     {
         return ExitHandlerResult::Error(ExitError::Fatal("Failed to advance RIP for APIC access"));
     }
@@ -153,33 +150,12 @@ fn read_apic_register(apic: &ApicState, offset: u32) -> u32 {
         0x0E0 => apic.dfr,
         // Spurious Interrupt Vector Register
         0x0F0 => apic.svr,
-        // In-Service Register (8 x 32-bit, offsets 0x100-0x170)
-        0x100 => apic.isr[0],
-        0x110 => apic.isr[1],
-        0x120 => apic.isr[2],
-        0x130 => apic.isr[3],
-        0x140 => apic.isr[4],
-        0x150 => apic.isr[5],
-        0x160 => apic.isr[6],
-        0x170 => apic.isr[7],
-        // Trigger Mode Register (8 x 32-bit, offsets 0x180-0x1F0)
-        0x180 => apic.tmr[0],
-        0x190 => apic.tmr[1],
-        0x1A0 => apic.tmr[2],
-        0x1B0 => apic.tmr[3],
-        0x1C0 => apic.tmr[4],
-        0x1D0 => apic.tmr[5],
-        0x1E0 => apic.tmr[6],
-        0x1F0 => apic.tmr[7],
-        // Interrupt Request Register (8 x 32-bit, offsets 0x200-0x270)
-        0x200 => apic.irr[0],
-        0x210 => apic.irr[1],
-        0x220 => apic.irr[2],
-        0x230 => apic.irr[3],
-        0x240 => apic.irr[4],
-        0x250 => apic.irr[5],
-        0x260 => apic.irr[6],
-        0x270 => apic.irr[7],
+        // In-Service Register (8 x 32-bit, offsets 0x100-0x170, stride 0x10)
+        0x100..=0x170 => apic.isr[((offset - 0x100) >> 4) as usize],
+        // Trigger Mode Register (8 x 32-bit, offsets 0x180-0x1F0, stride 0x10)
+        0x180..=0x1F0 => apic.tmr[((offset - 0x180) >> 4) as usize],
+        // Interrupt Request Register (8 x 32-bit, offsets 0x200-0x270, stride 0x10)
+        0x200..=0x270 => apic.irr[((offset - 0x200) >> 4) as usize],
         // Error Status Register
         0x280 => apic.esr,
         // Interrupt Command Register (low)
@@ -339,7 +315,7 @@ pub fn handle_ioapic_access<C: VmContext>(
 
     // Read instruction bytes from guest memory
     let mut instr_bytes = [0u8; 15];
-    if let Err(_) = ctx.read_guest_memory(instr_gpa, &mut instr_bytes) {
+    if ctx.read_guest_memory(instr_gpa, &mut instr_bytes).is_err() {
         return ExitHandlerResult::Error(ExitError::Fatal("Failed to read I/O APIC instruction"));
     }
 
@@ -396,10 +372,11 @@ pub fn handle_ioapic_access<C: VmContext>(
 
     // Advance RIP past the instruction
     let new_rip = rip + decoded.length as u64;
-    if let Err(_) = ctx
+    if ctx
         .state()
         .vmcs
         .write_natural(VmcsFieldNatural::GuestRip, new_rip)
+        .is_err()
     {
         return ExitHandlerResult::Error(ExitError::Fatal(
             "Failed to advance RIP for I/O APIC access",
@@ -422,7 +399,7 @@ fn read_ioapic_register(ioapic: &IoApicState) -> u32 {
             // Arbitration ID (bits 27:24) - use same as ID
             ioapic.id
         }
-        _ if reg >= IOAPIC_REG_REDTBL_BASE && reg < IOAPIC_REG_REDTBL_BASE + 48 => {
+        _ if (IOAPIC_REG_REDTBL_BASE..IOAPIC_REG_REDTBL_BASE + 48).contains(&reg) => {
             // Redirection table entry (24 entries, 2 registers each)
             let entry_idx = ((reg - IOAPIC_REG_REDTBL_BASE) / 2) as usize;
             let is_high = (reg - IOAPIC_REG_REDTBL_BASE) % 2 == 1;
@@ -456,7 +433,7 @@ fn write_ioapic_register<C: VmContext>(ctx: &mut C, value: u32) {
         IOAPIC_REG_VER | IOAPIC_REG_ARB => {
             // Read-only registers
         }
-        _ if reg >= IOAPIC_REG_REDTBL_BASE && reg < IOAPIC_REG_REDTBL_BASE + 48 => {
+        _ if (IOAPIC_REG_REDTBL_BASE..IOAPIC_REG_REDTBL_BASE + 48).contains(&reg) => {
             // Redirection table entry
             let entry_idx = ((reg - IOAPIC_REG_REDTBL_BASE) / 2) as usize;
             let is_high = (reg - IOAPIC_REG_REDTBL_BASE) % 2 == 1;

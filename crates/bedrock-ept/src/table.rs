@@ -2,10 +2,7 @@
 
 //! EPT page table management.
 
-#[cfg(feature = "cargo")]
-use alloc::vec::Vec;
-#[cfg(not(feature = "cargo"))]
-use kernel::alloc::{allocator::KVmalloc, Vec as KVec};
+use super::compat::{ept_vec_init, ept_vec_push, ept_vec_with_capacity, EptVec};
 
 use super::entry::{EptEntry, EptMemoryType, EptPermissions};
 use super::traits::{FrameAllocator, GuestPhysAddr, HostPhysAddr, VirtAddr};
@@ -26,12 +23,9 @@ pub struct EptPageTable<Frame> {
     /// Host physical address of the PML4 table (used for EPTP).
     pml4_phys: HostPhysAddr,
     /// All allocated EPT frames. Freed automatically on drop.
-    /// Uses KVmalloc in kernel builds so the backing allocation can fall back
-    /// to vmalloc when kmalloc fails for large contiguous allocations.
-    #[cfg(feature = "cargo")]
-    frames: Vec<Frame>,
-    #[cfg(not(feature = "cargo"))]
-    frames: KVec<Frame, KVmalloc>,
+    /// Uses vmalloc-backed allocation in kernel builds so the backing allocation
+    /// can fall back to vmalloc when kmalloc fails for large contiguous allocations.
+    frames: EptVec<Frame>,
 }
 
 impl<Frame> EptPageTable<Frame> {
@@ -48,15 +42,7 @@ impl<Frame> EptPageTable<Frame> {
             core::ptr::write_bytes(pml4_virt, 0, 4096);
         }
 
-        // Create the frames Vec with initial frame
-        #[cfg(feature = "cargo")]
-        let frames = alloc::vec![pml4_frame];
-        #[cfg(not(feature = "cargo"))]
-        let frames = {
-            let mut v = KVec::new();
-            let _ = v.push(pml4_frame, kernel::alloc::flags::GFP_KERNEL);
-            v
-        };
+        let frames = ept_vec_init(pml4_frame);
 
         Ok(Self { pml4_phys, frames })
     }
@@ -241,17 +227,7 @@ impl<Frame> EptPageTable<Frame> {
             }
 
             // Store the frame so it gets freed when EPT is dropped
-            #[cfg(feature = "cargo")]
-            self.frames.push(new_frame);
-            #[cfg(not(feature = "cargo"))]
-            {
-                // In kernel, push can fail on allocation, but we just allocated a frame
-                // so this should succeed. If it fails, the frame will leak which is
-                // unfortunate but not catastrophic.
-                let _ = self
-                    .frames
-                    .push(new_frame, kernel::alloc::flags::GFP_KERNEL);
-            }
+            ept_vec_push(&mut self.frames, new_frame);
 
             Ok(new_phys)
         }
@@ -274,15 +250,7 @@ impl<Frame> EptPageTable<Frame> {
         &self,
         allocator: &mut A,
     ) -> Result<Self, A::Error> {
-        #[cfg(feature = "cargo")]
-        let mut frames = Vec::with_capacity(self.frames.len());
-        #[cfg(not(feature = "cargo"))]
-        let mut frames = {
-            let mut v = KVec::new();
-            // Pre-allocate to avoid repeated reallocations during clone.
-            let _ = v.reserve(self.frames.len(), kernel::alloc::flags::GFP_KERNEL);
-            v
-        };
+        let mut frames = ept_vec_with_capacity(self.frames.len());
 
         // Allocate new PML4
         let new_pml4_frame = allocator.allocate_frame()?;
@@ -292,10 +260,7 @@ impl<Frame> EptPageTable<Frame> {
             core::ptr::write_bytes(new_pml4_virt, 0, 4096);
         }
 
-        #[cfg(feature = "cargo")]
-        frames.push(new_pml4_frame);
-        #[cfg(not(feature = "cargo"))]
-        let _ = frames.push(new_pml4_frame, kernel::alloc::flags::GFP_KERNEL);
+        ept_vec_push(&mut frames, new_pml4_frame);
 
         let src_pml4 = allocator.phys_to_virt(self.pml4_phys) as *const EptEntry;
         let dst_pml4 = new_pml4_virt as *mut EptEntry;
@@ -315,10 +280,7 @@ impl<Frame> EptPageTable<Frame> {
                 core::ptr::write_bytes(new_pdpt_virt, 0, 4096);
             }
 
-            #[cfg(feature = "cargo")]
-            frames.push(new_pdpt_frame);
-            #[cfg(not(feature = "cargo"))]
-            let _ = frames.push(new_pdpt_frame, kernel::alloc::flags::GFP_KERNEL);
+            ept_vec_push(&mut frames, new_pdpt_frame);
 
             // Set PML4 entry pointing to new PDPT (same permissions as source)
             unsafe {
@@ -344,10 +306,7 @@ impl<Frame> EptPageTable<Frame> {
                     core::ptr::write_bytes(new_pd_virt, 0, 4096);
                 }
 
-                #[cfg(feature = "cargo")]
-                frames.push(new_pd_frame);
-                #[cfg(not(feature = "cargo"))]
-                let _ = frames.push(new_pd_frame, kernel::alloc::flags::GFP_KERNEL);
+                ept_vec_push(&mut frames, new_pd_frame);
 
                 // Set PDPT entry pointing to new PD
                 unsafe {
@@ -373,10 +332,7 @@ impl<Frame> EptPageTable<Frame> {
                         core::ptr::write_bytes(new_pt_virt, 0, 4096);
                     }
 
-                    #[cfg(feature = "cargo")]
-                    frames.push(new_pt_frame);
-                    #[cfg(not(feature = "cargo"))]
-                    let _ = frames.push(new_pt_frame, kernel::alloc::flags::GFP_KERNEL);
+                    ept_vec_push(&mut frames, new_pt_frame);
 
                     // Set PD entry pointing to new PT
                     unsafe {

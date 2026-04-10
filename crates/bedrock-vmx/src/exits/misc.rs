@@ -143,24 +143,6 @@ pub fn exception_name(vector: u8) -> &'static str {
     }
 }
 
-/// Read TSC.
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
-fn rdtsc() -> u64 {
-    unsafe {
-        let lo: u32;
-        let hi: u32;
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, preserves_flags));
-        ((hi as u64) << 32) | (lo as u64)
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-#[allow(dead_code)]
-fn rdtsc() -> u64 {
-    0
-}
-
 // =============================================================================
 // Triple Fault Debugging
 // =============================================================================
@@ -310,7 +292,7 @@ pub fn dump_triple_fault_state<C: VmContext>(ctx: &C) {
 pub fn handle_xsetbv<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     let gprs = ctx.state().gprs;
     let xcr_num = gprs.rcx as u32;
-    let value = ((gprs.rdx as u64) << 32) | (gprs.rax as u64 & 0xFFFFFFFF);
+    let value = (gprs.rdx << 32) | (gprs.rax & 0xFFFFFFFF);
 
     // Only XCR0 is currently defined
     if xcr_num != 0 {
