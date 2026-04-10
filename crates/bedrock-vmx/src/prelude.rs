@@ -178,9 +178,9 @@ pub use crate::timing::rdtsc;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::compat::{
-    heap_box, heap_vec_push, heap_vec_with_capacity, HeapBox, HeapVec, VmallocBox,
+    heap_box, heap_vec_push, heap_vec_with_capacity, AllocError, HeapBox, HeapVec, VmallocBox,
 };
 #[cfg(feature = "cargo")]
 pub use crate::compat::{
-    heap_box, heap_vec_push, heap_vec_with_capacity, HeapBox, HeapVec, VmallocBox,
+    heap_box, heap_vec_push, heap_vec_with_capacity, AllocError, HeapBox, HeapVec, VmallocBox,
 };

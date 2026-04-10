@@ -94,7 +94,7 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
         X::initialize(machine)?;
 
         let vm_list =
-            heap_vec_with_capacity(MAX_VMS).map_err(|()| VmxInitError::MemoryAllocationFailed)?;
+            heap_vec_with_capacity(MAX_VMS).map_err(|_| VmxInitError::MemoryAllocationFailed)?;
 
         Ok(Self {
             vm_list,
