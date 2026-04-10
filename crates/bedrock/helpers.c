@@ -15,8 +15,6 @@
 #include <linux/file.h>
 #include <linux/uaccess.h>
 #include <linux/preempt.h>
-#include <linux/sched.h>
-#include <linux/ktime.h>
 #include <linux/perf_event.h>
 #include <linux/percpu.h>
 #include <linux/xxhash.h>
@@ -410,26 +408,6 @@ void bedrock_local_irq_disable(void)
 EXPORT_SYMBOL_GPL(bedrock_local_irq_disable);
 
 /*
- * Conditionally yield to the scheduler.
- * This wraps cond_resched() for Rust code.
- */
-void bedrock_cond_resched(void)
-{
-	cond_resched();
-}
-EXPORT_SYMBOL_GPL(bedrock_cond_resched);
-
-/*
- * Get the current real time as a Unix timestamp (seconds since 1970).
- * This wraps ktime_get_real_seconds() for Rust code.
- */
-u64 bedrock_get_real_time_secs(void)
-{
-	return ktime_get_real_seconds();
-}
-EXPORT_SYMBOL_GPL(bedrock_get_real_time_secs);
-
-/*
  * perf_guest_cbs implementation for bedrock.
  * These callbacks tell the perf subsystem when we're in guest mode.
  */
@@ -524,32 +502,6 @@ void bedrock_clear_guest_state(void)
 	state->in_guest = false;
 }
 EXPORT_SYMBOL_GPL(bedrock_clear_guest_state);
-
-/*
- * Mark current task as running a virtual CPU.
- *
- * When PF_VCPU is set on current->flags, the kernel's time accounting
- * automatically treats CPU time as guest time. This is what makes htop
- * show guest time in orange instead of kernel time in red.
- *
- * Call this before entering guest mode (before VM entry).
- */
-void bedrock_enter_guest(void)
-{
-	current->flags |= PF_VCPU;
-}
-EXPORT_SYMBOL_GPL(bedrock_enter_guest);
-
-/*
- * Clear VCPU flag when leaving guest mode.
- *
- * Call this after exiting guest mode (after VM exit).
- */
-void bedrock_leave_guest(void)
-{
-	current->flags &= ~PF_VCPU;
-}
-EXPORT_SYMBOL_GPL(bedrock_leave_guest);
 
 /*
  * Create an instruction counter for guest instruction counting.
