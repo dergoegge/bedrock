@@ -117,5 +117,5 @@ pub(crate) unsafe fn read_vm_file_type(ptr: *const ()) -> VmFileType {
     // SAFETY: Both BedrockVmFile and BedrockForkedVmFile have vm_file_type as their
     // first field (enforced by #[repr(C)] and struct layout), so we can safely read
     // the first byte to determine the type.
-    unsafe { *(ptr as *const VmFileType) }
+    unsafe { *(ptr.cast::<VmFileType>()) }
 }

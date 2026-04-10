@@ -21,8 +21,6 @@ use crate::prelude::*;
 /// it calls `read_page` on its parent, which recursively walks the chain
 /// until reaching the RootVm.
 ///
-/// # Safety
-///
 /// The returned pointer from `read_page` is only valid while the parent VM exists.
 /// ForkedVm's children counter mechanism ensures the parent outlives its children.
 pub trait ParentVm {

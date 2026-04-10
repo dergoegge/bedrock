@@ -45,6 +45,7 @@ pub(crate) struct RealVmxCpu;
 
 // SAFETY: Only accessed from the owning CPU via C helpers.
 unsafe impl Send for RealVmxCpu {}
+// SAFETY: Only accessed from the owning CPU via C helpers; no mutable shared state.
 unsafe impl Sync for RealVmxCpu {}
 
 impl VmxCpu for RealVmxCpu {
@@ -57,7 +58,7 @@ impl VmxCpu for RealVmxCpu {
         // have the same layout.
         unsafe {
             let caps_ptr = c_helpers::bedrock_vcpu_get_capabilities();
-            &*(caps_ptr as *const VmxCapabilities)
+            &*(caps_ptr.cast::<VmxCapabilities>())
         }
     }
 
@@ -123,6 +124,7 @@ impl Vmx for RealVmx {
         // We use xchg to save/restore rbx to a temporary register.
         let ecx: u32;
         let rbx_save: u64;
+        // SAFETY: CPUID is a read-only instruction; we save/restore rbx around it.
         unsafe {
             asm!(
                 "mov {0}, rbx",  // Save rbx to temp register
@@ -163,6 +165,7 @@ impl Vmx for RealVmx {
     fn vmxon(phys_addr: HostPhysAddr) -> Result<(), VmxonError> {
         let addr = phys_addr.as_u64();
         let rflags: u64;
+        // SAFETY: VMXON requires a valid physical address to the VMXON region; caller ensures this.
         unsafe {
             asm!(
                 "vmxon [{0}]",
@@ -175,7 +178,7 @@ impl Vmx for RealVmx {
         }
 
         // Check for errors via RFLAGS
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 {
@@ -189,6 +192,7 @@ impl Vmx for RealVmx {
 
     fn vmxoff() -> Result<(), VmxoffError> {
         let rflags: u64;
+        // SAFETY: VMXOFF is valid when the processor is in VMX root operation.
         unsafe {
             asm!(
                 "vmxoff",
@@ -225,6 +229,7 @@ impl Vmx for RealVmx {
         const INVEPT_TYPE_SINGLE_CONTEXT: u64 = 1;
 
         let rflags: u64;
+        // SAFETY: INVEPT with a valid descriptor and type invalidates EPT translations.
         unsafe {
             asm!(
                 "invept {0}, [{1}]",
@@ -238,7 +243,7 @@ impl Vmx for RealVmx {
         }
 
         // Check for errors via RFLAGS
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 {
@@ -262,7 +267,7 @@ impl Vmx for RealVmx {
         }
 
         let descriptor = InvvpidDescriptor {
-            vpid: vpid as u64,
+            vpid: u64::from(vpid),
             linear_address: 0,
         };
 
@@ -270,6 +275,7 @@ impl Vmx for RealVmx {
         const INVVPID_TYPE_SINGLE_CONTEXT: u64 = 1;
 
         let rflags: u64;
+        // SAFETY: INVVPID with a valid descriptor and type invalidates VPID translations.
         unsafe {
             asm!(
                 "invvpid {0}, [{1}]",
@@ -283,7 +289,7 @@ impl Vmx for RealVmx {
         }
 
         // Check for errors via RFLAGS
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 {
@@ -312,6 +318,7 @@ impl Vmx for RealVmx {
         const INVVPID_TYPE_ALL_CONTEXT: u64 = 2;
 
         let rflags: u64;
+        // SAFETY: INVVPID with type all-context invalidates all VPID translations.
         unsafe {
             asm!(
                 "invvpid {0}, [{1}]",
@@ -325,7 +332,7 @@ impl Vmx for RealVmx {
         }
 
         // Check for errors via RFLAGS
-        let cf = (rflags >> 0) & 1;
+        let cf = rflags & 1;
         let zf = (rflags >> 6) & 1;
 
         if cf == 1 {

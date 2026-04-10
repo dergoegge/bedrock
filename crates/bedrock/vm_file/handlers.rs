@@ -94,10 +94,13 @@ pub(crate) fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     };
 
     // Copy to userspace
+    // SAFETY: `arg` is a user-provided pointer passed from the ioctl syscall, and `regs`
+    // is a valid stack-local struct. bedrock_copy_to_user performs a bounded copy of
+    // size_of::<BedrockRegs>() bytes and returns the number of bytes not copied.
     let not_copied = unsafe {
         bedrock_copy_to_user(
             arg as *mut core::ffi::c_void,
-            &regs as *const BedrockRegs as *const core::ffi::c_void,
+            core::ptr::from_ref(&regs).cast::<core::ffi::c_void>(),
             size_of::<BedrockRegs>() as core::ffi::c_ulong,
         )
     };
@@ -114,9 +117,12 @@ pub(crate) fn handle_set_regs<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isiz
     let mut regs = core::mem::MaybeUninit::<BedrockRegs>::uninit();
 
     // Copy from userspace
+    // SAFETY: `arg` is a user-provided pointer from the ioctl syscall. `regs.as_mut_ptr()`
+    // points to valid, aligned, writable memory for a BedrockRegs. bedrock_copy_from_user
+    // performs a bounded copy and returns the number of bytes not copied.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            regs.as_mut_ptr() as *mut core::ffi::c_void,
+            regs.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<BedrockRegs>() as core::ffi::c_ulong,
         )
@@ -126,7 +132,8 @@ pub(crate) fn handle_set_regs<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isiz
         return -(bindings::EFAULT as isize);
     }
 
-    // SAFETY: copy_from_user succeeded, so regs is now fully initialized
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `regs`
+    // have been written and it is now fully initialized.
     let regs = unsafe { regs.assume_init() };
 
     // Disable preemption to ensure we stay on the same CPU during VMCS operations
@@ -165,11 +172,12 @@ where
     for<'a> KernelFrameAllocator<'a>: CowAllocator<<F::Vm as VmContext>::CowPage>,
 {
     // Get running flag pointer upfront to avoid borrow conflicts
-    // SAFETY: The pointer is valid for the lifetime of vm_file
-    let running_ptr = vm_file.running() as *const AtomicBool;
+    let running_ptr = core::ptr::from_ref(vm_file.running());
 
     // Check for concurrent access
-    // SAFETY: running_ptr is valid, AtomicBool operations are safe
+    // SAFETY: running_ptr was derived from a valid reference to vm_file.running() and
+    // remains valid for the lifetime of vm_file. We dereference it to call atomic
+    // compare_exchange, which is inherently thread-safe.
     if unsafe { &*running_ptr }
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -229,6 +237,9 @@ where
         let mut runner = RealVmRunner::new();
         let mut allocator = KernelFrameAllocator::new_with_pool(MACHINE.kernel(), pool);
 
+        // SAFETY: vm.run executes the guest via VMLAUNCH/VMRESUME. Preemption is disabled
+        // (via _preempt_guard) so the VMCS stays on the current CPU. The runner, machine,
+        // and allocator are valid for the duration of the call.
         match unsafe { vm.run(&mut runner, &MACHINE, &mut allocator) } {
             Ok(ExitReason::PoolExhausted) => {
                 // PreemptionGuard drops here — back in sleepable context
@@ -269,10 +280,12 @@ where
     };
 
     // Copy to userspace
+    // SAFETY: `arg` is a user-provided pointer from the ioctl syscall, and `exit_info`
+    // is a valid stack-local struct. bedrock_copy_to_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_to_user(
             arg as *mut core::ffi::c_void,
-            &exit_info as *const BedrockVmExit as *const core::ffi::c_void,
+            core::ptr::from_ref(&exit_info).cast::<core::ffi::c_void>(),
             size_of::<BedrockVmExit>() as core::ffi::c_ulong,
         )
     };
@@ -288,10 +301,12 @@ where
 pub(crate) fn handle_get_vm_id<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     let vm_id = vm_file.vm_id();
 
+    // SAFETY: `arg` is a user-provided pointer from the ioctl syscall, and `vm_id`
+    // is a valid stack-local u64. bedrock_copy_to_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_to_user(
             arg as *mut core::ffi::c_void,
-            &vm_id as *const u64 as *const core::ffi::c_void,
+            core::ptr::from_ref(&vm_id).cast::<core::ffi::c_void>(),
             size_of::<u64>() as core::ffi::c_ulong,
         )
     };
@@ -307,9 +322,12 @@ pub(crate) fn handle_get_vm_id<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
 pub(crate) fn handle_set_rdrand_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut config = core::mem::MaybeUninit::<BedrockRdrandConfig>::uninit();
 
+    // SAFETY: `config.as_mut_ptr()` points to valid, aligned, writable memory for a
+    // BedrockRdrandConfig. `arg` is a user-provided pointer from the ioctl syscall.
+    // bedrock_copy_from_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            config.as_mut_ptr() as *mut core::ffi::c_void,
+            config.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<BedrockRdrandConfig>() as core::ffi::c_ulong,
         )
@@ -319,6 +337,8 @@ pub(crate) fn handle_set_rdrand_config<F: VmFileOps>(vm_file: &mut F, arg: usize
         return -(bindings::EFAULT as isize);
     }
 
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `config`
+    // have been written and it is now fully initialized.
     let config = unsafe { config.assume_init() };
 
     // Convert mode value to RdrandMode enum
@@ -348,9 +368,12 @@ pub(crate) fn handle_set_rdrand_config<F: VmFileOps>(vm_file: &mut F, arg: usize
 pub(crate) fn handle_set_rdrand_value<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut value: u64 = 0;
 
+    // SAFETY: `value` is a valid, aligned, writable stack-local u64. `arg` is a
+    // user-provided pointer from the ioctl syscall. bedrock_copy_from_user performs
+    // a bounded copy of size_of::<u64>() bytes.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            &mut value as *mut u64 as *mut core::ffi::c_void,
+            core::ptr::from_mut(&mut value).cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<u64>() as core::ffi::c_ulong,
         )
@@ -376,9 +399,12 @@ pub(crate) fn handle_set_rdrand_value<F: VmFileOps>(vm_file: &mut F, arg: usize)
 pub(crate) fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut config = core::mem::MaybeUninit::<BedrockLogConfig>::uninit();
 
+    // SAFETY: `config.as_mut_ptr()` points to valid, aligned, writable memory for a
+    // BedrockLogConfig. `arg` is a user-provided pointer from the ioctl syscall.
+    // bedrock_copy_from_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            config.as_mut_ptr() as *mut core::ffi::c_void,
+            config.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<BedrockLogConfig>() as core::ffi::c_ulong,
         )
@@ -388,6 +414,8 @@ pub(crate) fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -
         return -(bindings::EFAULT as isize);
     }
 
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `config`
+    // have been written and it is now fully initialized.
     let config = unsafe { config.assume_init() };
 
     // Convert mode value to LogMode enum
@@ -419,6 +447,9 @@ pub(crate) fn handle_set_log_config<F: VmFileOps>(vm_file: &mut F, arg: usize) -
         };
 
         // Set the buffer pointer in the VM
+        // SAFETY: buffer.as_ptr() returns a valid pointer to the log buffer's vmalloc'd
+        // memory region. The buffer is kept alive in vm_file.log_buffer for the
+        // lifetime of the VM.
         unsafe { vm_file.vm_mut().state_mut().set_log_buffer(buffer.as_ptr()) };
         vm_file.vm_mut().state_mut().enable_logging();
         *vm_file.log_buffer_mut() = Some(buffer);
@@ -495,10 +526,12 @@ pub(crate) fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> is
         irq_window_cycles: stats.irq_window_cycles,
     };
 
+    // SAFETY: `arg` is a user-provided pointer from the ioctl syscall, and `exit_stats`
+    // is a valid stack-local struct. bedrock_copy_to_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_to_user(
             arg as *mut core::ffi::c_void,
-            &exit_stats as *const BedrockExitStats as *const core::ffi::c_void,
+            core::ptr::from_ref(&exit_stats).cast::<core::ffi::c_void>(),
             size_of::<BedrockExitStats>() as core::ffi::c_ulong,
         )
     };
@@ -514,9 +547,12 @@ pub(crate) fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> is
 pub(crate) fn handle_set_stop_tsc<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut value = core::mem::MaybeUninit::<u64>::uninit();
 
+    // SAFETY: `value.as_mut_ptr()` points to valid, aligned, writable memory for a u64.
+    // `arg` is a user-provided pointer from the ioctl syscall. bedrock_copy_from_user
+    // performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            value.as_mut_ptr() as *mut core::ffi::c_void,
+            value.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<u64>() as core::ffi::c_ulong,
         )
@@ -526,6 +562,7 @@ pub(crate) fn handle_set_stop_tsc<F: VmFileOps>(vm_file: &mut F, arg: usize) -> 
         return -(bindings::EFAULT as isize);
     }
 
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so the u64 is fully initialized.
     let value = unsafe { value.assume_init() };
 
     // 0 means disabled, any other value is the stop TSC
@@ -549,9 +586,12 @@ pub(crate) fn handle_set_stop_tsc<F: VmFileOps>(vm_file: &mut F, arg: usize) -> 
 pub(crate) fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
     let mut config = core::mem::MaybeUninit::<BedrockSingleStepConfig>::uninit();
 
+    // SAFETY: `config.as_mut_ptr()` points to valid, aligned, writable memory for a
+    // BedrockSingleStepConfig. `arg` is a user-provided pointer from the ioctl syscall.
+    // bedrock_copy_from_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            config.as_mut_ptr() as *mut core::ffi::c_void,
+            config.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<BedrockSingleStepConfig>() as core::ffi::c_ulong,
         )
@@ -561,6 +601,8 @@ pub(crate) fn handle_set_single_step<F: VmFileOps>(vm_file: &mut F, arg: usize) 
         return -(bindings::EFAULT as isize);
     }
 
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `config`
+    // have been written and it is now fully initialized.
     let config = unsafe { config.assume_init() };
     let vm = vm_file.vm_mut();
 
@@ -589,9 +631,12 @@ pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: us
     // First read the request to get the buffer index
     let mut request = core::mem::MaybeUninit::<BedrockFeedbackBufferInfoRequest>::uninit();
 
+    // SAFETY: `request.as_mut_ptr()` points to valid, aligned, writable memory for a
+    // BedrockFeedbackBufferInfoRequest. `arg` is a user-provided pointer from the ioctl
+    // syscall. bedrock_copy_from_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            request.as_mut_ptr() as *mut core::ffi::c_void,
+            request.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<BedrockFeedbackBufferInfoRequest>() as core::ffi::c_ulong,
         )
@@ -601,6 +646,8 @@ pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: us
         return -(bindings::EFAULT as isize);
     }
 
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `request`
+    // have been written and it is now fully initialized.
     let request = unsafe { request.assume_init() };
     let index = request.index as usize;
 
@@ -631,10 +678,12 @@ pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: us
         },
     };
 
+    // SAFETY: `arg` is a user-provided pointer from the ioctl syscall, and `info`
+    // is a valid stack-local struct. bedrock_copy_to_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_to_user(
             arg as *mut core::ffi::c_void,
-            &info as *const BedrockFeedbackBufferInfo as *const core::ffi::c_void,
+            core::ptr::from_ref(&info).cast::<core::ffi::c_void>(),
             size_of::<BedrockFeedbackBufferInfo>() as core::ffi::c_ulong,
         )
     };

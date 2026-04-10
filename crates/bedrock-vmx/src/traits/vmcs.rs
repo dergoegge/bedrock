@@ -10,8 +10,6 @@ use super::{
 
 /// Trait representing operations on the Virtual Machine Control Structure (VMCS).
 ///
-/// # Safety
-///
 /// Implementors must ensure that the underlying VMX instructions are executed
 /// correctly and that safety invariants are upheld internally. This allows
 /// callers to use the API without unsafe blocks.
@@ -172,8 +170,9 @@ pub trait VirtualMachineControlStructure: Sized {
         let revision_id = <Self::M as Machine>::V::basic_info().vmcs_revision_id & 0x7FFFFFFF;
 
         let ptr = page.virtual_address().as_u64() as *mut u32;
+        // SAFETY: ptr is a valid pointer to the beginning of a freshly-allocated
+        // zeroed 4KB page; writing 4 bytes at this address is within bounds.
         unsafe {
-            // Write VMCS revision identifier to the first 4 bytes
             core::ptr::write_volatile(ptr, revision_id);
         }
 
@@ -211,7 +210,7 @@ pub trait VirtualMachineControlStructure: Sized {
         if caps.cpu_based_exec_ctrl & cpu_based::USE_MSR_BITMAPS != 0 {
             if let Some(addr) = msr_bitmap_addr {
                 self.write64(VmcsField64::MsrBitmapAddr, addr.as_u64())
-                    .map_err(VmcsSetupError::ControlsError)?;
+                    .map_err(VmcsSetupError::Controls)?;
             }
         }
 
@@ -221,7 +220,7 @@ pub trait VirtualMachineControlStructure: Sized {
             VmcsField32::PinBasedVmExecControls,
             caps.pin_based_exec_ctrl,
         )
-        .map_err(VmcsSetupError::ControlsError)?;
+        .map_err(VmcsSetupError::Controls)?;
 
         // VMX-preemption timer value
         // Intel SDM Vol 3C, Section 25.5.1
@@ -233,7 +232,7 @@ pub trait VirtualMachineControlStructure: Sized {
         // exits even if the guest is in a tight loop. May be removed in the future.
         if caps.pin_based_exec_ctrl & pin_based::PREEMPTION_TIMER != 0 {
             self.write32(VmcsField32::VmxPreemptionTimerValue, 0x100000)
-                .map_err(VmcsSetupError::ControlsError)?;
+                .map_err(VmcsSetupError::Controls)?;
         }
 
         // Primary processor-based VM-execution controls
@@ -242,7 +241,7 @@ pub trait VirtualMachineControlStructure: Sized {
             VmcsField32::PrimaryProcBasedVmExecControls,
             caps.cpu_based_exec_ctrl,
         )
-        .map_err(VmcsSetupError::ControlsError)?;
+        .map_err(VmcsSetupError::Controls)?;
 
         log_info!(
             "CPU-based VM-exec controls = 0x{:08x}",
@@ -256,7 +255,7 @@ pub trait VirtualMachineControlStructure: Sized {
                 VmcsField32::SecondaryProcBasedVmExecControls,
                 caps.cpu_based_exec_ctrl2,
             )
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
             // VPID (Virtual Processor Identifier)
             // Intel SDM Vol 3C, Section 28.2.1.1: If "enable VPID" is 1, VPID must not be 0000H.
@@ -265,7 +264,7 @@ pub trait VirtualMachineControlStructure: Sized {
             if caps.cpu_based_exec_ctrl2 & secondary_exec::ENABLE_VPID != 0 {
                 let vpid = allocate_vpid();
                 self.write16(VmcsField16::VirtualProcessorId, vpid)
-                    .map_err(VmcsSetupError::ControlsError)?;
+                    .map_err(VmcsSetupError::Controls)?;
 
                 // Flush all TLB entries for this VPID to ensure no stale entries
                 // from previous VMs or the host affect this VM.
@@ -283,19 +282,19 @@ pub trait VirtualMachineControlStructure: Sized {
         // VM-exit controls
         // Intel SDM Vol 3C, Section 25.7.1
         self.write32(VmcsField32::PrimaryVmExitControls, caps.vmexit_ctrl)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // VM-entry controls
         // Intel SDM Vol 3C, Section 25.8.1
         self.write32(VmcsField32::VmEntryControls, caps.vmentry_ctrl)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // Exception bitmap: only intercept #MC (Machine Check, vector 18).
         // Following bhyve's minimal approach - let guest handle its own exceptions.
         // KVM intercepts more but has sophisticated exception injection.
         // Intel SDM Vol 3C, Section 25.6.3
         self.write32(VmcsField32::ExceptionBitmap, 1 << 18) // #MC only
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // CR0/CR4 guest/host masks: mask the VMX-constrained bits.
         // When mask bit is 1, guest writes cause VM exit, reads return shadow.
@@ -315,33 +314,33 @@ pub trait VirtualMachineControlStructure: Sized {
         let cr4_mask = cr4_ones_mask | cr4_zeros_mask;
 
         self.write_natural(VmcsFieldNatural::Cr0GuestHostMask, cr0_mask)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
         self.write_natural(VmcsFieldNatural::Cr4GuestHostMask, cr4_mask)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // CR0/CR4 read shadows: initial values the guest sees when reading.
         // Set to 0 initially; will be updated when guest writes CR0/CR4.
         self.write_natural(VmcsFieldNatural::Cr0ReadShadow, 0)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
         self.write_natural(VmcsFieldNatural::Cr4ReadShadow, 0)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // Page fault error code matching (disabled)
         // Intel SDM Vol 3C, Section 25.6.3
         self.write32(VmcsField32::PageFaultErrorCodeMask, 0)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
         self.write32(VmcsField32::PageFaultErrorCodeMatch, 0)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // CR3 target count (no CR3 target values)
         // Intel SDM Vol 3C, Section 25.6.7
         self.write32(VmcsField32::Cr3TargetCount, 0)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         // VM-entry interrupt injection (disabled - bit 31 is valid bit)
         // Intel SDM Vol 3C, Section 25.8.3
         self.write32(VmcsField32::VmEntryInterruptionInfo, 0)
-            .map_err(VmcsSetupError::ControlsError)?;
+            .map_err(VmcsSetupError::Controls)?;
 
         Ok(())
     }
@@ -352,19 +351,19 @@ pub trait VirtualMachineControlStructure: Sized {
         msr_bitmap_addr: Option<HostPhysAddr>,
         host: &HostState,
     ) -> Result<(), VmcsSetupError> {
-        self.clear().map_err(VmcsSetupError::ClearError)?;
+        self.clear().map_err(VmcsSetupError::Clear)?;
 
         {
-            let _guard = VmcsGuard::new(self).map_err(VmcsSetupError::GuardError)?;
+            let _guard = VmcsGuard::new(self).map_err(VmcsSetupError::Guard)?;
 
             self.setup_host_state(host)
-                .map_err(VmcsSetupError::HostStateError)?;
+                .map_err(VmcsSetupError::HostState)?;
 
             self.setup_controls(msr_bitmap_addr)?;
 
             // Configure EPTP (Extended Page Table Pointer)
             self.write64(VmcsField64::EptPointer, ept_pointer)
-                .map_err(VmcsSetupError::EptPointerError)?;
+                .map_err(VmcsSetupError::EptPointer)?;
             log_info!("Configured EPTP=0x{:x}", ept_pointer);
         }
 

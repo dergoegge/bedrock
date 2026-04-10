@@ -92,6 +92,8 @@ mod kernel_impl {
                 mem64: [0; 4],
                 memsize: 0,
             };
+            // SAFETY: state is a valid Xxh64State struct initialized above.
+            // bedrock_xxh64_reset only writes to the pointed-to state.
             unsafe {
                 crate::c_helpers::bedrock_xxh64_reset(&mut state, 0);
             }
@@ -125,10 +127,12 @@ mod kernel_impl {
         /// Hash a byte slice.
         #[inline]
         pub fn write_bytes(&mut self, bytes: &[u8]) {
+            // SAFETY: self.state is a valid initialized Xxh64State. bytes.as_ptr()
+            // points to a valid byte slice of the given length.
             unsafe {
                 crate::c_helpers::bedrock_xxh64_update(
                     &mut self.state,
-                    bytes.as_ptr() as *const core::ffi::c_void,
+                    bytes.as_ptr().cast::<core::ffi::c_void>(),
                     bytes.len(),
                 );
             }
@@ -137,6 +141,8 @@ mod kernel_impl {
         /// Finalize and return the hash value.
         #[inline]
         pub fn finish(&self) -> u64 {
+            // SAFETY: self.state is a valid initialized Xxh64State that has been
+            // properly updated through write_* calls.
             unsafe { crate::c_helpers::bedrock_xxh64_digest(&self.state) }
         }
     }
@@ -149,9 +155,11 @@ mod kernel_impl {
 
     /// Hash guest memory using XXH64.
     pub fn hash_guest_memory(memory: &[u8]) -> u64 {
+        // SAFETY: memory.as_ptr() points to a valid byte slice of the given length.
+        // bedrock_xxh64 only reads from the provided buffer.
         unsafe {
             crate::c_helpers::bedrock_xxh64(
-                memory.as_ptr() as *const core::ffi::c_void,
+                memory.as_ptr().cast::<core::ffi::c_void>(),
                 memory.len(),
                 0,
             )

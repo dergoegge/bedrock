@@ -36,7 +36,7 @@ pub fn handle_cr_access<C: VmContext>(
                     ctx.state()
                         .vmcs
                         .write_natural(VmcsFieldNatural::GuestCr0, cr0)
-                        .and_then(|_| {
+                        .and_then(|()| {
                             ctx.state()
                                 .vmcs
                                 .write_natural(VmcsFieldNatural::Cr0ReadShadow, gpr_value)
@@ -77,7 +77,7 @@ pub fn handle_cr_access<C: VmContext>(
                     ctx.state()
                         .vmcs
                         .write_natural(VmcsFieldNatural::GuestCr4, cr4)
-                        .and_then(|_| {
+                        .and_then(|()| {
                             ctx.state()
                                 .vmcs
                                 .write_natural(VmcsFieldNatural::Cr4ReadShadow, gpr_value)
@@ -138,7 +138,7 @@ pub fn handle_cr_access<C: VmContext>(
             // Load machine status word (low 16 bits of CR0)
             let msw = qual.lmsw_source_data;
             let cr0 = match ctx.state().vmcs.read_natural(VmcsFieldNatural::GuestCr0) {
-                Ok(v) => (v & 0xFFFFFFF0) | ((msw as u64) & 0xF),
+                Ok(v) => (v & 0xFFFFFFF0) | (u64::from(msw) & 0xF),
                 Err(e) => return ExitHandlerResult::Error(ExitError::VmcsReadError(e)),
             };
             if ctx

@@ -88,7 +88,7 @@ pub fn handle_apic_access<C: VmContext>(
         let value = read_apic_register(&ctx.state().devices.apic, offset);
 
         // Write to the destination register (zero-extended, APIC registers are 32-bit)
-        let reg_value = value as u64;
+        let reg_value = u64::from(value);
 
         set_gpr_value(&mut ctx.state_mut().gprs, decoded.register, reg_value);
 
@@ -112,7 +112,7 @@ pub fn handle_apic_access<C: VmContext>(
     }
 
     // Advance RIP past the instruction
-    let new_rip = rip + decoded.length as u64;
+    let new_rip = rip + u64::from(decoded.length);
     if ctx
         .state()
         .vmcs
@@ -243,7 +243,7 @@ fn write_apic_register(apic: &mut ApicState, offset: u32, value: u32, current_ts
             if value != 0 {
                 // Calculate deadline based on divide configuration
                 let divisor = apic_timer_divisor(apic.timer_divide);
-                let ticks = (value as u64) * (divisor as u64);
+                let ticks = u64::from(value) * u64::from(divisor);
                 // Set deadline using emulated TSC for determinism
                 apic.timer_deadline = current_tsc + ticks;
             } else {
@@ -306,7 +306,7 @@ pub fn handle_ioapic_access<C: VmContext>(
     // Translate guest virtual address (RIP) to guest physical address
     let instr_gpa = match translate_gva_to_gpa(ctx, rip) {
         Ok(gpa) => gpa,
-        Err(_) => {
+        Err(()) => {
             return ExitHandlerResult::Error(ExitError::Fatal(
                 "Failed to translate I/O APIC instruction address",
             ));
@@ -346,7 +346,11 @@ pub fn handle_ioapic_access<C: VmContext>(
         };
 
         // Write value to destination register
-        set_gpr_value(&mut ctx.state_mut().gprs, decoded.register, value as u64);
+        set_gpr_value(
+            &mut ctx.state_mut().gprs,
+            decoded.register,
+            u64::from(value),
+        );
     } else if qual.write {
         // I/O APIC write - get value from source register
         let value = get_gpr_value(&ctx.state().gprs, decoded.register) as u32;
@@ -371,7 +375,7 @@ pub fn handle_ioapic_access<C: VmContext>(
     }
 
     // Advance RIP past the instruction
-    let new_rip = rip + decoded.length as u64;
+    let new_rip = rip + u64::from(decoded.length);
     if ctx
         .state()
         .vmcs
@@ -442,10 +446,10 @@ fn write_ioapic_register<C: VmContext>(ctx: &mut C, value: u32) {
                 let entry = &mut ctx.state_mut().devices.ioapic.redtbl[entry_idx];
                 if is_high {
                     // High 32 bits: destination field
-                    *entry = (*entry & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+                    *entry = (*entry & 0x0000_0000_FFFF_FFFF) | (u64::from(value) << 32);
                 } else {
                     // Low 32 bits: vector, delivery mode, mask, etc.
-                    *entry = (*entry & 0xFFFF_FFFF_0000_0000) | (value as u64);
+                    *entry = (*entry & 0xFFFF_FFFF_0000_0000) | u64::from(value);
                 }
                 log_info!(
                     "I/O APIC: redtbl[{}] = {:#018x} (vector={}, masked={})",

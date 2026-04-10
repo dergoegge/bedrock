@@ -30,21 +30,24 @@ fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
     for _ in 0..MAX_FEEDBACK_BUFFERS {
         v.push(None);
     }
-    // SAFETY: Vec has exactly MAX_FEEDBACK_BUFFERS elements
     let boxed_slice = v.into_boxed_slice();
     let ptr = alloc::boxed::Box::into_raw(boxed_slice) as *mut FeedbackBuffersArray;
+    // SAFETY: Vec has exactly MAX_FEEDBACK_BUFFERS elements, so the boxed slice
+    // pointer can be safely reinterpreted as a pointer to a fixed-size array.
     unsafe { alloc::boxed::Box::from_raw(ptr) }
 }
 
 #[cfg(not(feature = "cargo"))]
 fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
-    // SAFETY: Option<FeedbackBufferInfo> with None variant is all zeros
-    // (the discriminant for None is 0, and the rest is padding).
     let mut boxed: kernel::alloc::KVBox<core::mem::MaybeUninit<FeedbackBuffersArray>> =
         kernel::alloc::KVBox::new_uninit(kernel::alloc::flags::GFP_KERNEL)
             .expect("Failed to allocate feedback buffers");
+    // SAFETY: Option<FeedbackBufferInfo> with None variant is all zeros
+    // (the discriminant for None is 0, and the rest is padding).
+    // We zero the entire allocation then assume_init, which is valid because
+    // all-zeros represents [None; MAX_FEEDBACK_BUFFERS].
     unsafe {
-        let ptr = boxed.as_mut_ptr() as *mut u8;
+        let ptr = boxed.as_mut_ptr().cast::<u8>();
         core::ptr::write_bytes(ptr, 0, core::mem::size_of::<FeedbackBuffersArray>());
         boxed.assume_init()
     }
@@ -61,6 +64,8 @@ fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBo
     }
     let boxed_slice = v.into_boxed_slice();
     let ptr = alloc::boxed::Box::into_raw(boxed_slice) as *mut FeedbackBuffersArray;
+    // SAFETY: Vec has exactly MAX_FEEDBACK_BUFFERS elements, so the boxed slice
+    // pointer can be safely reinterpreted as a pointer to a fixed-size array.
     unsafe { alloc::boxed::Box::from_raw(ptr) }
 }
 
@@ -69,9 +74,11 @@ fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBo
     let mut boxed: kernel::alloc::KVBox<core::mem::MaybeUninit<FeedbackBuffersArray>> =
         kernel::alloc::KVBox::new_uninit(kernel::alloc::flags::GFP_KERNEL)
             .expect("Failed to allocate feedback buffers");
-    // SAFETY: We're writing to the entire array before assuming init
+    // SAFETY: We're writing to the entire array before assuming init.
+    // The MaybeUninit pointer is cast to the array type, then we copy
+    // all elements from the parent, fully initializing the allocation.
     unsafe {
-        let ptr = boxed.as_mut_ptr() as *mut FeedbackBuffersArray;
+        let ptr = boxed.as_mut_ptr().cast::<FeedbackBuffersArray>();
         core::ptr::copy_nonoverlapping(parent.as_ptr(), (*ptr).as_mut_ptr(), MAX_FEEDBACK_BUFFERS);
         boxed.assume_init()
     }
@@ -662,6 +669,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
 
         // Set all bits to 1 to intercept all MSR reads/writes
         let ptr = msr_bitmap.virtual_address().as_u64() as *mut u8;
+        // SAFETY: ptr points to a freshly-allocated zeroed 4KB page; writing PAGE_SIZE bytes is within bounds.
         unsafe {
             core::ptr::write_bytes(ptr, 0xFF, PAGE_SIZE);
         }
@@ -1260,10 +1268,11 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         };
 
         // Write entry to buffer
-        // SAFETY: ptr is valid for 1MB, entry_count < MAX_LOG_ENTRIES
+        // SAFETY: ptr is valid for 1MB, entry_count < MAX_LOG_ENTRIES.
         unsafe {
-            let entry_ptr =
-                ptr.add(self.log_entry_count * core::mem::size_of::<LogEntry>()) as *mut LogEntry;
+            let entry_ptr = ptr
+                .add(self.log_entry_count * core::mem::size_of::<LogEntry>())
+                .cast::<LogEntry>();
             core::ptr::write(entry_ptr, entry);
         }
 
@@ -1387,6 +1396,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         // Copy MSR bitmap settings from parent
         let parent_bitmap_ptr = parent_state.msr_bitmap.virtual_address().as_u64() as *const u8;
         let bitmap_ptr = msr_bitmap.virtual_address().as_u64() as *mut u8;
+        // SAFETY: Both pointers refer to valid PAGE_SIZE allocations and do not overlap.
         unsafe {
             core::ptr::copy_nonoverlapping(parent_bitmap_ptr, bitmap_ptr, PAGE_SIZE);
         }
@@ -1417,6 +1427,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         let parent_xsave_ptr =
             parent_state.guest_xsave_page.virtual_address().as_u64() as *const u8;
         let guest_xsave_ptr = guest_xsave_page.virtual_address().as_u64() as *mut u8;
+        // SAFETY: Both pointers refer to valid PAGE_SIZE allocations and do not overlap.
         unsafe {
             core::ptr::copy_nonoverlapping(parent_xsave_ptr, guest_xsave_ptr, PAGE_SIZE);
         }
@@ -1444,6 +1455,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             // Copy entire VMCS region from parent to child.
             // The VMCS data format is implementation-specific but consistent
             // on the same processor, so this is safe for forked VMs on same CPU.
+            // SAFETY: Both VMCS region pointers are valid PAGE_SIZE allocations.
+            // Parent VMCS was cleared (flushed to memory) above, so the copy is coherent.
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     parent_state.vmcs.vmcs_region_ptr(),

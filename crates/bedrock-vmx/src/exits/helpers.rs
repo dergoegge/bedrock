@@ -87,7 +87,7 @@ pub fn advance_rip<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
     let len = read_instruction_len(ctx)?;
     ctx.state()
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRip, rip + len as u64)
+        .write_natural(VmcsFieldNatural::GuestRip, rip + u64::from(len))
         .map_err(|_| ExitError::Fatal("Failed to write guest RIP"))?;
     Ok(())
 }

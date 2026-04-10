@@ -271,8 +271,6 @@ pub type MsrResult<T> = Result<T, MsrError>;
 ///
 /// See Intel SDM Vol 2B Section 4-535 (RDMSR) and Vol 2D Section 6-8 (WRMSR).
 ///
-/// # Safety
-///
 /// Implementors must ensure:
 /// - Operations are only performed at CPL 0
 /// - Invalid MSR addresses are handled appropriately

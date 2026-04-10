@@ -65,7 +65,7 @@ impl KernelGuestMemory {
         }
 
         Some(Self {
-            ptr: ptr as *mut u8,
+            ptr: ptr.cast::<u8>(),
             size,
         })
     }
@@ -86,8 +86,9 @@ impl GuestMemory for KernelGuestMemory {
         }
         // SAFETY: ptr + page_offset is within the allocated vmalloc region.
         let page_ptr = unsafe { self.ptr.add(page_offset) };
+        // SAFETY: page_ptr is within the allocated vmalloc region (checked above).
         let phys =
-            unsafe { c_helpers::bedrock_vmalloc_to_phys(page_ptr as *mut core::ffi::c_void) };
+            unsafe { c_helpers::bedrock_vmalloc_to_phys(page_ptr.cast::<core::ffi::c_void>()) };
         if phys == 0 {
             return None;
         }
@@ -100,7 +101,7 @@ impl Drop for KernelGuestMemory {
         if !self.ptr.is_null() {
             // SAFETY: ptr was allocated by bedrock_vmalloc_user and has not been freed yet.
             unsafe {
-                c_helpers::bedrock_vfree(self.ptr as *mut core::ffi::c_void);
+                c_helpers::bedrock_vfree(self.ptr.cast::<core::ffi::c_void>());
             }
         }
     }
@@ -134,7 +135,7 @@ impl LogBuffer {
         }
         log_info!("LogBuffer::new: allocated at {:p}\n", ptr);
         Some(Self {
-            ptr: ptr as *mut u8,
+            ptr: ptr.cast::<u8>(),
         })
     }
 
@@ -150,7 +151,7 @@ impl Drop for LogBuffer {
             log_info!("LogBuffer::drop: freeing {:p}\n", self.ptr);
             // SAFETY: ptr was allocated by bedrock_vmalloc_user and has not been freed yet.
             unsafe {
-                c_helpers::bedrock_vfree(self.ptr as *mut core::ffi::c_void);
+                c_helpers::bedrock_vfree(self.ptr.cast::<core::ffi::c_void>());
             }
         }
     }

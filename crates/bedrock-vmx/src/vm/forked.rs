@@ -207,7 +207,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> ForkedVm
         .map_err(ForkedVmError::VmState)?;
 
         // Store trait object pointer to parent for COW chain traversal.
-        // SAFETY: Parent must outlive this ForkedVm, enforced by children_count.
+        // Parent must outlive this ForkedVm, enforced by children_count.
         let parent_ptr: *const dyn ParentVm = parent as &dyn ParentVm;
 
         let mut forked_vm = Self {
@@ -275,6 +275,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
 
             if buf.len() <= available_in_page {
                 // Read fits in single page
+                // SAFETY: cow_ptr points to a valid COW page; page_offset + buf.len() <= PAGE_SIZE.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         cow_ptr.add(page_offset),
@@ -284,6 +285,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                 }
             } else {
                 // Read spans pages - read what we can from this page
+                // SAFETY: cow_ptr points to a valid COW page; page_offset + available_in_page == PAGE_SIZE.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         cow_ptr.add(page_offset),
@@ -305,6 +307,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
             let available_in_page = PAGE_SIZE - page_offset;
 
             if buf.len() <= available_in_page {
+                // SAFETY: parent_page points to a valid parent memory page; page_offset + buf.len() <= PAGE_SIZE.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         parent_page.add(page_offset),
@@ -314,6 +317,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                 }
             } else {
                 // Read spans pages
+                // SAFETY: parent_page points to a valid parent memory page; page_offset + available_in_page == PAGE_SIZE.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         parent_page.add(page_offset),
@@ -341,6 +345,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
             let available_in_page = PAGE_SIZE - page_offset;
 
             if buf.len() <= available_in_page {
+                // SAFETY: cow_ptr points to a valid writable COW page; page_offset + buf.len() <= PAGE_SIZE.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         buf.as_ptr(),
@@ -350,6 +355,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                 }
             } else {
                 // Write spans pages
+                // SAFETY: cow_ptr points to a valid writable COW page; page_offset + available_in_page == PAGE_SIZE.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         buf.as_ptr(),
@@ -421,6 +427,8 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
             }
         };
 
+        // SAFETY: parent_page points to a valid PAGE_SIZE parent page; new_page_virt
+        // points to a freshly-allocated PAGE_SIZE page. The regions do not overlap.
         unsafe {
             core::ptr::copy_nonoverlapping(parent_page, new_page_virt, PAGE_SIZE);
         }
@@ -517,6 +525,8 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                 }
             };
 
+            // SAFETY: parent_page points to a valid PAGE_SIZE parent page; new_page_virt
+            // points to a freshly-allocated PAGE_SIZE page. The regions do not overlap.
             unsafe {
                 core::ptr::copy_nonoverlapping(parent_page, new_page_virt, PAGE_SIZE);
             }
@@ -575,6 +585,7 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                         // Include GPA in hash so page position matters
                         hasher.write_u64(gpa.as_u64());
                         let page_ptr = Page::virtual_address(cow_page).as_u64() as *const u8;
+                        // SAFETY: page_ptr points to a valid COW page of PAGE_SIZE bytes.
                         let page = unsafe { core::slice::from_raw_parts(page_ptr, PAGE_SIZE) };
                         hasher.write_bytes(page);
                     }
@@ -587,9 +598,11 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
 
         // Update the log entry's memory_hash field
         if let Some(ptr) = self.state.log_buffer_ptr {
+            // SAFETY: log_idx was valid when set; ptr is valid for the log buffer region.
             unsafe {
-                let entry_ptr =
-                    ptr.add(log_idx * core::mem::size_of::<LogEntry>()) as *mut LogEntry;
+                let entry_ptr = ptr
+                    .add(log_idx * core::mem::size_of::<LogEntry>())
+                    .cast::<LogEntry>();
                 (*entry_ptr).memory_hash = memory_hash;
                 (*entry_ptr).cow_page_count = self.cow_pages.len() as u32;
             }

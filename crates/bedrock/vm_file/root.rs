@@ -71,6 +71,8 @@ impl VmFileOps for BedrockVmFile {
 
 /// File operations for bedrock-vm anonymous inodes.
 pub(crate) static BEDROCK_VM_FOPS: SyncFileOps = {
+    // SAFETY: SyncFileOps::zeroed() produces an all-zeros file_operations, which is valid.
+    // We immediately set the required function pointers below.
     let mut fops: bindings::file_operations = unsafe { SyncFileOps::zeroed() };
     fops.owner = core::ptr::null_mut();
     fops.release = Some(bedrock_vm_release);
@@ -89,6 +91,8 @@ unsafe extern "C" fn bedrock_vm_release(
     _inode: *mut bindings::inode,
     file: *mut bindings::file,
 ) -> c_int {
+    // SAFETY: `file` is a valid pointer to a file struct, guaranteed by the kernel
+    // VFS layer which calls this release callback.
     let private_data = unsafe { (*file).private_data };
 
     if private_data.is_null() {
@@ -96,7 +100,9 @@ unsafe extern "C" fn bedrock_vm_release(
         return 0;
     }
 
-    let vm_ptr = private_data as *mut BedrockVmFile;
+    let vm_ptr = private_data.cast::<BedrockVmFile>();
+    // SAFETY: We verified private_data is non-null above, and it was set to a valid
+    // KBox<BedrockVmFile> pointer when the fd was created in create_vm_fd.
     let vm_id = unsafe { (*vm_ptr).vm_id };
     log_info!("Releasing VM {} (fd closed)\n", vm_id);
 
@@ -109,6 +115,8 @@ unsafe extern "C" fn bedrock_vm_release(
     }
 
     // Drop the VM, freeing all resources
+    // SAFETY: vm_ptr was created by KBox::into_raw in create_vm_fd. This is the
+    // release callback, so this is the unique point where ownership is reclaimed.
     let _ = unsafe { KBox::from_raw(vm_ptr) };
 
     log_info!("VM {} released successfully\n", vm_id);
@@ -126,18 +134,26 @@ unsafe extern "C" fn bedrock_vm_mmap(
     file: *mut bindings::file,
     vma: *mut bindings::vm_area_struct,
 ) -> c_int {
+    // SAFETY: `file` is a valid pointer guaranteed by the kernel VFS layer.
     let private_data = unsafe { (*file).private_data };
 
     if private_data.is_null() {
         return -(bindings::EBADF as i32);
     }
 
-    let vm_file = unsafe { &mut *(private_data as *mut BedrockVmFile) };
-    let memory = &vm_file.vm.memory;
+    // SAFETY: private_data is non-null (checked above) and was set to a valid
+    // BedrockVmFile pointer when the fd was created. We hold exclusive access
+    // because the kernel serializes mmap calls per file.
+    let vm_file = unsafe { &mut *(private_data.cast::<BedrockVmFile>()) };
+    let memory = &mut vm_file.vm.memory;
 
     // Get VMA parameters
+    // SAFETY: `vma` is a valid pointer to a vm_area_struct, guaranteed by the kernel
+    // VFS/mmap layer. These helpers read standard VMA fields.
     let vma_start = unsafe { bedrock_vma_start(vma) };
+    // SAFETY: Same as above — `vma` is a valid VMA pointer from the kernel mmap layer.
     let vma_end = unsafe { bedrock_vma_end(vma) };
+    // SAFETY: Same as above — `vma` is a valid VMA pointer from the kernel mmap layer.
     let vma_pgoff = unsafe { bedrock_vma_pgoff(vma) };
 
     let requested_size = vma_end - vma_start;
@@ -170,7 +186,7 @@ unsafe extern "C" fn bedrock_vm_mmap(
         }
 
         // Check alignment within slot
-        if relative_offset % FEEDBACK_BUFFER_SLOT_SIZE != 0 {
+        if !relative_offset.is_multiple_of(FEEDBACK_BUFFER_SLOT_SIZE) {
             log_err!("mmap: feedback buffer offset not aligned to slot boundary\n");
             return -(bindings::EINVAL as i32);
         }
@@ -199,11 +215,11 @@ unsafe extern "C" fn bedrock_vm_mmap(
         // Since guest memory is vmalloc'd, each page may have a different physical address.
         let mut hpas = [0u64; 256]; // FEEDBACK_BUFFER_MAX_PAGES = 256
 
-        for i in 0..feedback_buffer.num_pages {
+        for (i, hpa) in hpas.iter_mut().enumerate().take(feedback_buffer.num_pages) {
             let gpa = feedback_buffer.gpas[i];
             // GPA is the guest physical address, which for root VM equals the offset
             // into the vmalloc'd memory region.
-            let hpa = match memory.page_phys_addr(gpa as usize) {
+            *hpa = match memory.page_phys_addr(gpa as usize) {
                 Some(addr) => addr.as_u64(),
                 None => {
                     log_err!(
@@ -214,9 +230,11 @@ unsafe extern "C" fn bedrock_vm_mmap(
                     return -(bindings::EINVAL as i32);
                 }
             };
-            hpas[i] = hpa;
         }
 
+        // SAFETY: `vma` is a valid VMA pointer from the kernel. `hpas` contains valid
+        // physical addresses resolved from guest memory. num_pages does not exceed the
+        // array size (256).
         let ret =
             unsafe { bedrock_remap_pages(vma, hpas.as_ptr(), feedback_buffer.num_pages as i32) };
 
@@ -247,6 +265,8 @@ unsafe extern "C" fn bedrock_vm_mmap(
         }
 
         let page = vm_file.vm.state.serial_tsc_page.as_raw_page();
+        // SAFETY: `vma` is a valid VMA pointer from the kernel. `page` is a valid
+        // kernel page obtained from serial_tsc_page.
         let ret = unsafe { bedrock_remap_page(vma, page) };
 
         if ret != 0 {
@@ -273,7 +293,9 @@ unsafe extern "C" fn bedrock_vm_mmap(
             }
         };
 
-        let addr = log_buffer.as_ptr() as *mut core::ffi::c_void;
+        let addr = log_buffer.as_ptr().cast::<core::ffi::c_void>();
+        // SAFETY: `vma` is a valid VMA pointer from the kernel. `addr` is a valid
+        // vmalloc'd pointer to the log buffer. Offset 0 maps from the start.
         let ret = unsafe { bedrock_remap_vmalloc_range(vma, addr, 0) };
 
         if ret != 0 {
@@ -294,6 +316,8 @@ unsafe extern "C" fn bedrock_vm_mmap(
         }
 
         let page = vm_file.vm.state.serial_buffer_page.as_raw_page();
+        // SAFETY: `vma` is a valid VMA pointer from the kernel. `page` is a valid
+        // kernel page obtained from serial_buffer_page.
         let ret = unsafe { bedrock_remap_page(vma, page) };
 
         if ret != 0 {
@@ -315,7 +339,10 @@ unsafe extern "C" fn bedrock_vm_mmap(
             return -(bindings::EINVAL as i32);
         }
 
-        let addr = memory.as_ptr() as *mut core::ffi::c_void;
+        let addr = memory.as_mut_ptr().cast::<core::ffi::c_void>();
+        // SAFETY: `vma` is a valid VMA pointer from the kernel. `addr` is a valid
+        // vmalloc'd pointer to guest memory. `vma_pgoff` is the page offset within
+        // the mapping, and we verified the range fits within guest_mem_size above.
         let ret = unsafe { bedrock_remap_vmalloc_range(vma, addr, vma_pgoff) };
 
         if ret != 0 {
@@ -347,13 +374,17 @@ unsafe extern "C" fn bedrock_vm_ioctl(
     cmd: core::ffi::c_uint,
     arg: usize,
 ) -> isize {
+    // SAFETY: `file` is a valid pointer guaranteed by the kernel VFS layer.
     let private_data = unsafe { (*file).private_data };
 
     if private_data.is_null() {
         return -(bindings::EBADF as isize);
     }
 
-    let vm_file = unsafe { &mut *(private_data as *mut BedrockVmFile) };
+    // SAFETY: private_data is non-null (checked above) and was set to a valid
+    // BedrockVmFile pointer when the fd was created. The kernel serializes ioctls
+    // per file descriptor.
+    let vm_file = unsafe { &mut *(private_data.cast::<BedrockVmFile>()) };
 
     match cmd {
         BEDROCK_VM_GET_REGS => handlers::handle_get_regs(vm_file, arg),
@@ -382,9 +413,12 @@ unsafe extern "C" fn bedrock_vm_ioctl(
 fn handle_set_input(vm_file: &mut BedrockVmFile, arg: usize) -> isize {
     let mut input = MaybeUninit::<BedrockSerialInput>::uninit();
 
+    // SAFETY: `input.as_mut_ptr()` points to valid, aligned, writable memory for a
+    // BedrockSerialInput. `arg` is a user-provided pointer from the ioctl syscall.
+    // bedrock_copy_from_user performs a bounded copy.
     let not_copied = unsafe {
         bedrock_copy_from_user(
-            input.as_mut_ptr() as *mut core::ffi::c_void,
+            input.as_mut_ptr().cast::<core::ffi::c_void>(),
             arg as *const core::ffi::c_void,
             size_of::<BedrockSerialInput>() as core::ffi::c_ulong,
         )
@@ -394,6 +428,8 @@ fn handle_set_input(vm_file: &mut BedrockVmFile, arg: usize) -> isize {
         return -(bindings::EFAULT as isize);
     }
 
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `input`
+    // have been written and it is now fully initialized.
     let input = unsafe { input.assume_init() };
 
     // Validate length

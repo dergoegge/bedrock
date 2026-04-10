@@ -145,8 +145,10 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> V
             return Err(MemoryError::OutOfRange);
         }
 
-        // SAFETY: We've verified the offset and length are within bounds.
+        // SAFETY: We've verified the offset and length are within bounds above.
         let src = unsafe { self.memory.as_ptr().add(offset) };
+        // SAFETY: src points within guest memory, buf is a valid mutable slice,
+        // and we verified offset + buf.len() <= memory.size() above.
         unsafe {
             core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), buf.len());
         }
@@ -163,8 +165,10 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> V
             return Err(MemoryError::OutOfRange);
         }
 
-        // SAFETY: We've verified the offset and length are within bounds.
+        // SAFETY: We've verified the offset and length are within bounds above.
         let dst = unsafe { self.memory.as_mut_ptr().add(offset) };
+        // SAFETY: dst points within guest memory, buf is a valid slice,
+        // and we verified offset + buf.len() <= memory.size() above.
         unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
         }
@@ -204,8 +208,9 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> V
         if let Some(ptr) = self.state.log_buffer_ptr {
             // SAFETY: log_idx was valid when set, ptr is valid for 1MB
             unsafe {
-                let entry_ptr =
-                    ptr.add(log_idx * core::mem::size_of::<LogEntry>()) as *mut LogEntry;
+                let entry_ptr = ptr
+                    .add(log_idx * core::mem::size_of::<LogEntry>())
+                    .cast::<LogEntry>();
                 (*entry_ptr).memory_hash = memory_hash;
             }
         }
@@ -241,6 +246,7 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> P
         let offset = page_gpa as usize;
 
         if offset + PAGE_SIZE <= self.memory.size() {
+            // SAFETY: We verified offset + PAGE_SIZE is within the guest memory bounds.
             Some(unsafe { self.memory.as_ptr().add(offset) })
         } else {
             None

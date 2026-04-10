@@ -272,7 +272,7 @@ pub(crate) struct BedrockRegs {
 
 /// Wrapper around file_operations to implement Sync.
 ///
-/// SAFETY: The file_operations struct only contains function pointers and
+/// The file_operations struct only contains function pointers and
 /// a module owner pointer. The function pointers are safe to share between
 /// threads, and the owner is null (set by kernel).
 pub(crate) struct SyncFileOps(pub bindings::file_operations);

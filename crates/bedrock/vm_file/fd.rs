@@ -58,11 +58,14 @@ pub(crate) fn create_vm_fd(
     }
 
     // Create anonymous inode file descriptor
+    // SAFETY: The name is a valid C string literal. BEDROCK_VM_FOPS is a valid,
+    // static file_operations struct. vm_ptr is a valid heap-allocated BedrockVmFile.
+    // The flags are standard open flags.
     let fd = unsafe {
         bedrock_anon_inode_getfd(
             c"bedrock-vm".as_ptr(),
             &BEDROCK_VM_FOPS.0,
-            vm_ptr as *mut core::ffi::c_void,
+            vm_ptr.cast::<core::ffi::c_void>(),
             bindings::O_RDWR as c_int | bindings::O_CLOEXEC as c_int,
         )
     };
@@ -75,6 +78,8 @@ pub(crate) fn create_vm_fd(
                 handler.remove_vm(vm_ptr);
             }
         }
+        // SAFETY: vm_ptr was created by KBox::into_raw above and has not been
+        // transferred to the kernel (fd creation failed), so we reclaim ownership.
         let _ = unsafe { KBox::from_raw(vm_ptr) };
         return Err(kernel::error::Error::from_errno(fd));
     }
@@ -118,11 +123,14 @@ pub(crate) fn create_forked_vm_fd(
         }
     }
 
+    // SAFETY: The name is a valid C string literal. BEDROCK_FORKED_VM_FOPS is a valid,
+    // static file_operations struct. vm_ptr is a valid heap-allocated BedrockForkedVmFile.
+    // The flags are standard open flags.
     let fd = unsafe {
         bedrock_anon_inode_getfd(
             c"bedrock-forked-vm".as_ptr(),
             &BEDROCK_FORKED_VM_FOPS.0,
-            vm_ptr as *mut core::ffi::c_void,
+            vm_ptr.cast::<core::ffi::c_void>(),
             bindings::O_RDWR as c_int | bindings::O_CLOEXEC as c_int,
         )
     };
@@ -134,6 +142,8 @@ pub(crate) fn create_forked_vm_fd(
                 handler.remove_vm(vm_ptr);
             }
         }
+        // SAFETY: vm_ptr was created by KBox::into_raw above and has not been
+        // transferred to the kernel (fd creation failed), so we reclaim ownership.
         let _ = unsafe { KBox::from_raw(vm_ptr) };
         return Err(kernel::error::Error::from_errno(fd));
     }

@@ -34,7 +34,7 @@ impl Kernel for LinuxKernel {
 
     fn phys_to_virt(&self, phys: HostPhysAddr) -> *mut u8 {
         // SAFETY: bedrock_phys_to_virt wraps __va() which is valid for direct-mapped physical memory.
-        unsafe { c_helpers::bedrock_phys_to_virt(phys.as_u64()) as *mut u8 }
+        unsafe { c_helpers::bedrock_phys_to_virt(phys.as_u64()).cast::<u8>() }
     }
 
     fn call_on_all_cpus_with_data<F, T, E>(&self, data: &T, func: F) -> Result<(), E>
@@ -60,7 +60,7 @@ impl Kernel for LinuxKernel {
             F: Fn(&T) -> Result<(), E>,
         {
             // SAFETY: info points to BedrockCpuCallInfo from the C helper.
-            let call_info = unsafe { &mut *(info as *mut c_helpers::BedrockCpuCallInfo) };
+            let call_info = unsafe { &mut *(info.cast::<c_helpers::BedrockCpuCallInfo>()) };
             // SAFETY: call_info.info points to our CallbackData struct.
             let cb = unsafe { &*(call_info.info as *const CallbackData<'_, F, T, E>) };
             if let Err(e) = (cb.func)(cb.data) {
@@ -89,14 +89,16 @@ impl Kernel for LinuxKernel {
         let ret = unsafe {
             c_helpers::bedrock_for_each_cpu(
                 Some(trampoline::<F, T, E>),
-                &cb_data as *const _ as *mut core::ffi::c_void,
+                core::ptr::from_ref(&cb_data)
+                    .cast_mut()
+                    .cast::<core::ffi::c_void>(),
                 &mut failed_cpu,
             )
         };
 
         // Check if any CPU encountered an error.
-        // SAFETY: bedrock_for_each_cpu has completed, so no more writes to error.
         if ret != 0 {
+            // SAFETY: bedrock_for_each_cpu has completed, so no more writes to error.
             if let Some(e) = unsafe { (*cb_data.error.get()).take() } {
                 return Err(e);
             }
@@ -131,6 +133,7 @@ impl MsrAccess for RealMsrAccess {
     fn read_msr(&self, address: u32) -> Result<u64, MsrError> {
         let low: u32;
         let high: u32;
+        // SAFETY: RDMSR is safe when the MSR address is valid; the caller is responsible for providing a valid address.
         unsafe {
             asm!(
                 "rdmsr",
@@ -140,12 +143,13 @@ impl MsrAccess for RealMsrAccess {
                 options(nomem, nostack)
             );
         }
-        Ok(((high as u64) << 32) | (low as u64))
+        Ok((u64::from(high) << 32) | u64::from(low))
     }
 
     fn write_msr(&self, address: u32, value: u64) -> Result<(), MsrError> {
         let low = value as u32;
         let high = (value >> 32) as u32;
+        // SAFETY: WRMSR is safe when the MSR address and value are valid; the caller is responsible for correctness.
         unsafe {
             asm!(
                 "wrmsr",
@@ -165,6 +169,7 @@ pub(crate) struct RealCrAccess;
 impl CrAccess for RealCrAccess {
     fn read_cr0(&self) -> Result<Cr0, CrError> {
         let value: u64;
+        // SAFETY: Reading CR0 is always safe and has no side effects.
         unsafe {
             asm!("mov {}, cr0", out(reg) value, options(nomem, nostack));
         }
@@ -173,6 +178,7 @@ impl CrAccess for RealCrAccess {
 
     fn read_cr3(&self) -> Result<Cr3, CrError> {
         let value: u64;
+        // SAFETY: Reading CR3 is always safe and has no side effects.
         unsafe {
             asm!("mov {}, cr3", out(reg) value, options(nomem, nostack));
         }
@@ -181,6 +187,7 @@ impl CrAccess for RealCrAccess {
 
     fn read_cr4(&self) -> Result<Cr4, CrError> {
         let value: u64;
+        // SAFETY: Reading CR4 is always safe and has no side effects.
         unsafe {
             asm!("mov {}, cr4", out(reg) value, options(nomem, nostack));
         }
@@ -188,6 +195,7 @@ impl CrAccess for RealCrAccess {
     }
 
     fn write_cr4(&self, cr4: &Cr4) -> Result<(), CrError> {
+        // SAFETY: Writing CR4 with a valid value is safe; the caller ensures the value is correct.
         unsafe {
             asm!("mov cr4, {}", in(reg) cr4.bits(), options(nomem, nostack));
         }
@@ -195,11 +203,13 @@ impl CrAccess for RealCrAccess {
     }
 
     fn set_vmxe(&self) -> Result<(), CrError> {
+        // SAFETY: Setting the VMXE bit in CR4 is safe when called before VMXON and the CPU supports VMX.
         unsafe { c_helpers::bedrock_cr4_set_vmxe() };
         Ok(())
     }
 
     fn clear_vmxe(&self) -> Result<(), CrError> {
+        // SAFETY: Clearing the VMXE bit in CR4 is safe after VMXOFF has been executed.
         unsafe { c_helpers::bedrock_cr4_clear_vmxe() };
         Ok(())
     }
@@ -211,6 +221,7 @@ pub(crate) struct RealDescriptorTableAccess;
 impl DescriptorTableAccess for RealDescriptorTableAccess {
     fn read_cs(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: Reading the CS segment selector is always safe and has no side effects.
         unsafe {
             asm!("mov {:x}, cs", out(reg) sel, options(nomem, nostack));
         }
@@ -219,6 +230,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_ss(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: Reading the SS segment selector is always safe and has no side effects.
         unsafe {
             asm!("mov {:x}, ss", out(reg) sel, options(nomem, nostack));
         }
@@ -227,6 +239,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_ds(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: Reading the DS segment selector is always safe and has no side effects.
         unsafe {
             asm!("mov {:x}, ds", out(reg) sel, options(nomem, nostack));
         }
@@ -235,6 +248,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_es(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: Reading the ES segment selector is always safe and has no side effects.
         unsafe {
             asm!("mov {:x}, es", out(reg) sel, options(nomem, nostack));
         }
@@ -243,6 +257,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_fs(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: Reading the FS segment selector is always safe and has no side effects.
         unsafe {
             asm!("mov {:x}, fs", out(reg) sel, options(nomem, nostack));
         }
@@ -251,6 +266,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_gs(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: Reading the GS segment selector is always safe and has no side effects.
         unsafe {
             asm!("mov {:x}, gs", out(reg) sel, options(nomem, nostack));
         }
@@ -259,6 +275,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_tr(&self) -> SegmentSelector {
         let sel: u16;
+        // SAFETY: STR reads the task register selector and is always safe with no side effects.
         unsafe {
             asm!("str {:x}", out(reg) sel, options(nomem, nostack));
         }
@@ -298,17 +315,18 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
         // Byte 7: Base 31:24
         // Bytes 8-11: Base 63:32
         // Bytes 12-15: Reserved
+        // SAFETY: desc_addr points into the GDT which is valid kernel memory, and the TR selector index is validated above.
         unsafe {
             let desc_ptr = desc_addr as *const u8;
-            let base_low = u16::from_le_bytes([*desc_ptr.add(2), *desc_ptr.add(3)]) as u64;
-            let base_mid = *desc_ptr.add(4) as u64;
-            let base_high = *desc_ptr.add(7) as u64;
-            let base_upper = u32::from_le_bytes([
+            let base_low = u64::from(u16::from_le_bytes([*desc_ptr.add(2), *desc_ptr.add(3)]));
+            let base_mid = u64::from(*desc_ptr.add(4));
+            let base_high = u64::from(*desc_ptr.add(7));
+            let base_upper = u64::from(u32::from_le_bytes([
                 *desc_ptr.add(8),
                 *desc_ptr.add(9),
                 *desc_ptr.add(10),
                 *desc_ptr.add(11),
-            ]) as u64;
+            ]));
 
             base_low | (base_mid << 16) | (base_high << 24) | (base_upper << 32)
         }
@@ -316,6 +334,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_gdtr(&self) -> Gdtr {
         let mut gdtr = Gdtr::new(0, 0);
+        // SAFETY: SGDT stores the GDTR into the provided memory location; gdtr is a valid mutable reference.
         unsafe {
             asm!("sgdt [{}]", in(reg) &mut gdtr, options(nostack));
         }
@@ -324,6 +343,7 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 
     fn read_idtr(&self) -> Idtr {
         let mut idtr = Idtr::new(0, 0);
+        // SAFETY: SIDT stores the IDTR into the provided memory location; idtr is a valid mutable reference.
         unsafe {
             asm!("sidt [{}]", in(reg) &mut idtr, options(nostack));
         }
@@ -334,8 +354,9 @@ impl DescriptorTableAccess for RealDescriptorTableAccess {
 /// Linux kernel machine implementation.
 pub(crate) struct LinuxMachine;
 
-// SAFETY: All operations are thread-safe or performed on the local CPU.
+// SAFETY: LinuxMachine has no mutable state; all operations are CPU-local.
 unsafe impl Send for LinuxMachine {}
+// SAFETY: LinuxMachine is a zero-sized stateless type with no shared mutable data.
 unsafe impl Sync for LinuxMachine {}
 
 impl Machine for LinuxMachine {

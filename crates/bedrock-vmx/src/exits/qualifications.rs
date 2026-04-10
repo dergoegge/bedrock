@@ -210,7 +210,7 @@ impl InterruptionInfo {
 
     /// Encode to 32-bit VMCS field format.
     pub fn encode(&self) -> u32 {
-        let mut value = self.vector as u32;
+        let mut value = u32::from(self.vector);
         value |= (self.interruption_type as u32) << 8;
         if self.error_code_valid {
             value |= 1 << 11;

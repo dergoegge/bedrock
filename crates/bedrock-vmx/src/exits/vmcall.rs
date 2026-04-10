@@ -77,7 +77,7 @@ pub fn handle_vmcall<C: VmContext, A: CowAllocator<C::CowPage>>(
             let mut gpas = [0u64; FEEDBACK_BUFFER_MAX_PAGES];
             let num_pages = match translate_gva_range_to_gpas(ctx, gva, size, &mut gpas) {
                 Ok(n) => n,
-                Err(_) => {
+                Err(()) => {
                     log_err!(
                         "HYPERCALL_REGISTER_FEEDBACK_BUFFER: GVA translation failed gva={:#x} size={}\n",
                         gva, size

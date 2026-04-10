@@ -294,14 +294,14 @@ where
         .vmcs
         .write32(
             VmcsField32::GuestGdtrLimit,
-            descriptor_tables.gdtr.limit as u32,
+            u32::from(descriptor_tables.gdtr.limit),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestIdtrLimit,
-            descriptor_tables.idtr.limit as u32,
+            u32::from(descriptor_tables.idtr.limit),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
 

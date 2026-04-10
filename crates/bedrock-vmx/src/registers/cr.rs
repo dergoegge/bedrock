@@ -162,9 +162,7 @@ pub type CrResult<T> = Result<T, CrError>;
 /// MOV CR instructions (except MOV CR8) are serializing instructions.
 ///
 /// See Intel SDM Vol 3A, Section 2.5 (Control Registers) and
-/// Intel SDM Vol 2B, MOV—Move to/from Control Registers.
-///
-/// # Safety
+/// Intel SDM Vol 2B, MOV - Move to/from Control Registers.
 ///
 /// Implementors must ensure:
 /// - Operations are only performed at CPL 0
