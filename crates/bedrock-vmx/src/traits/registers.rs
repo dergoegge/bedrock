@@ -15,50 +15,42 @@ use super::{
     Vmx,
 };
 
-/// Set guest registers from the provided register structs.
+/// Set guest registers from the provided register struct.
 ///
 /// This writes all guest registers to the VMCS and updates the GPR state.
 /// The VMCS must be loaded before calling this method.
-#[allow(clippy::too_many_arguments)]
 pub fn set_registers<V, I>(
     state: &mut VmState<V, I>,
-    gprs: &GeneralPurposeRegisters,
-    control_regs: &ControlRegisters,
-    debug_regs: &DebugRegisters,
-    segment_regs: &SegmentRegisters,
-    descriptor_tables: &DescriptorTableRegisters,
-    extended_control_regs: &ExtendedControlRegisters,
-    rip: u64,
-    rflags: u64,
+    regs: &GuestRegisters,
 ) -> Result<(), VmSetRegistersError>
 where
     V: VirtualMachineControlStructure,
     I: InstructionCounter,
 {
     // Update general-purpose registers
-    state.gprs = *gprs;
+    state.gprs = regs.gprs;
 
     // Write guest state to control registers
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRsp, gprs.rsp)
+        .write_natural(VmcsFieldNatural::GuestRsp, regs.gprs.rsp)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRip, rip)
+        .write_natural(VmcsFieldNatural::GuestRip, regs.rip)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestRflags, rflags)
+        .write_natural(VmcsFieldNatural::GuestRflags, regs.rflags)
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Fix and write CR0 and CR4 if needed
     {
         let vcpu = <V::M as super::Machine>::V::current_vcpu();
         let fixed_cr0 =
-            <V::M as super::Machine>::V::fix_cr0(&control_regs.cr0, vcpu.capabilities());
+            <V::M as super::Machine>::V::fix_cr0(&regs.control_regs.cr0, vcpu.capabilities());
         let fixed_cr4 =
-            <V::M as super::Machine>::V::fix_cr4(&control_regs.cr4, vcpu.capabilities());
+            <V::M as super::Machine>::V::fix_cr4(&regs.control_regs.cr4, vcpu.capabilities());
         state
             .vmcs
             .write_natural(VmcsFieldNatural::GuestCr0, fixed_cr0.bits())
@@ -68,18 +60,18 @@ where
             .write_natural(VmcsFieldNatural::GuestCr4, fixed_cr4.bits())
             .map_err(VmSetRegistersError::VmcsWrite)?;
 
-        if fixed_cr0.bits() != control_regs.cr0.bits() {
+        if fixed_cr0.bits() != regs.control_regs.cr0.bits() {
             log_info!(
                 "VmContext: CR0 fixed: 0x{:016x} -> 0x{:016x}",
-                control_regs.cr0.bits(),
+                regs.control_regs.cr0.bits(),
                 fixed_cr0.bits()
             );
         }
 
-        if fixed_cr4.bits() != control_regs.cr4.bits() {
+        if fixed_cr4.bits() != regs.control_regs.cr4.bits() {
             log_info!(
                 "VmContext: CR4 fixed: 0x{:016x} -> 0x{:016x}",
-                control_regs.cr4.bits(),
+                regs.control_regs.cr4.bits(),
                 fixed_cr4.bits()
             );
         }
@@ -88,13 +80,13 @@ where
     // CR3 - page table base address
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestCr3, control_regs.cr3.bits())
+        .write_natural(VmcsFieldNatural::GuestCr3, regs.control_regs.cr3.bits())
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Debug registers
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestDr7, debug_regs.dr7)
+        .write_natural(VmcsFieldNatural::GuestDr7, regs.debug_regs.dr7)
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Segment registers - selectors
@@ -102,125 +94,125 @@ where
         .vmcs
         .write16(
             VmcsField16::GuestCsSelector,
-            segment_regs.cs.selector.bits(),
+            regs.segment_regs.cs.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestDsSelector,
-            segment_regs.ds.selector.bits(),
+            regs.segment_regs.ds.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestEsSelector,
-            segment_regs.es.selector.bits(),
+            regs.segment_regs.es.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestFsSelector,
-            segment_regs.fs.selector.bits(),
+            regs.segment_regs.fs.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestGsSelector,
-            segment_regs.gs.selector.bits(),
+            regs.segment_regs.gs.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestSsSelector,
-            segment_regs.ss.selector.bits(),
+            regs.segment_regs.ss.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestLdtrSelector,
-            segment_regs.ldtr.selector.bits(),
+            regs.segment_regs.ldtr.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write16(
             VmcsField16::GuestTrSelector,
-            segment_regs.tr.selector.bits(),
+            regs.segment_regs.tr.selector.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Segment registers - bases
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestCsBase, segment_regs.cs.base)
+        .write_natural(VmcsFieldNatural::GuestCsBase, regs.segment_regs.cs.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestDsBase, segment_regs.ds.base)
+        .write_natural(VmcsFieldNatural::GuestDsBase, regs.segment_regs.ds.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestEsBase, segment_regs.es.base)
+        .write_natural(VmcsFieldNatural::GuestEsBase, regs.segment_regs.es.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestFsBase, segment_regs.fs.base)
+        .write_natural(VmcsFieldNatural::GuestFsBase, regs.segment_regs.fs.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestGsBase, segment_regs.gs.base)
+        .write_natural(VmcsFieldNatural::GuestGsBase, regs.segment_regs.gs.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestSsBase, segment_regs.ss.base)
+        .write_natural(VmcsFieldNatural::GuestSsBase, regs.segment_regs.ss.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestLdtrBase, segment_regs.ldtr.base)
+        .write_natural(VmcsFieldNatural::GuestLdtrBase, regs.segment_regs.ldtr.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestTrBase, segment_regs.tr.base)
+        .write_natural(VmcsFieldNatural::GuestTrBase, regs.segment_regs.tr.base)
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Segment registers - limits
     state
         .vmcs
-        .write32(VmcsField32::GuestCsLimit, segment_regs.cs.limit)
+        .write32(VmcsField32::GuestCsLimit, regs.segment_regs.cs.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestDsLimit, segment_regs.ds.limit)
+        .write32(VmcsField32::GuestDsLimit, regs.segment_regs.ds.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestEsLimit, segment_regs.es.limit)
+        .write32(VmcsField32::GuestEsLimit, regs.segment_regs.es.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestFsLimit, segment_regs.fs.limit)
+        .write32(VmcsField32::GuestFsLimit, regs.segment_regs.fs.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestGsLimit, segment_regs.gs.limit)
+        .write32(VmcsField32::GuestGsLimit, regs.segment_regs.gs.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestSsLimit, segment_regs.ss.limit)
+        .write32(VmcsField32::GuestSsLimit, regs.segment_regs.ss.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestLdtrLimit, segment_regs.ldtr.limit)
+        .write32(VmcsField32::GuestLdtrLimit, regs.segment_regs.ldtr.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write32(VmcsField32::GuestTrLimit, segment_regs.tr.limit)
+        .write32(VmcsField32::GuestTrLimit, regs.segment_regs.tr.limit)
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Segment registers - access rights
@@ -228,80 +220,86 @@ where
         .vmcs
         .write32(
             VmcsField32::GuestCsAccessRights,
-            segment_regs.cs.access_rights.bits(),
+            regs.segment_regs.cs.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestDsAccessRights,
-            segment_regs.ds.access_rights.bits(),
+            regs.segment_regs.ds.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestEsAccessRights,
-            segment_regs.es.access_rights.bits(),
+            regs.segment_regs.es.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestFsAccessRights,
-            segment_regs.fs.access_rights.bits(),
+            regs.segment_regs.fs.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestGsAccessRights,
-            segment_regs.gs.access_rights.bits(),
+            regs.segment_regs.gs.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestSsAccessRights,
-            segment_regs.ss.access_rights.bits(),
+            regs.segment_regs.ss.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestLdtrAccessRights,
-            segment_regs.ldtr.access_rights.bits(),
+            regs.segment_regs.ldtr.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestTrAccessRights,
-            segment_regs.tr.access_rights.bits(),
+            regs.segment_regs.tr.access_rights.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
     // Descriptor tables
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestGdtrBase, descriptor_tables.gdtr.base)
+        .write_natural(
+            VmcsFieldNatural::GuestGdtrBase,
+            regs.descriptor_tables.gdtr.base,
+        )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
-        .write_natural(VmcsFieldNatural::GuestIdtrBase, descriptor_tables.idtr.base)
+        .write_natural(
+            VmcsFieldNatural::GuestIdtrBase,
+            regs.descriptor_tables.idtr.base,
+        )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestGdtrLimit,
-            u32::from(descriptor_tables.gdtr.limit),
+            u32::from(regs.descriptor_tables.gdtr.limit),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
     state
         .vmcs
         .write32(
             VmcsField32::GuestIdtrLimit,
-            u32::from(descriptor_tables.idtr.limit),
+            u32::from(regs.descriptor_tables.idtr.limit),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
@@ -310,7 +308,7 @@ where
         .vmcs
         .write64(
             VmcsField64::GuestIa32Efer,
-            extended_control_regs.efer.bits(),
+            regs.extended_control_regs.efer.bits(),
         )
         .map_err(VmSetRegistersError::VmcsWrite)?;
 
@@ -360,22 +358,7 @@ where
 /// Get all guest registers from VMCS and GPR state.
 ///
 /// The VMCS must be loaded before calling this method.
-#[allow(clippy::type_complexity)]
-pub fn get_registers<V, I>(
-    state: &VmState<V, I>,
-) -> Result<
-    (
-        GeneralPurposeRegisters,
-        ControlRegisters,
-        DebugRegisters,
-        SegmentRegisters,
-        DescriptorTableRegisters,
-        ExtendedControlRegisters,
-        u64, // rip
-        u64, // rflags
-    ),
-    VmGetRegistersError,
->
+pub fn get_registers<V, I>(state: &VmState<V, I>) -> Result<GuestRegisters, VmGetRegistersError>
 where
     V: VirtualMachineControlStructure,
     I: InstructionCounter,
@@ -520,16 +503,16 @@ where
         .read_natural(VmcsFieldNatural::GuestRflags)
         .map_err(VmGetRegistersError::VmcsRead)?;
 
-    Ok((
+    Ok(GuestRegisters {
         gprs,
         control_regs,
         debug_regs,
         segment_regs,
         descriptor_tables,
-        extended_control,
+        extended_control_regs: extended_control,
         rip,
         rflags,
-    ))
+    })
 }
 
 /// Helper to read a segment register from VMCS.

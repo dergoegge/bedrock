@@ -33,15 +33,15 @@ pub use crate::host::HostState;
 pub use super::registers::{
     msr, xcr0, ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, CrAccess, CrError, Cstar, DebugRegisters,
     DescriptorTableAccess, DescriptorTableRegisters, Efer, ExtendedControlRegisters, Fmask, Gdtr,
-    GeneralPurposeRegisters, Idtr, Lstar, MiscEnable, MsrAccess, MsrError, SegmentRegister,
-    SegmentRegisters, Star,
+    GeneralPurposeRegisters, GuestRegisters, Idtr, Lstar, MiscEnable, MsrAccess, MsrError,
+    SegmentRegister, SegmentRegisters, Star,
 };
 #[cfg(feature = "cargo")]
 pub use crate::registers::{
     msr, xcr0, ControlRegisters, Cr0, Cr2, Cr3, Cr4, Cr8, CrAccess, CrError, Cstar, DebugRegisters,
     DescriptorTableAccess, DescriptorTableRegisters, Efer, ExtendedControlRegisters, Fmask, Gdtr,
-    GeneralPurposeRegisters, Idtr, Lstar, MiscEnable, MsrAccess, MsrError, SegmentRegister,
-    SegmentRegisters, Star,
+    GeneralPurposeRegisters, GuestRegisters, Idtr, Lstar, MiscEnable, MsrAccess, MsrError,
+    SegmentRegister, SegmentRegisters, Star,
 };
 
 // =============================================================================

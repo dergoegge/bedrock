@@ -14,6 +14,7 @@ use super::super::c_helpers::{bedrock_copy_from_user, bedrock_copy_to_user, Pree
 use super::super::factory::KernelFrameAllocator;
 use super::super::machine::MACHINE;
 use super::super::page::{LogBuffer, PagePool};
+use super::super::vmx::registers::GuestRegisters;
 use super::super::vmx::traits::{CowAllocator, Machine, VmContext};
 use super::super::vmx::ExitReason;
 use super::super::vmx::{LogMode, RdrandMode};
@@ -65,16 +66,7 @@ pub(crate) fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     let _preempt_guard = PreemptionGuard::new();
 
     // Use VmContext::get_registers_guarded to load VMCS, read registers, and clear VMCS
-    let (
-        gprs,
-        control_regs,
-        debug_regs,
-        segment_regs,
-        descriptor_tables,
-        extended_control,
-        rip,
-        rflags,
-    ) = match vm.get_registers_guarded() {
+    let guest_regs = match vm.get_registers_guarded() {
         Ok(regs) => regs,
         Err(e) => {
             log_err!("GET_REGS failed: {:?}\n", e);
@@ -83,14 +75,14 @@ pub(crate) fn handle_get_regs<F: VmFileOps>(vm_file: &F, arg: usize) -> isize {
     };
 
     let regs = BedrockRegs {
-        gprs,
-        control_regs,
-        debug_regs,
-        segment_regs,
-        descriptor_tables,
-        extended_control,
-        rip,
-        rflags,
+        gprs: guest_regs.gprs,
+        control_regs: guest_regs.control_regs,
+        debug_regs: guest_regs.debug_regs,
+        segment_regs: guest_regs.segment_regs,
+        descriptor_tables: guest_regs.descriptor_tables,
+        extended_control: guest_regs.extended_control_regs,
+        rip: guest_regs.rip,
+        rflags: guest_regs.rflags,
     };
 
     // Copy to userspace
@@ -141,16 +133,17 @@ pub(crate) fn handle_set_regs<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isiz
 
     // Use VmContext::set_registers_guarded to load VMCS, set registers, and clear VMCS
     let vm = vm_file.vm_mut();
-    match vm.set_registers_guarded(
-        &regs.gprs,
-        &regs.control_regs,
-        &regs.debug_regs,
-        &regs.segment_regs,
-        &regs.descriptor_tables,
-        &regs.extended_control,
-        regs.rip,
-        regs.rflags,
-    ) {
+    let guest_regs = GuestRegisters {
+        gprs: regs.gprs,
+        control_regs: regs.control_regs,
+        debug_regs: regs.debug_regs,
+        segment_regs: regs.segment_regs,
+        descriptor_tables: regs.descriptor_tables,
+        extended_control_regs: regs.extended_control,
+        rip: regs.rip,
+        rflags: regs.rflags,
+    };
+    match vm.set_registers_guarded(&guest_regs) {
         Ok(()) => 0,
         Err(e) => {
             log_err!("SET_REGS failed: {:?}\n", e);
