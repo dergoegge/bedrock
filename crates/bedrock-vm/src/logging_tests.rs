@@ -56,7 +56,20 @@ fn test_write_jsonl() {
         pending_dbg_exceptions: 0,
         interruptibility_state: 0,
         cow_page_count: 0,
-        _padding: [0; 26],
+        efer: 0,
+        pat: 0,
+        tsc_aux: 0,
+        star: 0,
+        lstar: 0,
+        cstar: 0,
+        fmask: 0,
+        sysenter_esp: 0,
+        sysenter_eip: 0,
+        sysenter_cs: 0,
+        activity_state: 0,
+        vm_entry_intr_info: 0,
+        _reserved0: 0,
+        _padding: [0; 15],
     };
 
     let mut output = Vec::new();

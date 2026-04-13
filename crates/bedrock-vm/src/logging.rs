@@ -112,10 +112,41 @@ pub struct LogEntry {
     /// Number of COW pages at time of exit.
     pub cow_page_count: u32,
 
-    // Padding (208 bytes)
+    // Guest MSRs (72 bytes)
+    /// IA32_EFER (from VMCS GuestIa32Efer).
+    pub efer: u64,
+    /// IA32_PAT (emulated, from msr_state.pat).
+    pub pat: u64,
+    /// IA32_TSC_AUX (from msr_state.tsc_aux).
+    pub tsc_aux: u64,
+    /// IA32_STAR (from msr_state.syscall.star).
+    pub star: u64,
+    /// IA32_LSTAR (from msr_state.syscall.lstar).
+    pub lstar: u64,
+    /// IA32_CSTAR (from msr_state.syscall.cstar).
+    pub cstar: u64,
+    /// IA32_FMASK (from msr_state.syscall.fmask).
+    pub fmask: u64,
+    /// IA32_SYSENTER_ESP (from VMCS GuestIa32SysenterEsp).
+    pub sysenter_esp: u64,
+    /// IA32_SYSENTER_EIP (from VMCS GuestIa32SysenterEip).
+    pub sysenter_eip: u64,
+
+    // Guest interrupt / activity state (16 bytes)
+    /// IA32_SYSENTER_CS (from VMCS GuestIa32SysenterCs).
+    pub sysenter_cs: u32,
+    /// Guest activity state from VMCS (0=Active, 1=HLT, 2=Shutdown, 3=Wait-for-SIPI).
+    pub activity_state: u32,
+    /// VM-entry interruption-information (pending event to inject on next entry).
+    pub vm_entry_intr_info: u32,
+    /// Reserved for alignment.
+    #[serde(skip)]
+    pub _reserved0: u32,
+
+    // Padding (120 bytes)
     /// Padding to reach 512 bytes.
     #[serde(skip)]
-    pub _padding: [u64; 26],
+    pub _padding: [u64; 15],
 }
 
 impl LogEntry {

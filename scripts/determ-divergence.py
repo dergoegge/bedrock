@@ -72,11 +72,22 @@ def fmt_entry(e, prefix=""):
         if len(segs) > 4:
             parts.append(f"{prefix}  {' '.join(segs[4:])}")
     misc = []
-    for f in ["pending_dbg_exceptions", "interruptibility_state", "cow_page_count"]:
+    for f in ["pending_dbg_exceptions", "interruptibility_state", "activity_state",
+              "vm_entry_intr_info", "cow_page_count"]:
         if f in e:
             misc.append(f"{f}={hex(e[f]) if isinstance(e[f], int) and e[f] > 255 else e[f]}")
     if misc:
         parts.append(f"{prefix}  {' '.join(misc)}")
+    # Show guest MSRs
+    msrs = []
+    for m in ["efer", "pat", "tsc_aux", "star", "lstar", "cstar", "fmask",
+              "sysenter_cs", "sysenter_esp", "sysenter_eip"]:
+        if m in e:
+            msrs.append(f"{m}={hex(e[m])}")
+    if msrs:
+        parts.append(f"{prefix}  {' '.join(msrs[:5])}")
+        if len(msrs) > 5:
+            parts.append(f"{prefix}  {' '.join(msrs[5:])}")
     # Show hashes
     hashes = []
     for h in ["memory_hash", "apic_hash", "serial_hash", "ioapic_hash",

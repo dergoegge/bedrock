@@ -1212,6 +1212,31 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             .read32(VmcsField32::GuestInterruptibilityState)
             .unwrap_or(0);
 
+        // Read guest MSRs that have VMCS fields (automatically saved at VM exit).
+        let efer = self.vmcs.read64(VmcsField64::GuestIa32Efer).unwrap_or(0);
+        let sysenter_esp = self
+            .vmcs
+            .read_natural(VmcsFieldNatural::GuestIa32SysenterEsp)
+            .unwrap_or(0);
+        let sysenter_eip = self
+            .vmcs
+            .read_natural(VmcsFieldNatural::GuestIa32SysenterEip)
+            .unwrap_or(0);
+        let sysenter_cs = self
+            .vmcs
+            .read32(VmcsField32::GuestIa32SysenterCs)
+            .unwrap_or(0);
+
+        // Read guest interrupt / activity state from VMCS.
+        let activity_state = self
+            .vmcs
+            .read32(VmcsField32::GuestActivityState)
+            .unwrap_or(0);
+        let vm_entry_intr_info = self
+            .vmcs
+            .read32(VmcsField32::VmEntryInterruptionInfo)
+            .unwrap_or(0);
+
         // Compute device state hashes
         let apic_hash = self.devices.apic.state_hash();
         let serial_hash = self.devices.serial.state_hash();
@@ -1264,7 +1289,20 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             pending_dbg_exceptions,
             interruptibility_state,
             cow_page_count: 0,
-            _padding: [0; 26],
+            efer,
+            pat: self.msr_state.pat,
+            tsc_aux: self.msr_state.tsc_aux,
+            star: self.msr_state.syscall.star.bits(),
+            lstar: self.msr_state.syscall.lstar.bits(),
+            cstar: self.msr_state.syscall.cstar.bits(),
+            fmask: self.msr_state.syscall.fmask.bits(),
+            sysenter_esp,
+            sysenter_eip,
+            sysenter_cs,
+            activity_state,
+            vm_entry_intr_info,
+            _reserved0: 0,
+            _padding: [0; 15],
         };
 
         // Write entry to buffer
