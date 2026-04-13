@@ -130,10 +130,25 @@ pub mod msr {
     pub const MSR_ATOM_CORE_VIDS: u32 = 0x66B;
     /// Atom core turbo ratios.
     pub const MSR_ATOM_CORE_TURBO_RATIOS: u32 = 0x66C;
+    /// Debug control (LBR, BTF, FREEZE_PERFMON_ON_PMI, etc.).
+    pub const IA32_DEBUGCTL: u32 = 0x1D9;
+
+    /// Fixed-function performance counter 0 (INST_RETIRED.ANY).
+    pub const IA32_FIXED_CTR0: u32 = 0x309;
     /// Performance capabilities.
     pub const IA32_PERF_CAPABILITIES: u32 = 0x345;
     /// Fixed counter control.
     pub const IA32_FIXED_CTR_CTRL: u32 = 0x38D;
+    /// Performance counter global status (overflow flags, freeze indicators).
+    pub const IA32_PERF_GLOBAL_STATUS: u32 = 0x38E;
+    /// Performance counter global control (enable bits for all counters).
+    pub const IA32_PERF_GLOBAL_CTRL: u32 = 0x38F;
+    /// Performance counter global status reset (clear overflow/freeze bits).
+    pub const IA32_PERF_GLOBAL_STATUS_RESET: u32 = 0x390;
+    /// PEBS enable (controls which counters generate PEBS records).
+    pub const IA32_PEBS_ENABLE: u32 = 0x3F1;
+    /// DS save area address (points to DS buffer management area for BTS/PEBS).
+    pub const IA32_DS_AREA: u32 = 0x600;
     /// TSC deadline.
     pub const IA32_TSC_DEADLINE: u32 = 0x6E0;
 

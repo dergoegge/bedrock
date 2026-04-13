@@ -131,10 +131,23 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         Err(e) => return ExitHandlerResult::Error(e),
     };
 
+    // Clear PMI flag from previous exit.
+    ctx.state_mut().pmi_exit = false;
+
     let non_deterministic_exit = match reason {
-        ExitReason::ExternalInterrupt
-        | ExitReason::VmxPreemptionTimer
-        | ExitReason::ExceptionNmi => true,
+        ExitReason::ExternalInterrupt | ExitReason::VmxPreemptionTimer => true,
+        // NMI exits are non-deterministic UNLESS they are our PMI (counter overflow).
+        // Check and clear the overflow status here so we can classify the exit
+        // correctly before the TSC update and MTF state transition. The NMI handler
+        // will see pmi_exit=true and skip the INT 2 forward to host NMI handler.
+        ExitReason::ExceptionNmi => {
+            if ctx.state_mut().instruction_counter.check_and_clear_pmi() {
+                ctx.state_mut().pmi_exit = true;
+                false
+            } else {
+                true
+            }
+        }
         // Non-APIC EPT violations (COW faults, stale TLB hits) are treated as
         // non-deterministic — they don't advance the emulated TSC or get logged.
         // APIC/IOAPIC MMIO EPT violations are deterministic (device emulation).

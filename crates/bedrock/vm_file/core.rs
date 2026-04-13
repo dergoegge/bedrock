@@ -6,7 +6,7 @@
 
 use core::sync::atomic::AtomicBool;
 
-use super::super::instruction_counter::LinuxInstructionCounter;
+use super::super::adaptive_instruction_counter::AdaptiveInstructionCounter;
 use super::super::page::{KernelGuestMemory, KernelPage, LogBuffer, PagePool};
 use super::super::vmcs::RealVmcs;
 use super::super::vmx::{ForkedVm, RootVm};
@@ -34,7 +34,7 @@ pub(crate) struct BedrockVmFile {
     /// Type discriminant - MUST be first field for safe type identification.
     pub vm_file_type: VmFileType,
     /// The actual VM with VMCS, guest memory, EPT, etc.
-    pub vm: RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>,
+    pub vm: RootVm<RealVmcs, KernelGuestMemory, AdaptiveInstructionCounter>,
     /// Unique identifier for this VM.
     pub vm_id: u64,
     /// Flag to detect concurrent access to RUN ioctl.
@@ -51,7 +51,7 @@ pub(crate) struct BedrockVmFile {
 impl BedrockVmFile {
     /// Create a new BedrockVmFile wrapping a RootVm.
     pub(crate) fn new(
-        vm: RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>,
+        vm: RootVm<RealVmcs, KernelGuestMemory, AdaptiveInstructionCounter>,
         vm_id: u64,
     ) -> Self {
         Self {
@@ -75,7 +75,7 @@ pub(crate) struct BedrockForkedVmFile {
     /// Type discriminant - MUST be first field for safe type identification.
     pub vm_file_type: VmFileType,
     /// The forked VM with COW memory.
-    pub vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
+    pub vm: ForkedVm<RealVmcs, KernelPage, AdaptiveInstructionCounter>,
     /// Unique identifier for this VM.
     pub vm_id: u64,
     /// Flag to detect concurrent access to RUN ioctl.
@@ -93,7 +93,7 @@ pub(crate) const COW_POOL_SIZE: usize = 512;
 impl BedrockForkedVmFile {
     /// Create a new BedrockForkedVmFile wrapping a ForkedVm.
     pub(crate) fn new(
-        vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
+        vm: ForkedVm<RealVmcs, KernelPage, AdaptiveInstructionCounter>,
         vm_id: u64,
     ) -> Self {
         Self {

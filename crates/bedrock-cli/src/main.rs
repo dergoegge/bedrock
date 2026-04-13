@@ -233,6 +233,12 @@ fn run() -> io::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+    // The last page of guest memory is reserved (via a setup_data entry) for
+    // the hypervisor's PEBS DS save area. The user's requested RAM must fit
+    // within `memory_size - DS_AREA_SIZE`. We keep `memory_size` aligned to
+    // the 2 MiB boundary that `setup_page_tables` assumes for identity
+    // mapping — so we don't add the DS page on top, we simply reserve the
+    // last page of the user's request.
     let memory_size = args.memory * 1024 * 1024;
 
     debug!("Configuration:");

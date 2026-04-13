@@ -34,6 +34,7 @@ mod regs;
 
 pub use constants::defaults;
 pub use constants::memory::{BOOT_PARAMS_ADDR, CMDLINE_ADDR, PML4_ADDR};
+pub use constants::pebs;
 pub use constants::mptable::BASE_ADDR as MPTABLE_BASE;
 pub use gdt::setup_gdt;
 pub use linux::{LinuxBootConfig, LinuxBootInfo};

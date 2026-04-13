@@ -15,6 +15,7 @@ use kernel::prelude::*;
 // Internal modules - log must be first for macro availability
 #[macro_use]
 mod log;
+mod adaptive_instruction_counter;
 mod c_helpers;
 mod ept;
 mod factory;
@@ -22,6 +23,7 @@ mod instruction_counter;
 mod machine;
 mod memory;
 mod page;
+mod pebs_instruction_counter;
 mod vm_file;
 mod vmcs;
 mod vmx;
@@ -29,8 +31,8 @@ mod vmx_asm;
 mod vmxon;
 
 // Re-exports from internal modules
+use adaptive_instruction_counter::AdaptiveInstructionCounter;
 use factory::{create_vm, KernelFrameAllocator};
-use instruction_counter::LinuxInstructionCounter;
 use machine::MACHINE;
 use vm_file::{
     create_forked_vm_fd, create_vm_fd, read_vm_file_type, BedrockForkedVmFile, BedrockVmFile,
@@ -217,8 +219,15 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     let fork_result = {
         let mut allocator = KernelFrameAllocator::new(MACHINE.kernel());
         let exit_handler_rip = vmx::VmxContext::exit_handler_addr();
-        let instruction_counter =
-            LinuxInstructionCounter::new().unwrap_or_else(LinuxInstructionCounter::null);
+        // Forked VMs always use the perf_event counter: the PEBS DS area sits
+        // in guest memory, which is COW-shared with the parent. The forked
+        // VM's EPT clone has R+X permissions, so PEBS writes during a forked
+        // run would trigger a COW copy and diverge from the host pointer we
+        // have for updating DS management fields.
+        let instruction_counter = AdaptiveInstructionCounter::PerfEvent(
+            instruction_counter::LinuxInstructionCounter::new()
+                .unwrap_or_else(instruction_counter::LinuxInstructionCounter::null),
+        );
 
         match parent_type {
             VmFileType::Root => {

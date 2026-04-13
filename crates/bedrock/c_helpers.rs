@@ -227,6 +227,12 @@ extern "C" {
     /// GUEST_IA32_PERF_GLOBAL_CTRL and HOST_IA32_PERF_GLOBAL_CTRL VMCS fields.
     pub(crate) fn bedrock_get_perf_global_ctrl(guest_val: *mut u64, host_val: *mut u64) -> bool;
 
+    /// Detect whether PEBS with PDist (zero-skid PMI) is available on this CPU.
+    ///
+    /// Returns true if the CPU supports PEBS + PDist on IA32_FIXED_CTR0,
+    /// enabling zero-skid VM exits at precise instruction counts.
+    pub(crate) fn bedrock_detect_pebs_pdist() -> bool;
+
     /// One-shot XXH64 hash.
     pub(crate) fn bedrock_xxh64(input: *const core::ffi::c_void, length: usize, seed: u64) -> u64;
 

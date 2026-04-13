@@ -57,6 +57,9 @@ pub mod boot_params_offsets {
     pub const HEAP_END_PTR: usize = 0x224;
     pub const CMD_LINE_PTR: usize = 0x228;
     pub const CMDLINE_SIZE: usize = 0x238;
+    /// struct setup_header.setup_data — physical address of the first
+    /// setup_data entry, or 0 if none.
+    pub const SETUP_DATA: usize = 0x250;
     pub const E820_ENTRIES: usize = 0x1E8;
     pub const E820_TABLE: usize = 0x2D0;
     pub const E820_ENTRY_SIZE: usize = 20;
@@ -79,4 +82,23 @@ pub mod defaults {
     pub const CMDLINE: &str =
         "console=ttyS0,keep earlyprintk=serial nopti nokaslr mitigations=off break";
     pub const RDRAND_SEED: u64 = 0x12345678_deadbeef;
+}
+
+/// PEBS support constants.
+pub mod pebs {
+    use super::memory::PAGE_SIZE;
+
+    /// Size of the PEBS DS save area (one page). Reserved at the top of guest
+    /// memory for the hypervisor's use when PEBS+PDist is enabled on the CPU.
+    ///
+    /// This page is always reserved (via a setup_data entry) regardless of
+    /// whether the CPU supports PDist, to keep the memory layout consistent.
+    /// On CPUs without PDist, the page is simply unused.
+    pub const DS_AREA_SIZE: usize = PAGE_SIZE;
+
+    /// Linux's direct-map virtual address base for 4-level paging.
+    ///
+    /// See `arch/x86/include/asm/page_64_types.h`: `__PAGE_OFFSET_BASE_L4`.
+    /// Requires `nokaslr` in the guest kernel cmdline (which is set by default).
+    pub const LINUX_DIRECT_MAP_BASE: u64 = 0xffff_8880_0000_0000;
 }

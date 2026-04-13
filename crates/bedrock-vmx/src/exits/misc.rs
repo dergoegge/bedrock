@@ -21,14 +21,24 @@ pub fn handle_exception_nmi<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
 
     let info = InterruptionInfo::from(info_raw);
 
-    // Check if this is a host NMI that arrived during guest execution.
-    // NMIs are for the host, not the guest - we must invoke the host's NMI handler.
-    // This is critical: KVM and bhyve both do this immediately after VM exit.
-    // Failure to handle host NMIs can cause watchdog timeouts and system instability.
+    // Check if this is an NMI. NMIs can be either:
+    // 1. Our PMI (performance counter overflow) — deterministic, handled internally
+    // 2. A host NMI (watchdog, etc.) — must be forwarded to the host's NMI handler
+    //
+    // The `pmi_exit` flag is set by the exit classification in handle_exit()
+    // via check_and_clear_pmi() BEFORE this handler runs. If it's true, this
+    // was our PMI and the overflow status has already been cleared.
     if matches!(info.interruption_type, InterruptionType::Nmi) {
-        // Invoke the host's NMI handler via software interrupt.
-        // In kernel builds, this calls the actual NMI handler.
-        // In cargo builds (tests), this is a no-op since NMIs won't actually occur.
+        if ctx.state().pmi_exit {
+            // PMI-caused NMI — deterministic exit triggered by the instruction
+            // counter reaching its overflow target. Nothing to do here; the
+            // run loop will read the counter and handle timer injection.
+            return ExitHandlerResult::Continue;
+        }
+
+        // Host NMI — invoke the host's NMI handler via software interrupt.
+        // This is critical: KVM and bhyve both do this immediately after VM exit.
+        // Failure to handle host NMIs can cause watchdog timeouts and system instability.
         // SAFETY: INT 2 invokes the host NMI handler to service the NMI that
         // triggered a VM exit. This is necessary for host watchdog and system stability.
         #[cfg(all(target_arch = "x86_64", not(feature = "cargo")))]
@@ -37,7 +47,6 @@ pub fn handle_exception_nmi<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         }
 
         // After handling the host NMI, resume the guest.
-        // The NMI was for the host, not the guest.
         return ExitHandlerResult::Continue;
     }
 

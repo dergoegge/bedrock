@@ -632,6 +632,47 @@ bool bedrock_get_perf_global_ctrl(u64 *guest_val, u64 *host_val)
 EXPORT_SYMBOL_GPL(bedrock_get_perf_global_ctrl);
 
 /*
+ * Detect whether PEBS with PDist (Precise Distribution) is available on this CPU.
+ *
+ * PDist eliminates PMI skid for INST_RETIRED.ANY on IA32_FIXED_CTR0, enabling
+ * zero-skid VM exits at precise instruction counts.
+ *
+ * Requirements (SDM Vol 3B, Section 21.9.6):
+ * - Architectural PerfMon version >= 4 (for fixed counters + streamlined freeze)
+ * - At least 1 fixed-function counter (IA32_FIXED_CTR0)
+ * - Fixed counter width >= 48 bits
+ * - IA32_PERF_CAPABILITIES bit 14 = 1 (adaptive PEBS, prerequisite for PDist)
+ */
+bool bedrock_detect_pebs_pdist(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+	u64 perf_caps;
+
+	/* CPUID.0AH: Architectural Performance Monitoring */
+	cpuid(0x0A, &eax, &ebx, &ecx, &edx);
+
+	/* EAX[7:0] = PerfMon version, need >= 4 */
+	if ((eax & 0xFF) < 4)
+		return false;
+
+	/* EDX[4:0] = number of fixed-function counters, need >= 1 */
+	if ((edx & 0x1F) < 1)
+		return false;
+
+	/* EDX[12:5] = fixed counter bit width, need >= 48 */
+	if (((edx >> 5) & 0xFF) < 48)
+		return false;
+
+	/* IA32_PERF_CAPABILITIES bit 14 = adaptive PEBS (PDist prerequisite) */
+	rdmsrl(MSR_IA32_PERF_CAPABILITIES, perf_caps);
+	if (!(perf_caps & (1ULL << 14)))
+		return false;
+
+	return true;
+}
+EXPORT_SYMBOL_GPL(bedrock_detect_pebs_pdist);
+
+/*
  * Per-CPU VCPU accessors.
  * These use this_cpu_ptr() to properly access per-CPU data.
  */

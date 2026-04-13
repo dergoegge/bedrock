@@ -29,7 +29,7 @@ impl VmFileOps for BedrockVmFile {
     type Vm = super::super::vmx::RootVm<
         super::super::vmcs::RealVmcs,
         super::super::page::KernelGuestMemory,
-        super::super::instruction_counter::LinuxInstructionCounter,
+        super::super::adaptive_instruction_counter::AdaptiveInstructionCounter,
     >;
 
     fn vm(&self) -> &Self::Vm {

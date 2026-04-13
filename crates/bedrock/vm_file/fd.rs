@@ -11,8 +11,8 @@ use core::ptr::NonNull;
 use kernel::alloc::KBox;
 use kernel::bindings;
 
+use super::super::adaptive_instruction_counter::AdaptiveInstructionCounter;
 use super::super::c_helpers::bedrock_anon_inode_getfd;
-use super::super::instruction_counter::LinuxInstructionCounter;
 use super::super::page::{KernelGuestMemory, KernelPage};
 use super::super::vmcs::RealVmcs;
 use super::super::vmx::{ForkedVm, RootVm};
@@ -37,7 +37,7 @@ use super::root::BEDROCK_VM_FOPS;
 /// On failure, returns a negative error code and the VM is freed.
 #[inline(never)]
 pub(crate) fn create_vm_fd(
-    vm: RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>,
+    vm: RootVm<RealVmcs, KernelGuestMemory, AdaptiveInstructionCounter>,
     vm_id: u64,
 ) -> Result<i32, kernel::error::Error> {
     // Wrap VM in BedrockVmFile and allocate on heap
@@ -104,7 +104,7 @@ pub(crate) fn create_vm_fd(
 /// On failure, returns a negative error code and the ForkedVm is freed.
 #[inline(never)]
 pub(crate) fn create_forked_vm_fd(
-    vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
+    vm: ForkedVm<RealVmcs, KernelPage, AdaptiveInstructionCounter>,
     vm_id: u64,
 ) -> Result<i32, kernel::error::Error> {
     let vm_file = KBox::new(

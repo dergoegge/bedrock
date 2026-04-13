@@ -74,6 +74,37 @@ pub trait InstructionCounter {
     /// the CPU atomically loads these values during VM transitions, eliminating
     /// instruction counting overhead from manual MSR switching.
     fn perf_global_ctrl_values(&self) -> Option<(u64, u64)>;
+
+    /// Returns true if this counter supports precise PMI-triggered VM exits
+    /// at target instruction counts (via PEBS + PDist).
+    fn supports_overflow(&self) -> bool {
+        false
+    }
+
+    /// Arm the counter to trigger a PMI at `target` total retired instructions.
+    ///
+    /// The PMI will cause an NMI VM exit at the precise instruction boundary
+    /// (zero skid with PDist). No-op if overflow is not supported.
+    fn set_overflow_target(&mut self, _target: u64) {}
+
+    /// Remove any overflow target. The counter runs freely without triggering PMI.
+    fn clear_overflow_target(&mut self) {}
+
+    /// After VM exit: read the hardware counter, accumulate into the total,
+    /// and clear any overflow status. Must be called before `read()`.
+    fn accumulate_after_exit(&mut self) {}
+
+    /// Before VM entry: program the hardware counter for the next guest run.
+    fn prepare_for_entry(&mut self) {}
+
+    /// Check if the last NMI VM exit was caused by our PMI (counter overflow).
+    ///
+    /// If so, clears the overflow status and returns true. The caller should
+    /// treat this as a deterministic exit. If false, the NMI is a host NMI
+    /// and should be forwarded via `INT 2`.
+    fn check_and_clear_pmi(&mut self) -> bool {
+        false
+    }
 }
 
 /// Null implementation for VMs without instruction counting.

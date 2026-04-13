@@ -602,6 +602,10 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// Used to skip interrupt injection after non-deterministic exits (e.g., ExternalInterrupt)
     /// where the stale emulated_tsc could cause incorrect timer behavior.
     pub last_exit_deterministic: bool,
+    /// Set when an NMI VM exit is identified as our PMI (counter overflow).
+    /// Cleared at the top of handle_exit(). Used to classify ExceptionNmi as
+    /// deterministic when it's a PMI rather than a host NMI.
+    pub pmi_exit: bool,
     /// Feedback buffers registered by guest via hypercall (up to MAX_FEEDBACK_BUFFERS).
     /// Used for efficient fuzzing feedback collection (e.g., coverage bitmap).
     /// Guest specifies buffer index (0-15) in RDX when registering.
@@ -815,6 +819,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             exit_stats: heap_box(AllExitStats::default()),
             last_checkpoint_idx: 0,
             last_exit_deterministic: true,
+            pmi_exit: false,
             feedback_buffers: box_feedback_buffers_empty(),
             vpid,
             intercept_pf: false,
@@ -1353,6 +1358,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             exit_stats: heap_box(AllExitStats::default()),
             last_checkpoint_idx: 0,
             last_exit_deterministic: true,
+            pmi_exit: false,
             feedback_buffers: box_feedback_buffers_empty(),
             vpid: 0, // Tests don't use VPID
             intercept_pf: false,
@@ -1571,6 +1577,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             exit_stats: heap_box(AllExitStats::default()), // Forked VMs start with fresh stats
             last_checkpoint_idx: 0, // Forked VMs start checkpoint tracking fresh
             last_exit_deterministic: true,
+            pmi_exit: false,
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent
             vpid: allocated_vpid,
             intercept_pf: false,

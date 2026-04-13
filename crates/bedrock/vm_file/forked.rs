@@ -31,7 +31,7 @@ impl VmFileOps for BedrockForkedVmFile {
     type Vm = super::super::vmx::ForkedVm<
         super::super::vmcs::RealVmcs,
         super::super::page::KernelPage,
-        super::super::instruction_counter::LinuxInstructionCounter,
+        super::super::adaptive_instruction_counter::AdaptiveInstructionCounter,
     >;
 
     fn vm(&self) -> &Self::Vm {
@@ -230,7 +230,7 @@ unsafe extern "C" fn bedrock_forked_vm_mmap(
                 *hpa = Page::physical_address(cow_page).as_u64();
             } else {
                 // Page is in parent chain - get virtual address and convert to physical
-                let virt_ptr = match vm_file.vm.read_page(page_gpa) {
+                let virt_ptr: *const u8 = match vm_file.vm.read_page(page_gpa) {
                     Some(ptr) => ptr,
                     None => {
                         log_err!(

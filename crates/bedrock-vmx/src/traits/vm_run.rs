@@ -223,6 +223,12 @@ where
         .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
         .map_err(VmRunError::WriteHostRsp)?;
 
+    // Enable the instruction counter for this run loop. For the PEBS direct-PMU
+    // counter this saves host PMU MSRs and programs them for guest counting.
+    // Must happen before perf_global_ctrl_values() so the saved host value is
+    // populated. The matching disable() call is below, after the loop.
+    ctx.state_mut().instruction_counter.enable();
+
     // Configure hardware-assisted perf counter switching if available.
     // The perf_global_ctrl values and entry/exit control bits are constant
     // for the entire run loop — write them once to avoid per-exit VMCS
@@ -266,6 +272,26 @@ where
         ctx.state_mut().exit_stats.vmentry_overhead_cycles +=
             pre_entry_tsc.saturating_sub(loop_start_tsc);
 
+        // If the instruction counter supports precise overflow, calculate the
+        // overflow target from the APIC timer deadline and program the counter.
+        // This arms a PMI→NMI→VM exit at the exact instruction where the timer fires.
+        if ctx.state().instruction_counter.supports_overflow() {
+            let deadline = ctx.state().devices.apic.timer_deadline;
+            let emulated_tsc = ctx.state().emulated_tsc;
+            let tsc_offset = ctx.state().tsc_offset;
+            if deadline > 0 && deadline > emulated_tsc {
+                // Timer deadline is in emulated_tsc units.
+                // Convert to instruction count: target = deadline - tsc_offset
+                let target = deadline - tsc_offset;
+                ctx.state_mut()
+                    .instruction_counter
+                    .set_overflow_target(target);
+            } else {
+                ctx.state_mut().instruction_counter.clear_overflow_target();
+            }
+            ctx.state_mut().instruction_counter.prepare_for_entry();
+        }
+
         // Load guest KERNEL_GS_BASE before VM entry. IA32_KERNEL_GS_BASE has
         // no VMCS field so VMX does not swap it automatically.
         let msr = machine.msr_access();
@@ -291,6 +317,10 @@ where
 
         // Clear guest state for perf_guest_cbs after VM exit.
         ctx.state_mut().instruction_counter.clear_guest_state();
+
+        // For PEBS instruction counters: read the hardware counter and accumulate
+        // the delta into the software total. Must happen before read().
+        ctx.state_mut().instruction_counter.accumulate_after_exit();
 
         // Serialize instruction stream before reading the PMU counter.
         // LFENCE guarantees all prior instructions have completed locally and no
@@ -396,6 +426,9 @@ where
         .vmcs
         .read64(VmcsField64::GuestPhysicalAddr)
         .unwrap_or(0);
+
+    // Disable the instruction counter and restore host PMU state.
+    ctx.state_mut().instruction_counter.disable();
 
     loop_result
 }

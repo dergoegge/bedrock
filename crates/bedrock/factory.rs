@@ -4,11 +4,13 @@
 
 use kernel::prelude::*;
 
+use super::adaptive_instruction_counter::AdaptiveInstructionCounter;
 use super::ept::FrameAllocator;
 use super::instruction_counter::LinuxInstructionCounter;
 use super::machine::{LinuxKernel, LinuxMachine};
 use super::memory::HostPhysAddr;
 use super::page::{alloc_zeroed_page, KernelGuestMemory, KernelPage, PagePool};
+use super::pebs_instruction_counter::PebsInstructionCounter;
 use super::vmcs::RealVmcs;
 use super::vmx::traits::{
     CowAllocator, GuestMemory, Kernel, Machine, Page, VirtualMachineControlStructure,
@@ -80,7 +82,8 @@ impl CowAllocator<KernelPage> for KernelFrameAllocator<'_> {
 /// Create a new VM with the specified guest memory size.
 ///
 /// This allocates all VM resources: VMCS, guest memory, EPT tables.
-/// Uses `LinuxInstructionCounter` for deterministic instruction counting.
+/// Uses `AdaptiveInstructionCounter` which selects PEBS+PDist (zero-skid)
+/// on capable hardware, falling back to Linux perf_event polling otherwise.
 ///
 /// # Arguments
 ///
@@ -92,7 +95,7 @@ impl CowAllocator<KernelPage> for KernelFrameAllocator<'_> {
 pub(crate) fn create_vm(
     machine: &LinuxMachine,
     memory_size: usize,
-) -> Option<RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>> {
+) -> Option<RootVm<RealVmcs, KernelGuestMemory, AdaptiveInstructionCounter>> {
     log_info!("create_vm: starting with memory_size={}\n", memory_size);
 
     // Allocate a VMCS for this VM.
@@ -120,17 +123,43 @@ pub(crate) fn create_vm(
     let exit_handler_rip = super::vmx::VmxContext::exit_handler_addr();
     log_info!("Exit handler RIP: {:#x}\n", exit_handler_rip);
 
-    // Create instruction counter for deterministic execution
-    let instruction_counter = match LinuxInstructionCounter::new() {
-        Some(counter) => {
-            log_info!("Instruction counter created successfully\n");
-            counter
-        }
-        None => {
-            log_err!("Failed to create instruction counter, using null counter\n");
-            LinuxInstructionCounter::null()
-        }
-    };
+    // Create instruction counter for deterministic execution.
+    // Try PEBS+PDist first (zero-skid overflow), fall back to perf_event polling.
+    //
+    // Userspace reserves the last page of guest memory as the PEBS DS area
+    // (see `setup_pebs_ds_area_reservation` in bedrock-vm): the page is
+    // listed as E820 RAM so Linux direct-maps it, and a setup_data entry at
+    // that page causes Linux to memblock_reserve it. We compute the host
+    // pointer (within the vmalloc'd guest memory) and the guest linear
+    // address (Linux's direct-map VA) for the PEBS counter.
+    const LINUX_DIRECT_MAP_BASE: u64 = 0xffff_8880_0000_0000;
+    const PAGE_SIZE: usize = 4096;
+    let ds_area_gpa = (memory_size - PAGE_SIZE) as u64;
+    // SAFETY: memory.virt_addr() + memory_size - PAGE_SIZE points to the last
+    // page of the VM's vmalloc'd guest memory (reserved for PEBS).
+    let ds_area_host_ptr =
+        unsafe { (memory.virt_addr().as_u64() as *mut u8).add(memory_size - PAGE_SIZE) };
+    let ds_area_guest_virt = LINUX_DIRECT_MAP_BASE + ds_area_gpa;
+
+    let instruction_counter =
+        if let Some(pebs) = PebsInstructionCounter::new(ds_area_host_ptr, ds_area_guest_virt) {
+            log_info!(
+                "Using PEBS+PDist zero-skid instruction counter (DS area GPA={:#x})\n",
+                ds_area_gpa
+            );
+            AdaptiveInstructionCounter::Pebs(pebs)
+        } else {
+            match LinuxInstructionCounter::new() {
+                Some(counter) => {
+                    log_info!("Using Linux perf_event instruction counter (fallback)\n");
+                    AdaptiveInstructionCounter::PerfEvent(counter)
+                }
+                None => {
+                    log_err!("Failed to create instruction counter, using null counter\n");
+                    AdaptiveInstructionCounter::PerfEvent(LinuxInstructionCounter::null())
+                }
+            }
+        };
 
     // Create RootVm with EPT mapping, MSR bitmap, and instruction counter
     match RootVm::new(
