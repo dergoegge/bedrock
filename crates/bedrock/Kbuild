@@ -5,3 +5,8 @@ obj-m := bedrock.o
 
 # Link the Rust main module with C helpers and assembly
 bedrock-y := bedrock_main.o helpers.o vmx_support.o
+
+# Enable kernel pr_* logging macros (pass KERNEL_LOG=1 to make)
+ifdef KERNEL_LOG
+KBUILD_RUSTFLAGS += --cfg kernel_log
+endif
