@@ -20,10 +20,10 @@ fmt:
     cargo fmt
     rustfmt --edition 2021 crates/bedrock/*.rs crates/bedrock/vm_file/*.rs
 
-# Build the kernel module
+# Build the kernel module (pass kernel_log=1 to enable pr_* logging)
 [group: 'local']
-build:
-    make -C crates/bedrock
+build kernel_log="":
+    make -C crates/bedrock {{ if kernel_log != "" { "KERNEL_LOG=1" } else { "" } }}
 
 # Clean kernel module build artifacts
 [group: 'local']
@@ -45,10 +45,10 @@ count-lines:
 sync:
     rsync -avz --delete --exclude '.git' --exclude '.claude' --exclude target ./ {{remote_host}}:{{remote_dir}}
 
-# Build on remote (sync then build)
+# Build on remote (sync then build, pass kernel_log=1 to enable pr_* logging)
 [group: 'remote']
-remote: sync
-    ssh {{remote_host}} 'cd {{remote_dir}} && just build'
+remote kernel_log="": sync
+    ssh {{remote_host}} 'cd {{remote_dir}} && just build kernel_log={{kernel_log}}'
 
 # Clean remote build artifacts
 [group: 'remote']
