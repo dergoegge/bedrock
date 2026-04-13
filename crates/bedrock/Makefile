@@ -19,7 +19,7 @@ all:
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
 
-load: all
+load:
 	@echo "Reloading bedrock kernel module..."
 	@sudo rmmod bedrock 2>/dev/null || true
 	@sudo insmod -f bedrock.ko
