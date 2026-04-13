@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use bedrock_vm::{ExitStats, LogEntry};
+use bedrock_vm::{ExitStats, LogEntry, Vm};
 
 const DEFAULT_RUNS: usize = 10;
 const DEFAULT_MEMORY_MB: usize = 3072;
@@ -518,6 +518,15 @@ fn main() -> std::process::ExitCode {
         eprintln!("Error: bedrock-cli not found at {:?}", cli_path);
         eprintln!("Build it with: cargo build --release -p bedrock-cli");
         return std::process::ExitCode::FAILURE;
+    }
+
+    // Verify parent VM exists before doing any filesystem work.
+    // Attempt a transient fork; drop it immediately on success.
+    if let Some(parent_id) = args.parent_id {
+        if let Err(e) = Vm::create_forked(parent_id) {
+            eprintln!("Error: parent VM {} does not exist: {}", parent_id, e);
+            return std::process::ExitCode::FAILURE;
+        }
     }
 
     // Generate test subdirectory within workdir
