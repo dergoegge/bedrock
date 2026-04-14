@@ -103,6 +103,14 @@ struct Args {
     /// Intercept guest #PF exceptions (logged and reinjected for determinism analysis)
     #[arg(long = "intercept-pf")]
     intercept_pf: bool,
+
+    /// Pushover API token for divergence notifications
+    #[arg(long = "pushover-token")]
+    pushover_token: Option<String>,
+
+    /// Pushover user key for divergence notifications
+    #[arg(long = "pushover-user")]
+    pushover_user: Option<String>,
 }
 
 /// Parse a u64 value from a string, supporting hex (0x prefix) and decimal.
@@ -134,6 +142,19 @@ fn parse_tsc_range(s: &str) -> Result<(u64, u64), String> {
         return Err(format!("end ({}) must be > start ({})", end, start));
     }
     Ok((start, end))
+}
+
+/// Send a Pushover notification. Errors are printed to stderr but not propagated.
+fn send_pushover_notification(token: &str, user: &str, message: &str) {
+    let params = [("token", token), ("user", user), ("message", message)];
+    let client = reqwest::blocking::Client::new();
+    if let Err(e) = client
+        .post("https://api.pushover.net/1/messages.json")
+        .form(&params)
+        .send()
+    {
+        eprintln!("Failed to send pushover notification: {e}");
+    }
 }
 
 /// Result from a single VM run.
@@ -700,6 +721,13 @@ fn run_sequential(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::
                         _ => {}
                     }
                     write_summary_file(args, &summary_lines, Some(&diff));
+                    if let (Some(token), Some(user)) = (&args.pushover_token, &args.pushover_user) {
+                        send_pushover_notification(
+                            token,
+                            user,
+                            &format!("Determinism divergence at run {}", run_num),
+                        );
+                    }
                     eprintln!(
                         "\n  \x1b[1;31mDIVERGENCE at run {}!\x1b[0m\n{}",
                         run_num, diff
@@ -830,6 +858,7 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::Ex
     let mut summary_lines: Vec<String> = Vec::new();
 
     let mut progress = ProgressDisplay::new(args.runs);
+    let mut notified = false;
 
     while completed < args.runs {
         // Spawn new threads up to the parallel limit
@@ -901,6 +930,19 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::Ex
                             &mut divergences,
                             &mut summary_lines,
                         );
+                        if !notified && !divergences.is_empty() {
+                            if let (Some(token), Some(user)) =
+                                (&args.pushover_token, &args.pushover_user)
+                            {
+                                let (run_num, _) = &divergences[0];
+                                send_pushover_notification(
+                                    token,
+                                    user,
+                                    &format!("Determinism divergence at run {}", run_num),
+                                );
+                                notified = true;
+                            }
+                        }
                     } else if run_result.run_num == 1 {
                         // Run 1 is always the reference
                         summary_lines.push("Run 001: REFERENCE".to_string());
@@ -916,6 +958,19 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::Ex
                                 &mut divergences,
                                 &mut summary_lines,
                             );
+                        }
+                        if !notified && !divergences.is_empty() {
+                            if let (Some(token), Some(user)) =
+                                (&args.pushover_token, &args.pushover_user)
+                            {
+                                let (run_num, _) = &divergences[0];
+                                send_pushover_notification(
+                                    token,
+                                    user,
+                                    &format!("Determinism divergence at run {}", run_num),
+                                );
+                                notified = true;
+                            }
                         }
                     } else {
                         // Buffer until run 1 arrives
