@@ -12,8 +12,8 @@ use bedrock_vm::boot::defaults;
 #[command(about = "Linux Kernel Loader for the bedrock hypervisor")]
 #[command(version)]
 pub struct Args {
-    /// Path to vmlinux ELF image
-    pub vmlinux: String,
+    /// Path to vmlinux ELF image (required for root VMs, unused for forked VMs)
+    pub vmlinux: Option<String>,
 
     /// Guest memory size in MB
     #[arg(short = 'm', long, default_value_t = defaults::MEMORY_MB)]
