@@ -158,11 +158,6 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
     if !non_deterministic_exit {
         let tsc = ctx.state().last_instruction_count + ctx.state().tsc_offset;
         ctx.state_mut().emulated_tsc = tsc;
-
-        // Update MTF (single-step) state based on TSC range
-        if let Err(e) = update_mtf_state(ctx) {
-            return ExitHandlerResult::Error(e);
-        }
     }
 
     // Handle the exit FIRST, before any logging or threshold checks.
@@ -286,6 +281,17 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
 
     // Now that the exit is handled, do logging and threshold checks.
     // These happen AFTER exit handling so device state is clean.
+
+    // Update MTF state after the handler. Time-advancing exits (MWAIT/HLT
+    // via handle_idle) modify emulated_tsc and tsc_offset to reach the APIC
+    // timer deadline. This must happen before the MTF check because the
+    // pre-handler TSC can be far below the single-step range while the
+    // post-handler TSC (timer deadline) is inside it.
+    if !non_deterministic_exit {
+        if let Err(e) = update_mtf_state(ctx) {
+            return ExitHandlerResult::Error(e);
+        }
+    }
 
     // Check if stop-at-tsc threshold is reached (deterministic exits only)
     if !non_deterministic_exit {
