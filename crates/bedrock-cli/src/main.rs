@@ -235,8 +235,17 @@ fn run() -> io::Result<()> {
     let args = Args::parse();
     let memory_size = args.memory * 1024 * 1024;
 
+    // Validate: vmlinux is required for root VMs (not forked)
+    if args.parent_id.is_none() && args.vmlinux.is_none() {
+        return Err(io::Error::other(
+            "vmlinux path is required when creating a root VM (not using --parent-id)",
+        ));
+    }
+
     debug!("Configuration:");
-    debug!("  {:<14}{}", "Kernel:", args.vmlinux);
+    if let Some(ref vmlinux) = args.vmlinux {
+        debug!("  {:<14}{}", "Kernel:", vmlinux);
+    }
     debug!("  {:<14}{} MB", "Memory:", args.memory);
     debug!("  {:<14}\"{}\"", "Command line:", args.cmdline);
     debug_opt!("Initramfs:", args.initramfs);
@@ -351,14 +360,16 @@ fn run() -> io::Result<()> {
 
     // Setup for new VMs (not forked)
     if vm.is_root() {
+        let vmlinux = args.vmlinux.as_ref().expect("vmlinux required for root VM");
+
         // Read kernel file
-        let kernel_data = read_file(&args.vmlinux)?;
+        let kernel_data = read_file(vmlinux)?;
 
         // Read initramfs if provided
         let initramfs_data = args.initramfs.as_ref().map(|p| read_file(p)).transpose()?;
 
         // Load kernel into guest memory
-        info!("Loading kernel from {}", args.vmlinux);
+        info!("Loading kernel from {}", vmlinux);
         let memory = vm.memory_mut().expect("Root VM must have memory");
         let (kernel_entry, kernel_end) = load_kernel(memory, &kernel_data)?;
         debug!("  Kernel entry point: {:#x}", kernel_entry);
