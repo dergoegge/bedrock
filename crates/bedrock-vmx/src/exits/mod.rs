@@ -36,6 +36,7 @@ mod time;
 mod vmcall;
 
 // Re-export public types
+pub use apic::{APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE};
 pub use helpers::{ExitError, ExitHandlerResult};
 pub use interrupts::{inject_pending_interrupt, reinject_vectored_event};
 pub use qualifications::{
@@ -45,7 +46,6 @@ pub use qualifications::{
 pub use reasons::ExitReason;
 
 // Internal imports for handle_exit
-use apic::{APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE};
 use cpuid::handle_cpuid;
 use cr::handle_cr_access;
 use ept::handle_ept_violation;
