@@ -355,11 +355,9 @@ impl ProgressDisplay {
         };
 
         // Progress bar
-        let filled = if self.total > 0 {
-            (self.completed * self.bar_width) / self.total
-        } else {
-            0
-        };
+        let filled = (self.completed * self.bar_width)
+            .checked_div(self.total)
+            .unwrap_or(0);
         let empty = self.bar_width - filled;
         let bar: String = format!(
             "\x1b[32m{}\x1b[90m{}\x1b[0m",

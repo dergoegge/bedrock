@@ -2,7 +2,7 @@
 
 //! Kernel page and guest memory allocation.
 
-use kernel::alloc::flags::{GFP_KERNEL, __GFP_ZERO};
+use kernel::alloc::flags::{__GFP_ZERO, GFP_KERNEL};
 use kernel::alloc::{allocator::KVmalloc, Vec as KVec};
 use kernel::page::Page;
 

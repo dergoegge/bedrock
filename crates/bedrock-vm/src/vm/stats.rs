@@ -61,11 +61,7 @@ impl ExitStatEntry {
     /// Get the average cycles per exit, or 0 if no exits occurred.
     #[inline]
     pub fn avg_cycles(&self) -> u64 {
-        if self.count > 0 {
-            self.cycles / self.count
-        } else {
-            0
-        }
+        self.cycles.checked_div(self.count).unwrap_or(0)
     }
 }
 
@@ -284,11 +280,7 @@ impl fmt::Display for ExitStatsReport<'_> {
         }
 
         writeln!(f, "{TABLE_SEP}")?;
-        let avg_per_exit = if total_exits > 0 {
-            total_exit_cycles / total_exits
-        } else {
-            0
-        };
+        let avg_per_exit = total_exit_cycles.checked_div(total_exits).unwrap_or(0);
         writeln!(
             f,
             "{:<20} {:>12} {:>16} {:>12} {:>10}",
