@@ -157,12 +157,14 @@ pub use crate::cow::CowPageMap;
 #[cfg(not(feature = "cargo"))]
 pub use super::vm_state::{
     box_vm_state, AllExitStats, ExitStats, FeedbackBufferInfo, LogMode, SyscallMsrs, VmState,
-    VmStateBox, VmStateError, FEEDBACK_BUFFER_MAX_PAGES, MAX_FEEDBACK_BUFFERS,
+    VmStateBox, VmStateError, DEFAULT_TSC_FREQUENCY, FEEDBACK_BUFFER_MAX_PAGES,
+    MAX_FEEDBACK_BUFFERS,
 };
 #[cfg(feature = "cargo")]
 pub use crate::vm_state::{
     box_vm_state, AllExitStats, ExitStats, FeedbackBufferInfo, LogMode, SyscallMsrs, VmState,
-    VmStateBox, VmStateError, FEEDBACK_BUFFER_MAX_PAGES, MAX_FEEDBACK_BUFFERS,
+    VmStateBox, VmStateError, DEFAULT_TSC_FREQUENCY, FEEDBACK_BUFFER_MAX_PAGES,
+    MAX_FEEDBACK_BUFFERS,
 };
 
 // =============================================================================

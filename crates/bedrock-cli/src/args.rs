@@ -106,6 +106,10 @@ pub struct Args {
     /// Write exit statistics to a JSON file
     #[arg(long = "exit-stats-json")]
     pub exit_stats_json: Option<String>,
+
+    /// Emulated TSC frequency in Hz (defaults to the kernel's built-in default)
+    #[arg(long = "tsc-frequency", value_parser = parse_u64)]
+    pub tsc_frequency: Option<u64>,
 }
 
 impl Args {

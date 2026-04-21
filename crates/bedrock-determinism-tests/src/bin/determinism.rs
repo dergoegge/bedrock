@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use bedrock_vm::{ExitStats, LogEntry, Vm};
+use bedrock_vm::{ExitStats, LogEntry, Vm, DEFAULT_TSC_FREQUENCY};
 
 const DEFAULT_RUNS: usize = 10;
 const DEFAULT_MEMORY_MB: usize = 3072;
@@ -875,9 +875,10 @@ fn run_parallel(args: &Args, vmlinux: &str, cli_path: &Path) -> std::process::Ex
             let cmdline = args.cmdline.clone();
             let memory = args.memory;
             let seed = args.seed;
-            let stop_at_tsc = args
-                .stop_at_tsc
-                .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64));
+            let stop_at_tsc = args.stop_at_tsc.or_else(|| {
+                args.stop_at_vt
+                    .map(|vt| (vt * DEFAULT_TSC_FREQUENCY as f64) as u64)
+            });
             let checkpoint_interval = args.checkpoint_interval;
             let single_step = args.single_step;
             let log_after_tsc = args.log_after_tsc;
@@ -1076,8 +1077,10 @@ fn run_vm(
         args.cmdline.as_deref(),
         args.memory,
         args.seed,
-        args.stop_at_tsc
-            .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64)),
+        args.stop_at_tsc.or_else(|| {
+            args.stop_at_vt
+                .map(|vt| (vt * DEFAULT_TSC_FREQUENCY as f64) as u64)
+        }),
         args.checkpoint_interval,
         args.single_step,
         args.log_after_tsc,

@@ -647,6 +647,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
     /// * `machine` - Machine for allocating pages
     /// * `exit_handler_rip` - Address of the VM exit handler (HOST_RIP in VMCS)
     /// * `instruction_counter` - Instruction counter for deterministic execution
+    /// * `tsc_frequency` - Configured TSC frequency in Hz
     #[inline(never)]
     pub fn new<A: FrameAllocator<Frame = V::P>>(
         vmcs: V,
@@ -654,6 +655,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         machine: &V::M,
         exit_handler_rip: u64,
         instruction_counter: I,
+        tsc_frequency: u64,
     ) -> Result<Self, VmStateError<A::Error>> {
         // Allocate and initialize the MSR bitmap page.
         // All bits set to 1 = intercept all MSR accesses.
@@ -796,7 +798,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             last_instruction_count: 0,
             emulated_tsc: 0,
             tsc_offset: 0,
-            tsc_frequency: DEFAULT_TSC_FREQUENCY,
+            tsc_frequency,
             log_mode: LogMode::Disabled,
             log_target_tsc: 0,
             log_start_tsc: 0,

@@ -68,6 +68,7 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> R
     /// * `allocator` - Frame allocator for EPT page table structures
     /// * `exit_handler_rip` - Address of the VM exit handler (HOST_RIP in VMCS)
     /// * `instruction_counter` - Instruction counter for deterministic execution
+    /// * `tsc_frequency` - Configured TSC frequency in Hz
     ///
     /// # Errors
     ///
@@ -80,6 +81,7 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> R
         allocator: &mut A,
         exit_handler_rip: u64,
         instruction_counter: I,
+        tsc_frequency: u64,
     ) -> Result<Self, RootVmError<A::Error>> {
         // Create the EPT page table
         let mut ept: EptPageTable<V::P> =
@@ -108,8 +110,15 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> R
         }
 
         // Create VmState with the EPT
-        let state = VmState::new::<A>(vmcs, ept, machine, exit_handler_rip, instruction_counter)
-            .map_err(RootVmError::VmState)?;
+        let state = VmState::new::<A>(
+            vmcs,
+            ept,
+            machine,
+            exit_handler_rip,
+            instruction_counter,
+            tsc_frequency,
+        )
+        .map_err(RootVmError::VmState)?;
 
         Ok(Self {
             state: box_vm_state(state),

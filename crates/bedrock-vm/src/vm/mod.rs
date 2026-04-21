@@ -35,6 +35,9 @@ pub const BEDROCK_DEVICE_PATH: &str = "/dev/bedrock";
 /// Default guest memory size (4 GB).
 pub const DEFAULT_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;
 
+/// Default TSC frequency (2995.2 MHz) for deterministic time emulation.
+pub use bedrock_vmx::DEFAULT_TSC_FREQUENCY;
+
 /// A userspace handle to a bedrock VM.
 ///
 /// This struct owns the VM file descriptor and provides access to VM operations.
@@ -115,6 +118,8 @@ impl Drop for Vm {
 impl Vm {
     /// Create a new root VM with the specified guest memory size.
     ///
+    /// Uses [`DEFAULT_TSC_FREQUENCY`] for the emulated TSC.
+    ///
     /// This opens /dev/bedrock, creates a new root VM with the specified
     /// memory size, and maps the guest memory into this process's address space.
     ///
@@ -129,12 +134,17 @@ impl Vm {
     /// - The CREATE_ROOT_VM ioctl fails
     /// - Memory mapping fails
     pub fn create(memory_size: usize) -> io::Result<Self> {
+        Self::create_with_tsc_frequency(memory_size, DEFAULT_TSC_FREQUENCY)
+    }
+
+    /// Create a new root VM with the specified guest memory size and TSC frequency.
+    pub fn create_with_tsc_frequency(memory_size: usize, tsc_frequency: u64) -> io::Result<Self> {
         let device = OpenOptions::new()
             .read(true)
             .write(true)
             .open(BEDROCK_DEVICE_PATH)?;
 
-        Self::create_from_device(&device, memory_size)
+        Self::create_from_device(&device, memory_size, tsc_frequency)
     }
 
     /// Create a new root VM with the default memory size (16 MB).
@@ -143,19 +153,34 @@ impl Vm {
     }
 
     /// Create a new root VM from an already-opened bedrock device.
-    pub fn create_from_device(device: &File, memory_size: usize) -> io::Result<Self> {
+    pub fn create_from_device(
+        device: &File,
+        memory_size: usize,
+        tsc_frequency: u64,
+    ) -> io::Result<Self> {
         if memory_size == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "memory size must be greater than 0",
             ));
         }
+        if tsc_frequency == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tsc frequency must be greater than 0",
+            ));
+        }
+
+        let config = CreateVmConfig {
+            memory_size: memory_size as u64,
+            tsc_frequency,
+        };
 
         let fd = unsafe {
             libc::ioctl(
                 device.as_raw_fd(),
                 BEDROCK_CREATE_ROOT_VM as libc::c_ulong,
-                memory_size,
+                &config as *const CreateVmConfig,
             )
         };
 

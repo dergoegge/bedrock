@@ -40,9 +40,22 @@ const fn ioctl_iow(ty: u8, nr: u8, size: usize) -> u64 {
         | ((size as u64) << IOC_SIZESHIFT)
 }
 
+/// Configuration passed to CREATE_ROOT_VM ioctl.
+///
+/// Userspace fills this out to configure the VM at creation time.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CreateVmConfig {
+    /// Size of guest memory to allocate in bytes.
+    pub memory_size: u64,
+    /// TSC frequency in Hz for deterministic time emulation.
+    pub tsc_frequency: u64,
+}
+
 // Device ioctls (on /dev/bedrock)
-// _IOW('B', 0, u64) - takes memory size as argument
-pub(crate) const BEDROCK_CREATE_ROOT_VM: u64 = ioctl_iow(BEDROCK_IOC_MAGIC, 0, size_of::<u64>());
+// _IOW('B', 0, CreateVmConfig) - takes a configuration struct as argument
+pub(crate) const BEDROCK_CREATE_ROOT_VM: u64 =
+    ioctl_iow(BEDROCK_IOC_MAGIC, 0, size_of::<CreateVmConfig>());
 
 // VM ioctls (on VM file descriptor)
 pub(crate) const BEDROCK_VM_GET_REGS: u64 = ioctl_ior(BEDROCK_IOC_MAGIC, 1, size_of::<Regs>());

@@ -4,6 +4,8 @@
 
 use core::pin::Pin;
 
+use core::mem::size_of;
+
 use kernel::alloc::flags::GFP_KERNEL;
 use kernel::bindings;
 use kernel::c_str;
@@ -29,6 +31,7 @@ mod vmx_asm;
 mod vmxon;
 
 // Re-exports from internal modules
+use c_helpers::bedrock_copy_from_user;
 use factory::{create_vm, KernelFrameAllocator};
 use instruction_counter::LinuxInstructionCounter;
 use machine::MACHINE;
@@ -46,9 +49,20 @@ use vmxon::RealVmx;
 /// Ioctl magic number for bedrock ('B' for Bedrock).
 const BEDROCK_IOC_MAGIC: u32 = b'B' as u32;
 
+/// Configuration for CREATE_ROOT_VM ioctl.
+///
+/// Userspace passes this struct to configure the VM at creation time.
+#[repr(C)]
+struct BedrockCreateVmConfig {
+    /// Size of guest memory to allocate in bytes.
+    memory_size: u64,
+    /// TSC frequency in Hz for deterministic time emulation.
+    tsc_frequency: u64,
+}
+
 /// Ioctl number for CREATE_ROOT_VM command.
-/// This is _IOW('B', 0, u64) - takes memory size as argument, returns FD via return value.
-const BEDROCK_CREATE_ROOT_VM: u32 = _IOW::<u64>(BEDROCK_IOC_MAGIC, 0);
+/// Takes a BedrockCreateVmConfig pointer as argument, returns FD via return value.
+const BEDROCK_CREATE_ROOT_VM: u32 = _IOW::<BedrockCreateVmConfig>(BEDROCK_IOC_MAGIC, 0);
 
 /// Ioctl number for CREATE_FORKED_VM command.
 /// This is _IOW('B', 1, u64) - takes parent VM ID as argument, returns FD via return value.
@@ -105,9 +119,35 @@ struct BedrockFile {}
 
 /// Handle CREATE_ROOT_VM ioctl - separated to isolate stack usage.
 #[inline(never)]
-fn handle_create_root_vm(memory_size: usize) -> Result<isize> {
+fn handle_create_root_vm(arg: usize) -> Result<isize> {
+    // Copy the configuration struct from userspace
+    let mut config = core::mem::MaybeUninit::<BedrockCreateVmConfig>::uninit();
+    // SAFETY: `config.as_mut_ptr()` points to valid, aligned, writable memory for a
+    // BedrockCreateVmConfig. `arg` is a user-provided pointer from the ioctl syscall.
+    // bedrock_copy_from_user performs a bounded copy.
+    let not_copied = unsafe {
+        bedrock_copy_from_user(
+            config.as_mut_ptr().cast::<core::ffi::c_void>(),
+            arg as *const core::ffi::c_void,
+            size_of::<BedrockCreateVmConfig>() as core::ffi::c_ulong,
+        )
+    };
+    if not_copied != 0 {
+        return Err(EFAULT);
+    }
+    // SAFETY: bedrock_copy_from_user succeeded (returned 0), so all bytes of `config`
+    // have been written and it is now fully initialized.
+    let config = unsafe { config.assume_init() };
+
+    let memory_size = config.memory_size as usize;
+    let tsc_frequency = config.tsc_frequency;
+
     if memory_size == 0 {
         log_err!("Invalid memory size: 0\n");
+        return Err(EINVAL);
+    }
+    if tsc_frequency == 0 {
+        log_err!("Invalid TSC frequency: 0\n");
         return Err(EINVAL);
     }
 
@@ -118,8 +158,8 @@ fn handle_create_root_vm(memory_size: usize) -> Result<isize> {
         handler.alloc_vm_id().ok_or(ENOSPC)?
     };
 
-    // Create the VM with the specified memory size
-    let vm = create_vm(&MACHINE, memory_size).ok_or_else(|| {
+    // Create the VM with the specified memory size and TSC frequency
+    let vm = create_vm(&MACHINE, memory_size, tsc_frequency).ok_or_else(|| {
         log_err!(
             "Failed to create VM {} with {} bytes of memory\n",
             vm_id,

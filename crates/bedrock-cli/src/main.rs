@@ -16,7 +16,7 @@ use log::{debug, info, trace, warn};
 
 use bedrock_vm::{
     parse_line_tsc_entries, ExitKind, ExitStatsReport, LineTscEntry, LinuxBootConfig, LogConfig,
-    LogEntry, RdrandConfig, Vm, VmBuilder, BEDROCK_DEVICE_PATH,
+    LogEntry, RdrandConfig, Vm, VmBuilder, BEDROCK_DEVICE_PATH, DEFAULT_TSC_FREQUENCY,
 };
 
 use args::{Args, RdrandMode};
@@ -285,11 +285,15 @@ fn run() -> io::Result<()> {
     // Build VM configuration
     let mut builder = VmBuilder::new().rdrand(rdrand_config);
 
+    let tsc_frequency = args.tsc_frequency.unwrap_or(DEFAULT_TSC_FREQUENCY);
+
     if let Some(parent_id) = args.parent_id {
         debug!("  Parent VM ID: {}", parent_id);
         builder = builder.forked_from(parent_id);
     } else {
-        builder = builder.memory_size(memory_size);
+        builder = builder
+            .memory_size(memory_size)
+            .tsc_frequency(tsc_frequency);
     }
 
     if let Some(config) = log_config {
@@ -300,7 +304,7 @@ fn run() -> io::Result<()> {
     }
     let stop_at_tsc = args
         .stop_at_tsc
-        .or_else(|| args.stop_at_vt.map(|vt| (vt * 2_995_200_000.0) as u64));
+        .or_else(|| args.stop_at_vt.map(|vt| (vt * tsc_frequency as f64) as u64));
     if let Some(tsc) = stop_at_tsc {
         builder = builder.stop_at_tsc(tsc);
     }
