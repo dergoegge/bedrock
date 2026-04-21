@@ -86,12 +86,14 @@ impl CowAllocator<KernelPage> for KernelFrameAllocator<'_> {
 ///
 /// * `machine` - The machine abstraction for hardware access
 /// * `memory_size` - Size of guest memory to allocate in bytes
+/// * `tsc_frequency` - Configured TSC frequency in Hz
 ///
 /// Returns `None` if allocation fails.
 #[inline(never)]
 pub(crate) fn create_vm(
     machine: &LinuxMachine,
     memory_size: usize,
+    tsc_frequency: u64,
 ) -> Option<RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>> {
     log_info!("create_vm: starting with memory_size={}\n", memory_size);
 
@@ -140,6 +142,7 @@ pub(crate) fn create_vm(
         &mut allocator,
         exit_handler_rip,
         instruction_counter,
+        tsc_frequency,
     ) {
         Ok(vm) => {
             log_info!("RootVm created successfully\n");

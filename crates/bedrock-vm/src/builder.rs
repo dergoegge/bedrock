@@ -4,7 +4,7 @@
 
 use crate::error::VmError;
 use crate::rdrand::RdrandConfig;
-use crate::vm::{LogConfig, Vm, BEDROCK_DEVICE_PATH};
+use crate::vm::{LogConfig, Vm, BEDROCK_DEVICE_PATH, DEFAULT_TSC_FREQUENCY};
 
 /// Default guest memory size (4 GB).
 const DEFAULT_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;
@@ -29,6 +29,7 @@ const DEFAULT_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;
 /// ```
 pub struct VmBuilder {
     memory_size: usize,
+    tsc_frequency: u64,
     device_path: String,
     rdrand_config: Option<RdrandConfig>,
     log_config: Option<LogConfig>,
@@ -51,6 +52,7 @@ impl VmBuilder {
     pub fn new() -> Self {
         Self {
             memory_size: DEFAULT_MEMORY_SIZE,
+            tsc_frequency: DEFAULT_TSC_FREQUENCY,
             device_path: BEDROCK_DEVICE_PATH.to_string(),
             rdrand_config: None,
             log_config: None,
@@ -82,6 +84,15 @@ impl VmBuilder {
     /// This is ignored for forked VMs.
     pub fn memory_mb(mut self, mb: usize) -> Self {
         self.memory_size = mb * 1024 * 1024;
+        self
+    }
+
+    /// Set the emulated TSC frequency in Hz.
+    ///
+    /// Defaults to [`DEFAULT_TSC_FREQUENCY`]. Ignored for forked VMs, which
+    /// inherit the TSC frequency from their parent.
+    pub fn tsc_frequency(mut self, hz: u64) -> Self {
+        self.tsc_frequency = hz;
         self
     }
 
@@ -149,9 +160,11 @@ impl VmBuilder {
                 .write(true)
                 .open(&self.device_path)?;
 
-            Vm::create_from_device(&device, self.memory_size).map_err(|e| VmError::Ioctl {
-                operation: "CREATE_ROOT_VM",
-                source: e,
+            Vm::create_from_device(&device, self.memory_size, self.tsc_frequency).map_err(|e| {
+                VmError::Ioctl {
+                    operation: "CREATE_ROOT_VM",
+                    source: e,
+                }
             })?
         };
 
@@ -203,6 +216,7 @@ mod tests {
     fn test_builder_defaults() {
         let builder = VmBuilder::new();
         assert_eq!(builder.memory_size, DEFAULT_MEMORY_SIZE);
+        assert_eq!(builder.tsc_frequency, DEFAULT_TSC_FREQUENCY);
         assert_eq!(builder.device_path, BEDROCK_DEVICE_PATH);
         assert!(builder.rdrand_config.is_none());
         assert!(builder.log_config.is_none());

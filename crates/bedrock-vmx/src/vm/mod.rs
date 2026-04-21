@@ -142,6 +142,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -169,6 +170,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -193,6 +195,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -219,6 +222,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -248,6 +252,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -276,6 +281,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -305,6 +311,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("VM creation should succeed");
 
@@ -341,6 +348,7 @@ mod tests {
             &mut allocator,
             exit_handler_rip,
             NullInstructionCounter,
+            DEFAULT_TSC_FREQUENCY,
         )
         .expect("RootVm creation should succeed");
 

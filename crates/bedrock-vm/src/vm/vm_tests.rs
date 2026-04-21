@@ -7,12 +7,14 @@ use std::mem::size_of;
 
 #[test]
 fn test_ioctl_encoding() {
+    use super::ioctl::CreateVmConfig;
+
     // Verify our ioctl encoding matches the kernel's
-    // _IOW('B', 0, u64) - has write direction bit and size of u64
+    // _IOW('B', 0, CreateVmConfig) - has write direction bit and size of CreateVmConfig
     assert_eq!((BEDROCK_CREATE_ROOT_VM >> 30) & 0x3, IOC_WRITE);
     assert_eq!(
         (BEDROCK_CREATE_ROOT_VM >> 16) & 0x3FFF,
-        size_of::<u64>() as u64
+        size_of::<CreateVmConfig>() as u64
     );
 
     // _IOR('B', 1, size) and _IOW('B', 2, size) depend on struct size
