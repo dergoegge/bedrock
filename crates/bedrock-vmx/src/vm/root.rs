@@ -89,12 +89,27 @@ impl<V: VirtualMachineControlStructure, G: GuestMemory, I: InstructionCounter> R
 
         // Map all guest memory pages into the EPT
         // Guest physical address = offset into guest memory (identity mapped from 0)
+        //
+        // Skip the LAPIC (0xFEE00000) and IOAPIC (0xFEC00000) MMIO pages so
+        // guest accesses to those addresses trigger EPT violations and get
+        // emulated by handle_apic_access / handle_ioapic_access. Without this,
+        // guests with >~4GB of RAM have the APIC pages mapped as regular
+        // memory and APIC emulation never runs.
         let mem_size = memory.size();
         let num_pages = mem_size.div_ceil(PAGE_SIZE);
 
         for page_idx in 0..num_pages {
             let page_offset = page_idx * PAGE_SIZE;
-            let guest_phys = GuestPhysAddr::new(page_offset as u64);
+            let guest_phys_u64 = page_offset as u64;
+
+            // Leave APIC MMIO pages unmapped so accesses trap to emulation
+            if (APIC_BASE..APIC_BASE + APIC_SIZE).contains(&guest_phys_u64)
+                || (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&guest_phys_u64)
+            {
+                continue;
+            }
+
+            let guest_phys = GuestPhysAddr::new(guest_phys_u64);
             let host_phys = memory
                 .page_phys_addr(page_offset)
                 .ok_or(RootVmError::NoPhysAddr(page_offset))?;

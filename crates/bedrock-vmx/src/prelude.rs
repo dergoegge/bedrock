@@ -99,12 +99,12 @@ pub use bedrock_ept::{EptMemoryType, EptPageTable, EptPermissions, FrameAllocato
 #[cfg(not(feature = "cargo"))]
 pub use super::exits::{
     handle_exit, inject_pending_interrupt, update_mtf_state, ExitError, ExitHandlerResult,
-    ExitReason,
+    ExitReason, APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE,
 };
 #[cfg(feature = "cargo")]
 pub use crate::exits::{
     handle_exit, inject_pending_interrupt, update_mtf_state, ExitError, ExitHandlerResult,
-    ExitReason,
+    ExitReason, APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE,
 };
 
 // =============================================================================

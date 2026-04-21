@@ -12,8 +12,8 @@ pub mod memory {
     pub const PML4_ADDR: u64 = 0x1000;
     pub const PDPT_LOW_ADDR: u64 = 0x2000;
     pub const PDPT_HIGH_ADDR: u64 = 0x3000;
-    pub const PD_ADDR: u64 = 0x4000;
-    pub const BOOT_PARAMS_ADDR: u64 = 0x7000;
+    pub const BOOT_PARAMS_ADDR: u64 = 0x4000;
+    pub const PD_ADDR: u64 = 0x8000;
     pub const CMDLINE_ADDR: u64 = 0x20000;
 }
 
