@@ -240,11 +240,7 @@ impl ExitStats {
     /// Get the average cycles per exit, or 0 if no exits occurred.
     #[inline]
     pub fn avg_cycles(&self) -> u64 {
-        if self.count > 0 {
-            self.cycles / self.count
-        } else {
-            0
-        }
+        self.cycles.checked_div(self.count).unwrap_or(0)
     }
 }
 

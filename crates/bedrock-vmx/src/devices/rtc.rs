@@ -73,11 +73,7 @@ impl RtcState {
     /// * `tsc_frequency` - TSC frequency in Hz
     pub fn read_register_with_tsc(&self, emulated_tsc: u64, tsc_frequency: u64) -> u8 {
         // Calculate elapsed seconds from emulated TSC
-        let elapsed_secs = if tsc_frequency > 0 {
-            emulated_tsc / tsc_frequency
-        } else {
-            0
-        };
+        let elapsed_secs = emulated_tsc.checked_div(tsc_frequency).unwrap_or(0);
 
         // Break down Unix timestamp into date/time components
         // This is a simplified calculation - doesn't handle all edge cases

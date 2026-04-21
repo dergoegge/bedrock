@@ -333,16 +333,14 @@ fn modrm_displacement_length(mod_bits: u8, rm: u8, remaining: &[u8]) -> Result<u
 
     // Displacement based on mod bits
     match mod_bits {
-        0b00 => {
-            // mod=00: no displacement, except:
-            // - rm=5 (RIP-relative in 64-bit mode) has 32-bit disp
-            // - SIB with base=5 already handled above
-            if rm == 5 && !has_sib {
-                if remaining.len() < len + 4 {
-                    return Err(DecodeError::BufferTooShort);
-                }
-                len += 4;
+        // mod=00: no displacement, except:
+        // - rm=5 (RIP-relative in 64-bit mode) has 32-bit disp
+        // - SIB with base=5 already handled above
+        0b00 if rm == 5 && !has_sib => {
+            if remaining.len() < len + 4 {
+                return Err(DecodeError::BufferTooShort);
             }
+            len += 4;
         }
         0b01 => {
             // mod=01: 8-bit displacement
