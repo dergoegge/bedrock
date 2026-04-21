@@ -192,8 +192,20 @@ pub fn inject_pending_interrupt<C: VmContext>(ctx: &mut C) -> Result<(), ExitErr
     // This handles the case where interrupt delivery was aborted by an EPT violation
     // (e.g., CoW fault when pushing interrupt frame to guest stack).
     // Per Intel SDM Vol 3C Section 29.2.4, we must re-inject before handling new events.
+    // This path runs unconditionally — the event was already in flight and must complete.
     if reinject_vectored_event(ctx)? {
         // Event will be re-injected on VM entry, don't inject anything else
+        return Ok(());
+    }
+
+    // Skip new-interrupt evaluation after non-deterministic exits. Otherwise a host NMI
+    // (or other non-det exit) landing at the same instruction where hardware would fire
+    // an interrupt-window VM exit (SDM Vol 3C §27.2: NMIs outrank IWE) lets us observe
+    // IF=1 / interruptibility=0 and inject directly, silently absorbing the IWE exit.
+    // The guest behaves the same but the deterministic-exit log is short one entry,
+    // causing divergence. Re-entering without re-evaluating lets the armed IWE control
+    // produce its deterministic exit on the next instruction boundary.
+    if !ctx.state().last_exit_deterministic {
         return Ok(());
     }
 
