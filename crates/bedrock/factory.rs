@@ -87,6 +87,13 @@ impl CowAllocator<KernelPage> for KernelFrameAllocator<'_> {
 /// * `machine` - The machine abstraction for hardware access
 /// * `memory_size` - Size of guest memory to allocate in bytes
 /// * `tsc_frequency` - Configured TSC frequency in Hz
+/// * `periodic_exit_interval` - When non-zero, programs the PMU's
+///   instructions-retired counter to overflow every N guest instructions,
+///   producing a hardware-driven periodic VM-exit at exact instruction
+///   boundaries (Intel SDM Vol 3B Ch. 21). PMI delivery has skid; periodic
+///   exits are classified non-deterministic. The deterministic cumulative
+///   count read at natural exits comes from a separate free-running counter
+///   not affected by sampling overhead.
 ///
 /// Returns `None` if allocation fails.
 #[inline(never)]
@@ -94,6 +101,7 @@ pub(crate) fn create_vm(
     machine: &LinuxMachine,
     memory_size: usize,
     tsc_frequency: u64,
+    periodic_exit_interval: u64,
 ) -> Option<RootVm<RealVmcs, KernelGuestMemory, LinuxInstructionCounter>> {
     log_info!("create_vm: starting with memory_size={}\n", memory_size);
 
@@ -122,8 +130,17 @@ pub(crate) fn create_vm(
     let exit_handler_rip = super::vmx::VmxContext::exit_handler_addr();
     log_info!("Exit handler RIP: {:#x}\n", exit_handler_rip);
 
-    // Create instruction counter for deterministic execution
-    let instruction_counter = match LinuxInstructionCounter::new() {
+    // Create instruction counter for deterministic execution. The PMI is
+    // armed to fire `PERIODIC_EXIT_MARGIN` instructions before each interval
+    // boundary so MTF (enabled by `update_mtf_state` while inside the margin)
+    // can step the guest precisely onto the boundary instruction, absorbing
+    // PMU skid.
+    let sample_period = if periodic_exit_interval > 0 {
+        periodic_exit_interval.saturating_sub(super::vmx::PERIODIC_EXIT_MARGIN)
+    } else {
+        0
+    };
+    let instruction_counter = match LinuxInstructionCounter::new(sample_period) {
         Some(counter) => {
             log_info!("Instruction counter created successfully\n");
             counter
@@ -144,8 +161,16 @@ pub(crate) fn create_vm(
         instruction_counter,
         tsc_frequency,
     ) {
-        Ok(vm) => {
+        Ok(mut vm) => {
             log_info!("RootVm created successfully\n");
+
+            // Mirror the perf_event sample_period into VmState so the run-loop
+            // threshold check fires in lock-step with hardware overflow exits.
+            if periodic_exit_interval != 0 {
+                let initial = vm.state.last_instruction_count + periodic_exit_interval;
+                vm.state.periodic_exit_interval = Some(periodic_exit_interval);
+                vm.state.next_periodic_exit_count = initial;
+            }
 
             // RTC uses a fixed base time (2024-01-01 00:00:00 UTC) for deterministic
             // execution. Time advances based on emulated TSC, not host time.

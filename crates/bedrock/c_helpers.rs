@@ -205,8 +205,11 @@ extern "C" {
     /// Creates counter on current CPU - userspace must pin thread to desired CPU
     /// before calling this (use sched_setaffinity for P-core pinning on hybrid CPUs).
     ///
+    /// `sample_period` of 0 → free-running counter (deterministic cumulative count).
+    /// Non-zero → sampling counter; PMU overflow drives PMI → VM-exit (skid expected).
+    ///
     /// Returns: perf_event pointer, or ERR_PTR on failure
-    pub(crate) fn bedrock_create_instruction_counter() -> *mut PerfEvent;
+    pub(crate) fn bedrock_create_instruction_counter(sample_period: u64) -> *mut PerfEvent;
 
     /// Destroy an instruction counter created with bedrock_create_instruction_counter.
     pub(crate) fn bedrock_destroy_instruction_counter(event: *mut PerfEvent);
@@ -219,6 +222,12 @@ extern "C" {
 
     /// Read the current instruction count (exact value, no skid).
     pub(crate) fn bedrock_perf_event_read(event: *mut PerfEvent) -> u64;
+
+    /// Re-arm a sampling perf_event so its next PMI fires `period` events
+    /// from now. Updates event->hw.sample_period to the new value. Used by
+    /// the hypervisor to land the next forced VM-exit at a precise retired-
+    /// instruction count.
+    pub(crate) fn bedrock_perf_event_realign(event: *mut PerfEvent, period: u64);
 
     /// Get the PERF_GLOBAL_CTRL MSR values for hardware-assisted switching.
     ///

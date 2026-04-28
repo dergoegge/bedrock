@@ -122,6 +122,9 @@ pub struct ExitStats {
     pub vmexit_overhead_cycles: u64,
     /// Cycles spent in the IRQ window between VM exits.
     pub irq_window_cycles: u64,
+    /// MTF single-steps taken inside the periodic-exit margin window
+    /// (non-deterministic; bucketed separately from `mtf.count`).
+    pub periodic_margin_steps: u64,
 }
 
 impl ExitStats {
@@ -350,6 +353,11 @@ impl fmt::Display for ExitStatsReport<'_> {
             cycles_to_wall_pct(run)
         )?;
         writeln!(f, "  Wall clock time:    {:>16.3} seconds", wall_secs)?;
+        writeln!(
+            f,
+            "  Periodic margin steps: {:>13}",
+            format_count(stats.periodic_margin_steps)
+        )?;
         write!(f, "{TABLE_SEP}")
     }
 }

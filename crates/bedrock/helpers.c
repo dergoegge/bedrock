@@ -513,9 +513,20 @@ EXPORT_SYMBOL_GPL(bedrock_clear_guest_state);
  * counter rather than a CPU-attached counter. This avoids the perf_allow_cpu()
  * permission check that requires CAP_PERFMON when perf_event_paranoid > 0.
  *
+ * If `sample_period` is non-zero, the underlying PMU counter (Intel SDM
+ * Vol 3B Ch. 21: IA32_FIXED_CTR0 / IA32_PMCx for "Instructions Retired")
+ * is configured to overflow every `sample_period` retired guest
+ * instructions. The overflow generates a Performance Monitoring Interrupt
+ * via the local APIC LVT_PERFMON, which (with external-interrupt exiting
+ * enabled, Intel SDM Vol 3C §26.2) causes an EXTERNAL_INTERRUPT VM-exit at
+ * the next interrupt-deliverable instruction boundary. PMI delivery skid is
+ * inherent to the architecture; callers that need a deterministic
+ * cumulative count should use a separate free-running counter (sample_period
+ * = 0).
+ *
  * Returns: perf_event pointer, or ERR_PTR on failure
  */
-struct perf_event *bedrock_create_instruction_counter(void)
+struct perf_event *bedrock_create_instruction_counter(u64 sample_period)
 {
 	struct perf_event *event;
 	struct perf_event_attr attr = {
@@ -526,6 +537,11 @@ struct perf_event *bedrock_create_instruction_counter(void)
 		.exclude_host = 1,
 		.exclude_idle = 1,
 	};
+
+	if (sample_period) {
+		attr.sample_period = sample_period;
+		attr.sample_type = PERF_SAMPLE_IP;
+	}
 
 	/* Use cpu=-1 with current task to avoid perf_allow_cpu() check */
 	event = perf_event_create_kernel_counter(&attr, -1, current,
@@ -598,6 +614,49 @@ u64 bedrock_perf_event_read(struct perf_event *event)
 	return local64_read(&event->count);
 }
 EXPORT_SYMBOL_GPL(bedrock_perf_event_read);
+
+/*
+ * Re-arm a sampling perf_event so its next PMI fires exactly `period`
+ * events from now. Updates event->hw.sample_period to the new value.
+ *
+ * Used by the hypervisor to schedule the next forced VM-exit at a precise
+ * retired-instruction count (e.g., to land MTF on the next APIC timer
+ * deadline, or to keep periodic exits aligned with their boundaries).
+ *
+ * Calls the PMU's stop/start methods directly; these are atomic-safe (the
+ * PMI handler itself uses them) so this is safe with preemption disabled
+ * and IRQs in any state. No-op if the event is NULL/ERR_PTR, the period
+ * is zero, or the event is not currently scheduled on this CPU.
+ */
+void bedrock_perf_event_realign(struct perf_event *event, u64 period)
+{
+	struct hw_perf_event *hwc;
+
+	if (IS_ERR_OR_NULL(event))
+		return;
+	if (READ_ONCE(event->oncpu) != smp_processor_id())
+		return;
+	if (!period)
+		return;
+
+	hwc = &event->hw;
+
+	/* Stop the counter and accumulate the current period's events into
+	 * event->count so cumulative tracking stays accurate.
+	 */
+	event->pmu->stop(event, PERF_EF_UPDATE);
+
+	/* Update period and pre-load the next overflow point: PMI fires after
+	 * `period` events.
+	 */
+	hwc->sample_period = period;
+	hwc->last_period = period;
+	local64_set(&hwc->period_left, -(s64)period);
+
+	/* Restart the counter, reloading hw counter from period_left. */
+	event->pmu->start(event, PERF_EF_RELOAD);
+}
+EXPORT_SYMBOL_GPL(bedrock_perf_event_realign);
 
 /*
  * Get the PERF_GLOBAL_CTRL MSR values for hardware-assisted switching.

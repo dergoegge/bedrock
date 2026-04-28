@@ -220,6 +220,9 @@ pub(crate) struct BedrockExitStats {
     pub vmexit_overhead_cycles: u64,
     /// Cycles spent in the IRQ window between VM exits.
     pub irq_window_cycles: u64,
+    /// MTF single-steps taken inside the periodic-exit margin window
+    /// (non-deterministic; bucketed separately from `mtf.count`).
+    pub periodic_margin_steps: u64,
 }
 
 /// VM exit information returned to userspace from RUN ioctl.

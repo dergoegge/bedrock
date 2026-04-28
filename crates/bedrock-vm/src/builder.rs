@@ -4,7 +4,9 @@
 
 use crate::error::VmError;
 use crate::rdrand::RdrandConfig;
-use crate::vm::{LogConfig, Vm, BEDROCK_DEVICE_PATH, DEFAULT_TSC_FREQUENCY};
+use crate::vm::{
+    LogConfig, Vm, BEDROCK_DEVICE_PATH, DEFAULT_PERIODIC_EXIT_INTERVAL, DEFAULT_TSC_FREQUENCY,
+};
 
 /// Default guest memory size (4 GB).
 const DEFAULT_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;
@@ -35,6 +37,7 @@ pub struct VmBuilder {
     log_config: Option<LogConfig>,
     single_step: Option<(u64, u64)>,
     stop_at_tsc: Option<u64>,
+    periodic_exit_interval: Option<u64>,
     parent_id: Option<u64>,
 }
 
@@ -58,6 +61,7 @@ impl VmBuilder {
             log_config: None,
             single_step: None,
             stop_at_tsc: None,
+            periodic_exit_interval: Some(DEFAULT_PERIODIC_EXIT_INTERVAL),
             parent_id: None,
         }
     }
@@ -126,6 +130,12 @@ impl VmBuilder {
         self
     }
 
+    /// Set the retired-instruction interval for periodic in-kernel exits.
+    pub fn periodic_exit_interval(mut self, interval: u64) -> Self {
+        self.periodic_exit_interval = Some(interval);
+        self
+    }
+
     /// Build the VM with the configured settings.
     ///
     /// Creates either a root VM or a forked VM depending on whether
@@ -160,11 +170,15 @@ impl VmBuilder {
                 .write(true)
                 .open(&self.device_path)?;
 
-            Vm::create_from_device(&device, self.memory_size, self.tsc_frequency).map_err(|e| {
-                VmError::Ioctl {
-                    operation: "CREATE_ROOT_VM",
-                    source: e,
-                }
+            Vm::create_from_device(
+                &device,
+                self.memory_size,
+                self.tsc_frequency,
+                self.periodic_exit_interval.unwrap_or(0),
+            )
+            .map_err(|e| VmError::Ioctl {
+                operation: "CREATE_ROOT_VM",
+                source: e,
             })?
         };
 
@@ -222,6 +236,10 @@ mod tests {
         assert!(builder.log_config.is_none());
         assert!(builder.single_step.is_none());
         assert!(builder.stop_at_tsc.is_none());
+        assert_eq!(
+            builder.periodic_exit_interval,
+            Some(DEFAULT_PERIODIC_EXIT_INTERVAL)
+        );
         assert!(builder.parent_id.is_none());
     }
 
@@ -253,6 +271,12 @@ mod tests {
     fn test_builder_stop_at_tsc() {
         let builder = VmBuilder::new().stop_at_tsc(12345);
         assert_eq!(builder.stop_at_tsc, Some(12345));
+    }
+
+    #[test]
+    fn test_builder_periodic_exit_interval() {
+        let builder = VmBuilder::new().periodic_exit_interval(100_000);
+        assert_eq!(builder.periodic_exit_interval, Some(100_000));
     }
 
     #[test]

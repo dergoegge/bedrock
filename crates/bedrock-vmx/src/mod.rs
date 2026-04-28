@@ -35,7 +35,7 @@ pub use traits::{
 // VM implementation
 pub use cow::CowPageMap;
 pub use vm::{ForkableVm, ForkedVm, ParentVm, RootVm};
-pub use vm_state::{LogMode, VmState, MAX_FEEDBACK_BUFFERS};
+pub use vm_state::{LogMode, VmState, MAX_FEEDBACK_BUFFERS, PERIODIC_EXIT_MARGIN};
 
 // Exit reasons
 pub use exits::ExitReason;

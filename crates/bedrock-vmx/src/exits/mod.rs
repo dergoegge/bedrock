@@ -63,20 +63,99 @@ use super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-/// Update MTF (Monitor Trap Flag) state based on TSC range configuration.
+/// Compute the instruction count of the next pending APIC timer expiry.
 ///
-/// If single-stepping is configured and the current TSC is within the range,
-/// enables MTF to cause a VM exit after each guest instruction.
-/// Disables MTF when outside the range to avoid performance overhead.
+/// Returns `None` if the timer is disarmed, the APIC is disabled, or the
+/// LVT timer is masked. Returns the absolute retired-instruction count at
+/// which the timer should fire (= `timer_deadline - tsc_offset`) so the
+/// hypervisor can land MTF exactly there for precise interrupt injection.
+fn next_timer_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
+    let state = ctx.state();
+    let apic = &state.devices.apic;
+    if apic.timer_deadline == 0 {
+        return None;
+    }
+    if (apic.svr & (1 << 8)) == 0 {
+        return None; // APIC software disable
+    }
+    if (apic.lvt_timer & (1 << 16)) != 0 {
+        return None; // Timer masked
+    }
+    Some(apic.timer_deadline.saturating_sub(state.tsc_offset))
+}
+
+/// Update MTF (Monitor Trap Flag) state and the sampling-counter alignment.
+///
+/// Enables MTF (which causes a VM-exit after every guest instruction) when
+/// either:
+///
+/// 1. Single-stepping is configured and the current TSC is within the range, or
+/// 2. The retired-instruction count is within `PERIODIC_EXIT_MARGIN` of the
+///    `next_periodic_exit_count` boundary. The PMU is configured to overflow
+///    `MARGIN` instructions before that boundary, so once the PMI fires we
+///    step the guest one instruction at a time until we land exactly on it.
+///
+/// `next_periodic_exit_count` is the closest of:
+///
+/// - The next periodic boundary (multiple of `periodic_exit_interval`), so
+///   the hypervisor gets a regular forced-exit cadence.
+/// - The next pending APIC timer deadline (converted to instruction count).
+///   This makes timer interrupts arrive at exactly the right instruction
+///   instead of being delayed until the next natural exit.
+///
+/// Whenever the chosen target changes (boundary advanced, timer deadline
+/// configured/expired/advanced by MWAIT, etc.), the sampling counter is
+/// re-armed so its next overflow fires `target - count - MARGIN` events
+/// from now — putting the PMI at exactly `target - MARGIN`.
 pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
-    let tsc = ctx.state().emulated_tsc;
+    // Use last_instruction_count + tsc_offset directly so this is correct for
+    // both deterministic exits (where emulated_tsc was already set to this)
+    // and non-deterministic exits (where emulated_tsc is stale).
+    let count = ctx.state().last_instruction_count;
+    let tsc = count + ctx.state().tsc_offset;
     let range = ctx.state().single_step_tsc_range;
     let currently_enabled = ctx.state().mtf_enabled;
 
-    let should_enable = match range {
+    let should_single_step = match range {
         Some((start, end)) => tsc >= start && tsc < end,
         None => false,
     };
+
+    // Pick the next forced-exit instruction count: closest of the periodic
+    // boundary and the next pending timer deadline. u64::MAX disables forced
+    // exits when neither source is active.
+    let mut new_next = u64::MAX;
+    if let Some(interval) = ctx.state().periodic_exit_interval {
+        // Smallest multiple of interval strictly greater than count.
+        let periodic_next = count - (count % interval) + interval;
+        new_next = new_next.min(periodic_next);
+    }
+    if let Some(timer_count) = next_timer_exit_count(ctx) {
+        if timer_count > count {
+            new_next = new_next.min(timer_count);
+        }
+    }
+
+    // If the target moved, install it and re-arm the sampling counter so the
+    // PMI fires `MARGIN` instructions before it — regardless of where the
+    // sampling counter happens to be in its current period. Without this
+    // realign, PMIs at a fixed sample_period drift relative to either source
+    // (each periodic PMI drifts `MARGIN` earlier per cycle; an APIC timer
+    // can be configured at any future deadline mid-period).
+    let prev_next = ctx.state().next_periodic_exit_count;
+    if new_next != prev_next {
+        ctx.state_mut().next_periodic_exit_count = new_next;
+        if new_next != u64::MAX && new_next > count + PERIODIC_EXIT_MARGIN {
+            let period = new_next - count - PERIODIC_EXIT_MARGIN;
+            ctx.state_mut().instruction_counter.realign_sampling(period);
+        }
+    }
+
+    let in_margin = new_next != u64::MAX
+        && count >= new_next.saturating_sub(PERIODIC_EXIT_MARGIN)
+        && count < new_next;
+
+    let should_enable = should_single_step || in_margin;
 
     if should_enable != currently_enabled {
         // Toggle MTF in primary processor-based controls
@@ -146,6 +225,25 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
                 .unwrap_or(0);
             !((APIC_BASE..APIC_BASE + APIC_SIZE).contains(&gpa)
                 || (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&gpa))
+        }
+        // MTF exits inside the margin happen at instruction counts that
+        // depend on PMU skid, so the intermediate steps are non-deterministic.
+        // The exit exactly at the next forced-exit boundary
+        // (count == next_periodic_exit_count) lands at a deterministic count
+        // — MTF stepping into the boundary is precise, and the sampling
+        // counter is realigned at every target change so the next PMI
+        // reliably re-enters the margin. MTF inside a configured single-step
+        // TSC range is deterministic by construction.
+        ExitReason::MonitorTrapFlag => {
+            let count = ctx.state().last_instruction_count;
+            let tsc = count + ctx.state().tsc_offset;
+            let on_boundary = count == ctx.state().next_periodic_exit_count
+                && ctx.state().next_periodic_exit_count != u64::MAX;
+            let in_single_step_range = match ctx.state().single_step_tsc_range {
+                Some((start, end)) => tsc >= start && tsc < end,
+                None => false,
+            };
+            !(on_boundary || in_single_step_range)
         }
         _ => false,
     };
@@ -274,23 +372,31 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         _ => ExitHandlerResult::ExitToUserspace(reason),
     };
 
-    // Record exit handler timing statistics
+    // Record exit handler timing statistics. Margin-window MTF steps are
+    // non-deterministic (their count depends on PMU skid), so they go to a
+    // separate bucket to keep `mtf.count` reproducible across runs.
     let end_tsc = rdtsc();
     let cycles = end_tsc.saturating_sub(start_tsc);
-    ctx.state_mut().exit_stats.record(reason, cycles);
+    if reason == ExitReason::MonitorTrapFlag && non_deterministic_exit {
+        ctx.state_mut().exit_stats.periodic_margin_steps += 1;
+    } else {
+        ctx.state_mut().exit_stats.record(reason, cycles);
+    }
 
     // Now that the exit is handled, do logging and threshold checks.
     // These happen AFTER exit handling so device state is clean.
 
-    // Update MTF state after the handler. Time-advancing exits (MWAIT/HLT
+    // Update MTF state after the handler. Runs for both deterministic and
+    // non-deterministic exits because the periodic-exit margin needs the
+    // PMI's external-interrupt exit (non-deterministic) to enable MTF on
+    // margin entry. update_mtf_state derives its TSC from
+    // last_instruction_count + tsc_offset, which stays current regardless of
+    // whether emulated_tsc was updated above. Time-advancing exits (MWAIT/HLT
     // via handle_idle) modify emulated_tsc and tsc_offset to reach the APIC
-    // timer deadline. This must happen before the MTF check because the
-    // pre-handler TSC can be far below the single-step range while the
-    // post-handler TSC (timer deadline) is inside it.
-    if !non_deterministic_exit {
-        if let Err(e) = update_mtf_state(ctx) {
-            return ExitHandlerResult::Error(e);
-        }
+    // timer deadline; this still needs to run after the handler so the post-
+    // handler TSC is what's checked.
+    if let Err(e) = update_mtf_state(ctx) {
+        return ExitHandlerResult::Error(e);
     }
 
     // Check if stop-at-tsc threshold is reached (deterministic exits only)

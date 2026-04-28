@@ -102,6 +102,20 @@ pub const FEEDBACK_BUFFER_MAX_PAGES: usize = 256;
 /// Maximum number of feedback buffers per VM.
 pub const MAX_FEEDBACK_BUFFERS: usize = 16;
 
+/// Pre-boundary margin (in retired guest instructions) for periodic exits.
+///
+/// The PMU sampling counter's overflow period is set to
+/// `periodic_exit_interval - PERIODIC_EXIT_MARGIN` so the PMI fires this many
+/// instructions before the desired boundary (absorbing PMU skid). MTF is then
+/// enabled by `update_mtf_state` while we're inside this window so single
+/// stepping lands the guest exactly on the boundary instruction.
+///
+/// Sized to cover ROB-drain + NMI delivery skid on every published Intel
+/// client core: Raptor/Golden Cove ROB = 512, plus tens of instructions of
+/// NMI latency. 2048 leaves comfortable headroom; smaller values (e.g., 256)
+/// occasionally miss on deep-ROB cores and produce divergent runs.
+pub const PERIODIC_EXIT_MARGIN: u64 = 2048;
+
 /// Information about a registered feedback buffer.
 ///
 /// This is used by guests to register a feedback buffer (e.g., coverage bitmap)
@@ -353,6 +367,11 @@ pub struct AllExitStats {
     pub irq_window_cycles: u64,
     /// Copy-on-write page allocation statistics.
     pub cow: CowStats,
+    /// MTF single-steps taken inside the periodic-exit margin window.
+    /// Bucketed separately from `mtf` because the count of these depends on
+    /// PMU skid (non-deterministic) and would otherwise pollute the
+    /// deterministic `mtf.count` stat used by determinism-test comparisons.
+    pub periodic_margin_steps: u64,
 }
 
 impl AllExitStats {
@@ -611,6 +630,13 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// The #PF is logged and reinjected so the guest handles it normally.
     /// Used for determinism analysis to observe spurious page faults.
     pub intercept_pf: bool,
+    /// Periodic exit interval in retired guest instructions.
+    /// When `Some(n)`, the run loop detects when the guest crosses each
+    /// `n`-instruction boundary so future hooks can act on it. `None` disables.
+    pub periodic_exit_interval: Option<u64>,
+    /// Absolute instruction count at which the next periodic threshold fires.
+    /// Updated each time the threshold is crossed.
+    pub next_periodic_exit_count: u64,
 }
 
 /// Error type for VmState creation.
@@ -816,6 +842,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_empty(),
             vpid,
             intercept_pf: false,
+            periodic_exit_interval: None,
+            next_periodic_exit_count: u64::MAX,
         })
     }
 
@@ -1355,6 +1383,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_empty(),
             vpid: 0, // Tests don't use VPID
             intercept_pf: false,
+            periodic_exit_interval: None,
+            next_periodic_exit_count: u64::MAX,
         })
     }
 
@@ -1573,6 +1603,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent
             vpid: allocated_vpid,
             intercept_pf: false,
+            periodic_exit_interval: parent_state.periodic_exit_interval,
+            next_periodic_exit_count: parent_state.periodic_exit_interval.unwrap_or(u64::MAX),
         })
     }
 }

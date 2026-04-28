@@ -74,6 +74,16 @@ pub trait InstructionCounter {
     /// the CPU atomically loads these values during VM transitions, eliminating
     /// instruction counting overhead from manual MSR switching.
     fn perf_global_ctrl_values(&self) -> Option<(u64, u64)>;
+
+    /// Re-arm the sampling counter so its next overflow (and resulting PMI)
+    /// fires `period` retired guest instructions from now.
+    ///
+    /// The hypervisor uses this to schedule the next forced VM-exit at a
+    /// precise instruction count — e.g., to land MTF on an APIC timer
+    /// deadline, or to keep periodic exits aligned with their boundaries
+    /// after each landing. Default impl is a no-op for mocks/null counters.
+    #[inline]
+    fn realign_sampling(&mut self, _period: u64) {}
 }
 
 /// Null implementation for VMs without instruction counting.

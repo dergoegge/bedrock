@@ -517,6 +517,7 @@ pub(crate) fn handle_get_exit_stats<F: VmFileOps>(vm_file: &F, arg: usize) -> is
         vmentry_overhead_cycles: stats.vmentry_overhead_cycles,
         vmexit_overhead_cycles: stats.vmexit_overhead_cycles,
         irq_window_cycles: stats.irq_window_cycles,
+        periodic_margin_steps: stats.periodic_margin_steps,
     };
 
     // SAFETY: `arg` is a user-provided pointer from the ioctl syscall, and `exit_stats`

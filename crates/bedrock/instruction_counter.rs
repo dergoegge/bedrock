@@ -8,22 +8,35 @@
 use crate::c_helpers::{
     bedrock_clear_guest_state, bedrock_create_instruction_counter,
     bedrock_destroy_instruction_counter, bedrock_get_perf_global_ctrl, bedrock_perf_event_disable,
-    bedrock_perf_event_enable, bedrock_perf_event_read, bedrock_set_guest_state, PerfEvent,
+    bedrock_perf_event_enable, bedrock_perf_event_read, bedrock_perf_event_realign,
+    bedrock_set_guest_state, PerfEvent,
 };
 use crate::vmx::traits::InstructionCounter;
 
 /// Linux perf_event-based instruction counter implementation.
 ///
 /// Uses the kernel's perf_event subsystem with `exclude_host=1` to only count
-/// guest instructions. The counter is created on the current CPU - userspace
-/// must pin the thread to the desired CPU before creating the VM.
+/// guest instructions. Two underlying perf_events:
 ///
-/// On hybrid CPUs (like Raptor Lake), userspace should pin to a P-core for
-/// reliable instruction counting.
+/// - `count_event`: free-running (no sample_period), used by `read()` to
+///   provide a deterministic cumulative retired-instruction count. Driven by
+///   the PMU's instructions-retired counter without PMI overhead, so the value
+///   read at any natural VM-exit is exact and reproducible across runs.
+/// - `sample_event`: optional sampling counter with non-zero sample_period.
+///   Programs the PMU to overflow every N events; the resulting PMI is
+///   delivered as an external-interrupt VM-exit (with skid). Created only
+///   when `periodic_exit_interval > 0`. Never read — it's only there to
+///   force the periodic exits.
+///
+/// The counters are created on the current CPU — userspace must pin the
+/// thread to the desired CPU before creating the VM. On hybrid CPUs, this
+/// should be a P-core for reliable instruction counting.
 pub(crate) struct LinuxInstructionCounter {
-    /// Pointer to the kernel perf_event structure.
-    /// NULL if creation failed.
-    event: *mut PerfEvent,
+    /// Free-running counter, source of truth for `read()`.
+    count_event: *mut PerfEvent,
+    /// Sampling counter that drives PMI-based periodic VM-exits. NULL when
+    /// periodic exits are disabled.
+    sample_event: *mut PerfEvent,
     /// Whether counting is currently enabled.
     _enabled: bool,
 }
@@ -39,20 +52,38 @@ impl LinuxInstructionCounter {
     /// Userspace must pin the thread to the desired CPU before calling this.
     /// On hybrid CPUs, this should be a P-core for reliable instruction counting.
     ///
-    /// Returns `None` if perf_event creation fails.
-    pub(crate) fn new() -> Option<Self> {
-        // SAFETY: We call the helper which creates a perf_event on the current CPU.
-        // The pointer is owned by us and will be freed in Drop.
-        let event = unsafe { bedrock_create_instruction_counter() };
-
-        // Check for ERR_PTR - error pointers have high bits set
-        // IS_ERR_VALUE checks if the value is in the error range
-        if is_err_ptr(event) {
+    /// Always creates a free-running counting event (used for `read()`).
+    /// When `sample_period > 0`, additionally creates a sampling event whose
+    /// PMU overflow generates PMIs → external-interrupt VM-exits at retired
+    /// guest-instruction boundaries (skid expected; periodic exits are
+    /// classified as non-deterministic).
+    ///
+    /// Returns `None` if creation of the counting event fails.
+    pub(crate) fn new(sample_period: u64) -> Option<Self> {
+        // SAFETY: helper creates a perf_event on the current CPU; pointer is
+        // owned by us and freed in Drop.
+        let count_event = unsafe { bedrock_create_instruction_counter(0) };
+        if is_err_ptr(count_event) {
             return None;
         }
 
+        let sample_event = if sample_period != 0 {
+            // SAFETY: same as above for the sampling event.
+            let ev = unsafe { bedrock_create_instruction_counter(sample_period) };
+            if is_err_ptr(ev) {
+                // Tear down the counting event we just created.
+                // SAFETY: helper handles NULL and ERR_PTR safely.
+                unsafe { bedrock_destroy_instruction_counter(count_event) };
+                return None;
+            }
+            ev
+        } else {
+            core::ptr::null_mut()
+        };
+
         Some(Self {
-            event,
+            count_event,
+            sample_event,
             _enabled: false,
         })
     }
@@ -62,14 +93,15 @@ impl LinuxInstructionCounter {
     /// This is used when instruction counting is not requested.
     pub(crate) fn null() -> Self {
         Self {
-            event: core::ptr::null_mut(),
+            count_event: core::ptr::null_mut(),
+            sample_event: core::ptr::null_mut(),
             _enabled: false,
         }
     }
 
-    /// Check if this counter has a valid perf_event.
+    /// Check if this counter has a valid counting event.
     pub(crate) fn is_valid(&self) -> bool {
-        !self.event.is_null()
+        !self.count_event.is_null()
     }
 }
 
@@ -77,7 +109,8 @@ impl Drop for LinuxInstructionCounter {
     fn drop(&mut self) {
         // SAFETY: The helper handles NULL and ERR_PTR safely.
         unsafe {
-            bedrock_destroy_instruction_counter(self.event);
+            bedrock_destroy_instruction_counter(self.count_event);
+            bedrock_destroy_instruction_counter(self.sample_event);
         }
     }
 }
@@ -101,9 +134,11 @@ impl InstructionCounter for LinuxInstructionCounter {
 
     fn enable(&mut self) {
         if !self._enabled && self.is_valid() {
-            // SAFETY: event is a valid perf_event pointer.
+            // SAFETY: events are valid perf_event pointers (or NULL, which
+            // the helper tolerates).
             unsafe {
-                bedrock_perf_event_enable(self.event);
+                bedrock_perf_event_enable(self.count_event);
+                bedrock_perf_event_enable(self.sample_event);
             }
             self._enabled = true;
         }
@@ -111,9 +146,10 @@ impl InstructionCounter for LinuxInstructionCounter {
 
     fn disable(&mut self) {
         if self._enabled && self.is_valid() {
-            // SAFETY: event is a valid perf_event pointer.
+            // SAFETY: events are valid perf_event pointers (or NULL).
             unsafe {
-                bedrock_perf_event_disable(self.event);
+                bedrock_perf_event_disable(self.count_event);
+                bedrock_perf_event_disable(self.sample_event);
             }
             self._enabled = false;
         }
@@ -121,8 +157,9 @@ impl InstructionCounter for LinuxInstructionCounter {
 
     fn read(&self) -> u64 {
         if self.is_valid() {
-            // SAFETY: event is a valid perf_event pointer.
-            unsafe { bedrock_perf_event_read(self.event) }
+            // SAFETY: count_event is a valid perf_event pointer. Reading from
+            // the free-running counter gives a deterministic cumulative count.
+            unsafe { bedrock_perf_event_read(self.count_event) }
         } else {
             0
         }
@@ -152,6 +189,15 @@ impl InstructionCounter for LinuxInstructionCounter {
             Some((guest_val, host_val))
         } else {
             None
+        }
+    }
+
+    fn realign_sampling(&mut self, period: u64) {
+        // SAFETY: sample_event is either NULL (when periodic exits are
+        // disabled) or a valid perf_event pointer. The helper handles NULL.
+        // The PMU stop/start methods used internally are atomic-safe.
+        unsafe {
+            bedrock_perf_event_realign(self.sample_event, period);
         }
     }
 }

@@ -50,6 +50,10 @@ pub(crate) struct CreateVmConfig {
     pub memory_size: u64,
     /// TSC frequency in Hz for deterministic time emulation.
     pub tsc_frequency: u64,
+    /// Retired-instruction interval for periodic in-kernel exits.
+    /// 0 disables; non-zero programs the PMU's instruction-retired counter
+    /// to overflow every N guest instructions.
+    pub periodic_exit_interval: u64,
 }
 
 // Device ioctls (on /dev/bedrock)

@@ -58,6 +58,10 @@ struct BedrockCreateVmConfig {
     memory_size: u64,
     /// TSC frequency in Hz for deterministic time emulation.
     tsc_frequency: u64,
+    /// Retired-instruction interval for periodic in-kernel exits.
+    /// 0 disables; non-zero programs the PMU to overflow every N
+    /// retired guest instructions (Intel SDM Vol 3B Ch. 21).
+    periodic_exit_interval: u64,
 }
 
 /// Ioctl number for CREATE_ROOT_VM command.
@@ -141,6 +145,7 @@ fn handle_create_root_vm(arg: usize) -> Result<isize> {
 
     let memory_size = config.memory_size as usize;
     let tsc_frequency = config.tsc_frequency;
+    let periodic_exit_interval = config.periodic_exit_interval;
 
     if memory_size == 0 {
         log_err!("Invalid memory size: 0\n");
@@ -159,14 +164,16 @@ fn handle_create_root_vm(arg: usize) -> Result<isize> {
     };
 
     // Create the VM with the specified memory size and TSC frequency
-    let vm = create_vm(&MACHINE, memory_size, tsc_frequency).ok_or_else(|| {
-        log_err!(
-            "Failed to create VM {} with {} bytes of memory\n",
-            vm_id,
-            memory_size
-        );
-        ENOMEM
-    })?;
+    let vm = create_vm(&MACHINE, memory_size, tsc_frequency, periodic_exit_interval).ok_or_else(
+        || {
+            log_err!(
+                "Failed to create VM {} with {} bytes of memory\n",
+                vm_id,
+                memory_size
+            );
+            ENOMEM
+        },
+    )?;
 
     // Create anonymous inode FD for the VM
     let fd = create_vm_fd(vm, vm_id).inspect_err(|e| {
@@ -257,8 +264,33 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     let fork_result = {
         let mut allocator = KernelFrameAllocator::new(MACHINE.kernel());
         let exit_handler_rip = vmx::VmxContext::exit_handler_addr();
-        let instruction_counter =
-            LinuxInstructionCounter::new().unwrap_or_else(LinuxInstructionCounter::null);
+
+        // Inherit periodic-exit configuration from the parent so the forked
+        // VM's own perf_event programs the PMU with the same overflow period.
+        let parent_periodic_interval = match parent_type {
+            VmFileType::Root => {
+                // SAFETY: parent_ptr is valid (see below). children_count > 0
+                // prevents the parent from being run, so its state is stable
+                // for reads.
+                let parent_file = unsafe { &*(parent_ptr as *const BedrockVmFile) };
+                parent_file.vm.state.periodic_exit_interval.unwrap_or(0)
+            }
+            VmFileType::Forked => {
+                // SAFETY: same as above for forked parents.
+                let parent_file = unsafe { &*(parent_ptr as *const BedrockForkedVmFile) };
+                parent_file.vm.state.periodic_exit_interval.unwrap_or(0)
+            }
+        };
+
+        // Apply the same PMI pre-boundary margin as the root path so MTF can
+        // step the fork onto each interval boundary.
+        let parent_sample_period = if parent_periodic_interval > 0 {
+            parent_periodic_interval.saturating_sub(vmx::PERIODIC_EXIT_MARGIN)
+        } else {
+            0
+        };
+        let instruction_counter = LinuxInstructionCounter::new(parent_sample_period)
+            .unwrap_or_else(LinuxInstructionCounter::null);
 
         match parent_type {
             VmFileType::Root => {
