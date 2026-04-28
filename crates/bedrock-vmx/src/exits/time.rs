@@ -77,15 +77,31 @@ pub fn handle_rdpmc<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
 /// Both are idle instructions that wait for an interrupt. For deterministic
 /// execution, we advance the TSC offset so emulated_tsc reaches the APIC timer
 /// deadline, causing the timer to fire on the next VM entry.
+///
+/// The advance is capped at `stop_at_tsc` (when configured): without the cap,
+/// a timer deadline past the stop threshold would jump emulated_tsc straight
+/// over it, and the run would stop at TSC > stop_at_tsc instead of exactly on
+/// it. Capping advances tsc_offset only as far as the stop point; the
+/// `stop_at_tsc` check in `handle_exit` then fires `StopTscReached` at exactly
+/// the configured TSC.
 pub fn handle_idle<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     let current_tsc = ctx.state().emulated_tsc;
     let timer_deadline = ctx.state().devices.apic.timer_deadline;
+    let stop_cap = ctx.state().stop_at_tsc.unwrap_or(u64::MAX);
 
-    // If timer is armed and deadline is in the future, advance TSC offset
-    if timer_deadline > 0 && timer_deadline > current_tsc {
-        let delta = timer_deadline - current_tsc;
+    // Pick the closer of the timer deadline and the stop-at-tsc cap.
+    // u64::MAX means neither is configured — leave emulated_tsc alone.
+    let timer_target = if timer_deadline > 0 {
+        timer_deadline
+    } else {
+        u64::MAX
+    };
+    let target = timer_target.min(stop_cap);
+
+    if target != u64::MAX && target > current_tsc {
+        let delta = target - current_tsc;
         ctx.state_mut().tsc_offset += delta;
-        ctx.state_mut().emulated_tsc = timer_deadline;
+        ctx.state_mut().emulated_tsc = target;
     }
 
     if let Err(e) = advance_rip(ctx) {

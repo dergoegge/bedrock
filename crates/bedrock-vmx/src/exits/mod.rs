@@ -84,6 +84,19 @@ fn next_timer_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
     Some(apic.timer_deadline.saturating_sub(state.tsc_offset))
 }
 
+/// Compute the instruction count at which the configured `stop_at_tsc`
+/// threshold is reached (= `stop_at_tsc - tsc_offset`).
+///
+/// Returns `None` when no stop is configured. Used so MTF can land
+/// precisely on the stop point — the existing `stop_at_tsc` check in
+/// `handle_exit` then fires `StopTscReached` at exactly the configured TSC
+/// rather than at whatever natural exit happens past it.
+fn next_stop_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
+    let state = ctx.state();
+    let stop_tsc = state.stop_at_tsc?;
+    Some(stop_tsc.saturating_sub(state.tsc_offset))
+}
+
 /// Update MTF (Monitor Trap Flag) state and the sampling-counter alignment.
 ///
 /// Enables MTF (which causes a VM-exit after every guest instruction) when
@@ -102,6 +115,8 @@ fn next_timer_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
 /// - The next pending APIC timer deadline (converted to instruction count).
 ///   This makes timer interrupts arrive at exactly the right instruction
 ///   instead of being delayed until the next natural exit.
+/// - The configured `stop_at_tsc` threshold, so the VM stops on exactly the
+///   requested TSC instead of at the next natural exit past it.
 ///
 /// Whenever the chosen target changes (boundary advanced, timer deadline
 /// configured/expired/advanced by MWAIT, etc.), the sampling counter is
@@ -133,6 +148,11 @@ pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
     if let Some(timer_count) = next_timer_exit_count(ctx) {
         if timer_count > count {
             new_next = new_next.min(timer_count);
+        }
+    }
+    if let Some(stop_count) = next_stop_exit_count(ctx) {
+        if stop_count > count {
+            new_next = new_next.min(stop_count);
         }
     }
 
