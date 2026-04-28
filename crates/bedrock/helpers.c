@@ -616,45 +616,30 @@ u64 bedrock_perf_event_read(struct perf_event *event)
 EXPORT_SYMBOL_GPL(bedrock_perf_event_read);
 
 /*
- * Re-arm a sampling perf_event so its next PMI fires exactly `period`
- * events from now. Updates event->hw.sample_period to the new value.
+ * Re-arm a sampling perf_event so its next PMI fires roughly `period`
+ * events from now. Updates event->attr.sample_period and resets the
+ * counter via the kernel's official perf_event_period() API.
  *
  * Used by the hypervisor to schedule the next forced VM-exit at a precise
  * retired-instruction count (e.g., to land MTF on the next APIC timer
- * deadline, or to keep periodic exits aligned with their boundaries).
+ * deadline).
  *
- * Calls the PMU's stop/start methods directly; these are atomic-safe (the
- * PMI handler itself uses them) so this is safe with preemption disabled
- * and IRQs in any state. No-op if the event is NULL/ERR_PTR, the period
- * is zero, or the event is not currently scheduled on this CPU.
+ * Direct pmu->stop/start manipulation race with perf-core's throttling
+ * bookkeeping (the tick can decide to unthrottle the event behind our
+ * back and trip a WARN_ON in x86_pmu_start when PERF_HES_STOPPED isn't
+ * set the way the core expects). perf_event_period() goes through
+ * event_function_call() which handles all of that atomically.
+ *
+ * No-op if the event is NULL/ERR_PTR or the period is zero.
  */
 void bedrock_perf_event_realign(struct perf_event *event, u64 period)
 {
-	struct hw_perf_event *hwc;
-
 	if (IS_ERR_OR_NULL(event))
-		return;
-	if (READ_ONCE(event->oncpu) != smp_processor_id())
 		return;
 	if (!period)
 		return;
 
-	hwc = &event->hw;
-
-	/* Stop the counter and accumulate the current period's events into
-	 * event->count so cumulative tracking stays accurate.
-	 */
-	event->pmu->stop(event, PERF_EF_UPDATE);
-
-	/* Update period and pre-load the next overflow point: PMI fires after
-	 * `period` events.
-	 */
-	hwc->sample_period = period;
-	hwc->last_period = period;
-	local64_set(&hwc->period_left, -(s64)period);
-
-	/* Restart the counter, reloading hw counter from period_left. */
-	event->pmu->start(event, PERF_EF_RELOAD);
+	perf_event_period(event, period);
 }
 EXPORT_SYMBOL_GPL(bedrock_perf_event_realign);
 

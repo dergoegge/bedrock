@@ -630,12 +630,12 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// The #PF is logged and reinjected so the guest handles it normally.
     /// Used for determinism analysis to observe spurious page faults.
     pub intercept_pf: bool,
-    /// Periodic exit interval in retired guest instructions.
-    /// When `Some(n)`, the run loop detects when the guest crosses each
-    /// `n`-instruction boundary so future hooks can act on it. `None` disables.
-    pub periodic_exit_interval: Option<u64>,
-    /// Absolute instruction count at which the next periodic threshold fires.
-    /// Updated each time the threshold is crossed.
+    /// Absolute retired-instruction count for the next forced VM-exit
+    /// (next APIC timer deadline or `stop_at_tsc` threshold, whichever is
+    /// closer). `u64::MAX` when no target is active. Set by
+    /// `update_mtf_state`; the sampling perf_event is realigned to fire its
+    /// PMI `PERIODIC_EXIT_MARGIN` instructions before this point so MTF can
+    /// step the guest precisely onto it.
     pub next_periodic_exit_count: u64,
 }
 
@@ -842,7 +842,6 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_empty(),
             vpid,
             intercept_pf: false,
-            periodic_exit_interval: None,
             next_periodic_exit_count: u64::MAX,
         })
     }
@@ -1383,7 +1382,6 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_empty(),
             vpid: 0, // Tests don't use VPID
             intercept_pf: false,
-            periodic_exit_interval: None,
             next_periodic_exit_count: u64::MAX,
         })
     }
@@ -1603,8 +1601,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent
             vpid: allocated_vpid,
             intercept_pf: false,
-            periodic_exit_interval: parent_state.periodic_exit_interval,
-            next_periodic_exit_count: parent_state.periodic_exit_interval.unwrap_or(u64::MAX),
+            // Reset target tracking; update_mtf_state recomputes on first exit.
+            next_periodic_exit_count: u64::MAX,
         })
     }
 }

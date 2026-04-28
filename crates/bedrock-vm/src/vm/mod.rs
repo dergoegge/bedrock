@@ -38,11 +38,6 @@ pub const DEFAULT_MEMORY_SIZE: usize = 4 * 1024 * 1024 * 1024;
 /// Default TSC frequency (2995.2 MHz) for deterministic time emulation.
 pub use bedrock_vmx::DEFAULT_TSC_FREQUENCY;
 
-/// Default retired-instruction interval for periodic in-kernel exits.
-/// The PMU's instructions-retired counter is programmed to overflow every
-/// N guest instructions, generating a hardware-driven VM-exit.
-pub const DEFAULT_PERIODIC_EXIT_INTERVAL: u64 = 1_000_000;
-
 /// A userspace handle to a bedrock VM.
 ///
 /// This struct owns the VM file descriptor and provides access to VM operations.
@@ -149,12 +144,7 @@ impl Vm {
             .write(true)
             .open(BEDROCK_DEVICE_PATH)?;
 
-        Self::create_from_device(
-            &device,
-            memory_size,
-            tsc_frequency,
-            DEFAULT_PERIODIC_EXIT_INTERVAL,
-        )
+        Self::create_from_device(&device, memory_size, tsc_frequency)
     }
 
     /// Create a new root VM with the default memory size (16 MB).
@@ -163,14 +153,10 @@ impl Vm {
     }
 
     /// Create a new root VM from an already-opened bedrock device.
-    ///
-    /// `periodic_exit_interval` programs the PMU's instructions-retired counter
-    /// to overflow every N retired guest instructions; pass 0 to disable.
     pub fn create_from_device(
         device: &File,
         memory_size: usize,
         tsc_frequency: u64,
-        periodic_exit_interval: u64,
     ) -> io::Result<Self> {
         if memory_size == 0 {
             return Err(io::Error::new(
@@ -188,7 +174,6 @@ impl Vm {
         let config = CreateVmConfig {
             memory_size: memory_size as u64,
             tsc_frequency,
-            periodic_exit_interval,
         };
 
         let fd = unsafe {

@@ -110,16 +110,14 @@ fn next_stop_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
 ///
 /// `next_periodic_exit_count` is the closest of:
 ///
-/// - The next periodic boundary (multiple of `periodic_exit_interval`), so
-///   the hypervisor gets a regular forced-exit cadence.
 /// - The next pending APIC timer deadline (converted to instruction count).
 ///   This makes timer interrupts arrive at exactly the right instruction
 ///   instead of being delayed until the next natural exit.
 /// - The configured `stop_at_tsc` threshold, so the VM stops on exactly the
 ///   requested TSC instead of at the next natural exit past it.
 ///
-/// Whenever the chosen target changes (boundary advanced, timer deadline
-/// configured/expired/advanced by MWAIT, etc.), the sampling counter is
+/// Whenever the chosen target changes (timer deadline configured/expired/
+/// advanced by MWAIT, stop threshold set, etc.), the sampling counter is
 /// re-armed so its next overflow fires `target - count - MARGIN` events
 /// from now — putting the PMI at exactly `target - MARGIN`.
 pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
@@ -136,15 +134,10 @@ pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
         None => false,
     };
 
-    // Pick the next forced-exit instruction count: closest of the periodic
-    // boundary and the next pending timer deadline. u64::MAX disables forced
-    // exits when neither source is active.
+    // Pick the next forced-exit instruction count: closest of the pending
+    // APIC timer deadline and the configured stop_at_tsc threshold.
+    // u64::MAX disables forced exits when neither source is active.
     let mut new_next = u64::MAX;
-    if let Some(interval) = ctx.state().periodic_exit_interval {
-        // Smallest multiple of interval strictly greater than count.
-        let periodic_next = count - (count % interval) + interval;
-        new_next = new_next.min(periodic_next);
-    }
     if let Some(timer_count) = next_timer_exit_count(ctx) {
         if timer_count > count {
             new_next = new_next.min(timer_count);

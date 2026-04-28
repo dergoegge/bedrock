@@ -22,11 +22,13 @@ use crate::vmx::traits::InstructionCounter;
 ///   provide a deterministic cumulative retired-instruction count. Driven by
 ///   the PMU's instructions-retired counter without PMI overhead, so the value
 ///   read at any natural VM-exit is exact and reproducible across runs.
-/// - `sample_event`: optional sampling counter with non-zero sample_period.
-///   Programs the PMU to overflow every N events; the resulting PMI is
-///   delivered as an external-interrupt VM-exit (with skid). Created only
-///   when `periodic_exit_interval > 0`. Never read — it's only there to
-///   force the periodic exits.
+/// - `sample_event`: sampling counter with a non-zero sample_period. Its
+///   PMU overflow generates a PMI which (with external-interrupt exiting
+///   set) causes a VM-exit at the overflow point — used by the hypervisor
+///   to land MTF on a precise retired-instruction target (APIC timer
+///   deadline, stop-at-tsc threshold, etc.). Created at construction with
+///   a seed period; `realign_sampling()` re-arms it to fire at the chosen
+///   target whenever `update_mtf_state` installs a new one. Never read.
 ///
 /// The counters are created on the current CPU — userspace must pin the
 /// thread to the desired CPU before creating the VM. On hybrid CPUs, this
