@@ -6,6 +6,7 @@
 , kernel
 , rustToolchain
 , clippy ? false
+, nestedVirt ? false
 }:
 
 let
@@ -44,7 +45,8 @@ llvmPackages.stdenv.mkDerivation {
     make \
       KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build \
       LLVM=1 \
-      ${pkgs.lib.optionalString clippy "CLIPPY=1 KRUSTFLAGS='-D warnings'"}
+      ${pkgs.lib.optionalString clippy "CLIPPY=1 KRUSTFLAGS='-D warnings'"} \
+      ${pkgs.lib.optionalString nestedVirt "NESTED_VIRT=1"}
   '';
 
   installPhase = ''

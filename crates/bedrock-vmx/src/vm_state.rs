@@ -102,18 +102,24 @@ pub const FEEDBACK_BUFFER_MAX_PAGES: usize = 256;
 /// Maximum number of feedback buffers per VM.
 pub const MAX_FEEDBACK_BUFFERS: usize = 16;
 
-/// Pre-boundary margin (in retired guest instructions) for periodic exits.
+/// Pre-boundary margin (in retired guest instructions) for precise
+/// instruction-count landing.
 ///
-/// The PMU sampling counter's overflow period is set to
-/// `periodic_exit_interval - PERIODIC_EXIT_MARGIN` so the PMI fires this many
-/// instructions before the desired boundary (absorbing PMU skid). MTF is then
-/// enabled by `update_mtf_state` while we're inside this window so single
-/// stepping lands the guest exactly on the boundary instruction.
+/// The PMU sampling counter's overflow period is sized so the PMI fires
+/// this many instructions before the desired target. MTF is then enabled
+/// by `update_mtf_state` while we're inside this window so single stepping
+/// lands the guest exactly on the target instruction.
 ///
-/// Sized to cover ROB-drain + NMI delivery skid on every published Intel
-/// client core: Raptor/Golden Cove ROB = 512, plus tens of instructions of
-/// NMI latency. 2048 leaves comfortable headroom; smaller values (e.g., 256)
-/// occasionally miss on deep-ROB cores and produce divergent runs.
+/// Default 2048 covers ROB-drain + NMI delivery skid on every published
+/// Intel client core (Raptor/Golden Cove ROB = 512, plus tens of
+/// instructions of NMI latency). Each margin instruction costs one MTF
+/// VM-exit; under nested virt every VM-exit traps to L0 and that becomes
+/// prohibitively expensive — pass `NESTED_VIRT=1` to the kernel module
+/// build to drop the margin to 64, the same way `KERNEL_LOG=1` toggles
+/// kernel logging.
+#[cfg(nested_virt)]
+pub const PERIODIC_EXIT_MARGIN: u64 = 64;
+#[cfg(not(nested_virt))]
 pub const PERIODIC_EXIT_MARGIN: u64 = 2048;
 
 /// Information about a registered feedback buffer.

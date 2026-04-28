@@ -10,3 +10,9 @@ bedrock-y := bedrock_main.o helpers.o vmx_support.o
 ifdef KERNEL_LOG
 KBUILD_RUSTFLAGS += --cfg kernel_log
 endif
+
+# Tune PERIODIC_EXIT_MARGIN down for nested-virt hosts where every MTF
+# margin step is an L1 → L0 VM-exit (pass NESTED_VIRT=1 to make).
+ifdef NESTED_VIRT
+KBUILD_RUSTFLAGS += --cfg nested_virt
+endif

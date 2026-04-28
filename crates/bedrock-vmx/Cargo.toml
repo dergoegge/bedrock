@@ -14,3 +14,9 @@ bedrock-ept = { path = "../bedrock-ept", default-features = false }
 default = ["cargo"]
 cargo = ["bedrock-log/cargo", "bedrock-ept/cargo"]
 test-utils = []
+
+[lints.rust]
+# `nested_virt` is set by the kernel-module Kbuild (NESTED_VIRT=1 → --cfg
+# nested_virt) to drop PERIODIC_EXIT_MARGIN for nested-virt hosts. It's
+# never set in cargo builds; declare it so cargo doesn't warn.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(nested_virt)"] }

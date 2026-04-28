@@ -43,6 +43,14 @@
         inherit pkgs kernel rustToolchain;
       };
 
+      # Variant built with NESTED_VIRT=1 — drops PERIODIC_EXIT_MARGIN to 64
+      # so MTF margin-stepping doesn't drown the run in L1 → L0 VM-exits when
+      # bedrock itself runs inside a NixOS test VM.
+      bedrockModuleNested = import ./nix/module.nix {
+        inherit pkgs kernel rustToolchain;
+        nestedVirt = true;
+      };
+
       bedrockModuleClippy = import ./nix/module.nix {
         inherit pkgs kernel rustToolchain;
         clippy = true;
@@ -111,9 +119,12 @@
         };
 
         # Integration tests in NixOS VM: nix run .#test
+        # Uses the NESTED_VIRT-tuned module since the NixOS test VM is itself
+        # running under KVM, so bedrock here runs as L1 in nested virt.
         test = let
           testDriver = import ./nix/tests.nix {
-            inherit pkgs bedrockModule guestKernel guestInitrd podmanInitrd;
+            inherit pkgs guestKernel guestInitrd podmanInitrd;
+            bedrockModule = bedrockModuleNested;
             bedrockKernel = kernel;
             bedrockCli = userland.bedrock-cli;
             bedrockDeterminism = userland.bedrock-determinism;
