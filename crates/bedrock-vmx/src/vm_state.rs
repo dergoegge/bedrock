@@ -1262,7 +1262,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             pending_dbg_exceptions,
             interruptibility_state,
             cow_page_count: 0,
-            _padding: [0; 26],
+            instructions: self.last_instruction_count,
+            _padding: [0; 25],
         };
 
         // Write entry to buffer

@@ -49,8 +49,12 @@ def exit_name(code):
 def fmt_entry(e, prefix=""):
     reason = exit_name(e["exit_reason"])
     rip = hex(e["rip"])
+    head = f"{prefix}tsc={e['tsc']}"
+    if "instructions" in e:
+        head += f"  instr={e['instructions']}"
+    head += f"  exit={e['exit_reason']}({reason})  rip={rip}"
     parts = [
-        f"{prefix}tsc={e['tsc']}  exit={e['exit_reason']}({reason})  rip={rip}",
+        head,
         f"{prefix}  eq={e['exit_qualification']}  rflags={hex(e['rflags'])}",
     ]
     # Show registers
@@ -195,15 +199,26 @@ def main():
         print(fmt_entry(b, prefix="    "))
         print()
 
-        # TSC delta analysis
+        # Delta analysis vs the previous matching exit.
+        # Prefer the `instructions` field when present (strict retired-guest
+        # instruction count); fall back to TSC otherwise (which includes idle
+        # jumps from MWAIT/HLT and is therefore looser).
         if diverge_idx > 0:
             prev = ref_entries[diverge_idx - 1]
-            ref_delta = r["tsc"] - prev["tsc"]
-            bad_delta = b["tsc"] - prev["tsc"]
-            print(f"  TSC delta from previous exit:")
-            print(f"    REF: +{ref_delta} instructions")
-            print(f"    BAD: +{bad_delta} instructions")
-            print(f"    Shift: {bad_delta - ref_delta:+d} instructions")
+            if "instructions" in r and "instructions" in b and "instructions" in prev:
+                ref_delta = r["instructions"] - prev["instructions"]
+                bad_delta = b["instructions"] - prev["instructions"]
+                label = "Instruction delta from previous exit"
+                unit = "instructions"
+            else:
+                ref_delta = r["tsc"] - prev["tsc"]
+                bad_delta = b["tsc"] - prev["tsc"]
+                label = "TSC delta from previous exit"
+                unit = "cycles"
+            print(f"  {label}:")
+            print(f"    REF: +{ref_delta} {unit}")
+            print(f"    BAD: +{bad_delta} {unit}")
+            print(f"    Shift: {bad_delta - ref_delta:+d} {unit}")
             print()
 
     # Determine TSC window for non-determ exit search

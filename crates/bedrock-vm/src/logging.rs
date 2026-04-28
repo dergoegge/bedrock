@@ -112,10 +112,16 @@ pub struct LogEntry {
     /// Number of COW pages at time of exit.
     pub cow_page_count: u32,
 
-    // Padding (208 bytes)
+    // Instruction counter (8 bytes)
+    /// Total retired guest instructions at time of exit. Unlike `tsc` (which
+    /// includes idle TSC jumps from MWAIT/HLT), this is a strict monotonic
+    /// count of instructions actually executed by the guest.
+    pub instructions: u64,
+
+    // Padding (200 bytes)
     /// Padding to reach 512 bytes.
     #[serde(skip)]
-    pub _padding: [u64; 26],
+    pub _padding: [u64; 25],
 }
 
 impl LogEntry {
