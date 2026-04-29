@@ -278,7 +278,21 @@ where
     // The perf_global_ctrl values and entry/exit control bits are constant
     // for the entire run loop — write them once to avoid per-exit VMCS
     // operations (each VMWRITE traps to L0 in nested virt).
-    if let Some((guest_val, host_val)) = ctx.state().instruction_counter.perf_global_ctrl_values() {
+    //
+    // When PEBS is registered, OR in bit 0 (`IA32_PMC0` enable) on the guest
+    // side: PEBS uses PMC0 as its event counter, and the host's
+    // `IA32_PERF_GLOBAL_CTRL` snapshot the IC reads in `prepare()` doesn't
+    // include that bit. Without this, `register_pebs_page`'s one-shot OR
+    // gets clobbered the next time `run_loop` is entered, leaving PMC0
+    // disabled in the guest — PEBS never overflows, no record write, no
+    // EPT violation.
+    let pebs_registered = ctx.state().pebs_state.is_some();
+    if let Some((mut guest_val, host_val)) =
+        ctx.state().instruction_counter.perf_global_ctrl_values()
+    {
+        if pebs_registered {
+            guest_val |= 1;
+        }
         let _ = ctx
             .state()
             .vmcs
@@ -322,6 +336,21 @@ where
         let msr = machine.msr_access();
         let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, ctx.state().kernel_gs_base);
 
+        // Swap PEBS PMU MSRs around guest execution if a precise exit is
+        // armed for this iteration. IA32_DS_AREA has no dedicated guest VMCS
+        // field, so we save the host value, write the guest value, run the
+        // guest, then restore the host value. `pebs_armed_this_iter` is
+        // captured before VM-entry because the exit handler may clear
+        // `armed_action`.
+        let pebs_armed_this_iter = ctx
+            .state()
+            .pebs_state
+            .as_deref()
+            .is_some_and(|p| p.armed_action.is_some());
+        if pebs_armed_this_iter {
+            pebs_pre_vm_entry(ctx, msr);
+        }
+
         // Enter the guest.
         // We need to split the borrow here to get mutable access to vmx_ctx
         // while keeping immutable access to vmcs.
@@ -329,6 +358,15 @@ where
         // SAFETY: Caller guarantees VMCS is properly configured and loaded,
         // interrupts are disabled, and preemption cannot migrate us.
         let run_result = unsafe { runner.run(&mut state.vmx_ctx, &state.vmcs) };
+
+        // Restore host PMU MSRs immediately after VM exit if we loaded our
+        // PEBS state on entry. This must precede any other host-side MSR
+        // reads (e.g. KERNEL_GS_BASE below) only in spirit — the order
+        // doesn't matter for correctness, but doing PMU first matches the
+        // load order to keep the diff symmetric.
+        if pebs_armed_this_iter {
+            pebs_post_vm_exit(ctx, msr);
+        }
 
         // Save guest KERNEL_GS_BASE immediately after VM exit, before any IRQ
         // window can let a host interrupt handler overwrite the MSR. Then

@@ -21,6 +21,64 @@ type ExitStatsBox = HeapBox<AllExitStats>;
 pub type FeedbackBuffersArray = [Option<FeedbackBufferInfo>; MAX_FEEDBACK_BUFFERS];
 pub type FeedbackBuffersBox = VmallocBox<FeedbackBuffersArray>;
 
+/// PEBS VM-entry MSR-load list entries, in fixed order. `pebs_pre_vm_entry`
+/// writes the value field of each entry; the index field is set once at
+/// VmState construction by `init_pebs_entry_msr_indexes`.
+///
+/// Entry 0 is `IA32_FIXED_CTR0` so that armed iterations preserve the
+/// instruction-counter's auto-reload semantics: while armed, the entry-load
+/// list is repointed from the instruction counter's single-entry page to this
+/// page, and entry 0's value is filled from the instruction counter's saved
+/// value before each VM-entry. The VM-exit MSR-store list still points at the
+/// instruction counter's page, so that page remains the single source of
+/// truth for the counter value.
+///
+/// `IA32_PERF_GLOBAL_STATUS_RESET` clears any lingering overflow bits before
+/// PEBS is re-enabled — without this the architecture flushes a buffered
+/// record on every re-enable using stale state, which makes PEBS fire on
+/// effectively every VM-entry instead of after the configured `delta`.
+/// It must precede `IA32_PEBS_ENABLE` in the list.
+///
+/// Entry 1 and the last entry write `IA32_PERF_GLOBAL_CTRL`. The MSR-load
+/// area runs *after* the VMCS-mediated `IA32_PERF_GLOBAL_CTRL` load (SDM
+/// Vol 3C 28.3.3), so without this, when entries 2–4 reconfigure
+/// `IA32_FIXED_CTR0` / `IA32_FIXED_CTR_CTRL` / `MSR_PEBS_DATA_CFG`, the
+/// counter is already enabled — that "reconfiguring a running counter"
+/// condition disqualifies PDist (SDM Vol 3B 21.9.6) and we want to play
+/// it safe regardless. Wrapping the reconfig with explicit disable /
+/// re-enable writes satisfies the rule.
+///
+/// The PEBS counter is `IA32_FIXED_CTR0`; the IC is on `IA32_PMC0`. Entry
+/// 0 preserves the IC value across PEBS-armed iterations using the
+/// full-width-write alias `IA32_A_PMC0` — writes via plain `IA32_PMC0`
+/// truncate to 32 bits and sign-extend from bit 31, which garbles the
+/// counter once it exceeds ~2.1 billion (SDM Vol 3B 21.2.8).
+pub const PEBS_ENTRY_MSR_INDEXES: [u32; 9] = [
+    msr::IA32_A_PMC0,
+    msr::IA32_PERF_GLOBAL_CTRL,
+    msr::IA32_FIXED_CTR0,
+    msr::IA32_FIXED_CTR_CTRL,
+    msr::MSR_PEBS_DATA_CFG,
+    msr::IA32_DS_AREA,
+    msr::IA32_PERF_GLOBAL_STATUS_RESET,
+    msr::IA32_PEBS_ENABLE,
+    msr::IA32_PERF_GLOBAL_CTRL,
+];
+
+/// Pre-populate the MSR-index fields of a VM-entry MSR-load list page. Each
+/// entry is 16 bytes — u32 index, u32 reserved, u64 value (SDM Table 25-15).
+/// The value fields stay zero; they're filled by `pebs_pre_vm_entry`.
+fn init_pebs_entry_msr_indexes(page_virt: u64) {
+    let base = page_virt as *mut u32;
+    for (i, &msr_index) in PEBS_ENTRY_MSR_INDEXES.iter().enumerate() {
+        // SAFETY: page is freshly allocated, page-aligned, 4KB; we touch
+        // bytes 0..(5 * 16) = 0..80, well within the page.
+        unsafe {
+            core::ptr::write(base.add(i * 4), msr_index);
+        }
+    }
+}
+
 /// Allocate feedback buffers directly on the heap, zeroed (all None).
 #[cfg(feature = "cargo")]
 fn box_feedback_buffers_empty() -> FeedbackBuffersBox {
@@ -353,6 +411,23 @@ pub struct AllExitStats {
     pub irq_window_cycles: u64,
     /// Copy-on-write page allocation statistics.
     pub cow: CowStats,
+    /// `arm_precise_exit` returned `BelowMinDelta` — the requested target
+    /// is within `PEBS_MIN_DELTA + PEBS_MARGIN` of the current count, so
+    /// PEBS doesn't arm and MTF margin stepping is expected to land the
+    /// boundary instead.
+    pub pebs_arm_below_min_delta: u64,
+    /// `arm_precise_exit` returned `AlreadyPast` — `target_tsc < current_tsc`.
+    pub pebs_arm_already_past: u64,
+    /// Iterations that VM-entered with `pebs.armed_action.is_some()` and
+    /// returned without consuming the arming via a PEBS-induced exit. Each
+    /// increment is one iter where PEBS was loaded but the counter didn't
+    /// overflow before some other VM-exit happened.
+    pub pebs_armed_iter_no_fire: u64,
+    /// `check_apic_timer` fired the timer with `emulated_tsc > deadline`
+    /// (strictly greater) — the precise PEBS+MTF boundary path was skipped
+    /// and the timer is delivered late on the current deterministic exit.
+    /// Diagnostic for silent PEBS misses.
+    pub apic_timer_late_inject: u64,
 }
 
 impl AllExitStats {
@@ -514,6 +589,21 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     pub ept: EptPageTable<V::P>,
     /// MSR bitmap page (4KB, controls MSR access interception).
     pub msr_bitmap: V::P,
+    /// VM-exit MSR-load list page (4KB). Pre-populated with a single entry —
+    /// `IA32_PEBS_ENABLE = 0` — so the CPU atomically disables PEBS on VM-exit.
+    /// This drops any PEBS record that would otherwise skid past VM-exit and
+    /// fault while writing the host's now-stale `IA32_DS_AREA` mapping.
+    /// The VMCS exit-load count stays at 0 until `register_pebs_page` arms it.
+    pub pebs_exit_msr_load_page: V::P,
+    /// VM-entry MSR-load list page (4KB). Updated by `pebs_pre_vm_entry` to
+    /// hold the per-arming PEBS values; the CPU loads them atomically with
+    /// VM-entry. Doing the writes via the load list (rather than WRMSR in
+    /// host context) avoids a window where `IA32_DS_AREA` points at a guest
+    /// VA in host mode — re-enabling `IA32_PEBS_ENABLE` in that window
+    /// flushes any buffered PEBS record using the host's page tables and
+    /// SMAP-faults on the user VA. Loaded only when the entry-load count is
+    /// nonzero (set by `pebs_pre_vm_entry`, cleared by `pebs_post_vm_exit`).
+    pub pebs_entry_msr_load_page: V::P,
     /// Serial output buffer page (4KB) for guest console output.
     pub serial_buffer_page: V::P,
     /// Serial line TSC metadata page (4KB) for per-line timestamps.
@@ -598,6 +688,36 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// Used to skip interrupt injection after non-deterministic exits (e.g., ExternalInterrupt)
     /// where the stale emulated_tsc could cause incorrect timer behavior.
     pub last_exit_deterministic: bool,
+    /// Skid of the most recent PEBS-induced EPT-violation exit, in TSC ticks
+    /// (= retired guest instructions). Computed as
+    /// `emulated_tsc - armed_target_tsc` at handle_pebs_precise_exit time
+    /// and consumed by `write_log_entry`. A non-zero value indicates the
+    /// PEBS exit landed past its intended target instruction; in
+    /// architecturally-precise PEBS this should be 0 or 1. Stale value
+    /// outside the EPT_VIOLATION_PEBS log entry that captured it — the
+    /// log writer resets it to 0 after recording.
+    pub last_pebs_skid: i64,
+    /// Guest INST_RETIRED gain between the most recent PEBS arming and the
+    /// fire that produced `last_pebs_skid`. Subtracting the encoded
+    /// `target - current` delta gives the actual hardware skid; comparing
+    /// against `last_pebs_tsc_offset_delta` says whether emulated_tsc
+    /// advanced via guest instructions or via HLT/MWAIT clamps.
+    pub last_pebs_inst_delta: i64,
+    /// Tsc_offset gain between the most recent PEBS arming and fire. For a
+    /// well-behaved PEBS exit this should be 0 — emulated_tsc only advances
+    /// via HLT/MWAIT, and PEBS-induced EPT violations don't follow idle.
+    pub last_pebs_tsc_offset_delta: i64,
+    /// Run-loop iterations the firing arming persisted across. Reset to 0
+    /// in `arm_precise_exit`'s Armed path. A non-zero value at fire time
+    /// indicates the firing iter used a stale (multi-iter) arming.
+    pub last_pebs_iters_since_arm: u32,
+    /// `target_tsc - current_tsc` at the time of the most recent
+    /// successful arming — i.e. the requested distance to the precise
+    /// exit, in retired guest instructions. Useful for diagnosing skid
+    /// outliers: short deltas land in the Reduced-Skid regime, long
+    /// deltas in PDist; correlating skid against this value separates
+    /// regime-driven outliers from architectural ones.
+    pub last_pebs_arm_delta: u64,
     /// Feedback buffers registered by guest via hypercall (up to MAX_FEEDBACK_BUFFERS).
     /// Used for efficient fuzzing feedback collection (e.g., coverage bitmap).
     /// Guest specifies buffer index (0-15) in RDX when registering.
@@ -611,6 +731,17 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// The #PF is logged and reinjected so the guest handles it normally.
     /// Used for determinism analysis to observe spurious page faults.
     pub intercept_pf: bool,
+    /// Per-VM PEBS state for precise VM exits. None when the host CPU does not
+    /// support EPT-friendly PEBS or when the feature has not been initialized
+    /// for this VM. Boxed to avoid bloating the stack-resident `VmState`.
+    /// See `crates/bedrock-vmx/src/exits/pebs.rs` and SDM Vol 3B Section 21.9.5.
+    pub pebs_state: Option<HeapBox<PebsState>>,
+    /// Whether the host CPU advertises the prerequisites for EPT-friendly
+    /// PEBS — `IA32_PERF_CAPABILITIES.PEBS_BASELINE = 1` and `PEBS_FMT >= 4`.
+    /// Cached at construction so exit handlers can gate the precise-exit
+    /// hypercall without an extra MSR read (which would itself `#GP` on
+    /// CPUs that don't implement `IA32_PERF_CAPABILITIES`).
+    pub pebs_supported: bool,
     /// Logical CPU this VM most recently ran on, or `None` before the first
     /// run-loop entry. Used to detect cross-CPU migration between ioctls.
     ///
@@ -632,6 +763,8 @@ pub enum VmStateError<E> {
     EptCreation(E),
     /// MSR bitmap allocation failed.
     MsrBitmapAlloc,
+    /// PEBS VM-exit MSR-load page allocation failed.
+    PebsExitMsrLoadAlloc,
     /// XSAVE area page allocation failed.
     XsavePageAlloc,
     /// Serial buffer page allocation failed.
@@ -683,6 +816,36 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         unsafe {
             core::ptr::write_bytes(ptr, 0xFF, PAGE_SIZE);
         }
+
+        // Allocate the PEBS VM-exit MSR-load page and pre-populate one entry —
+        // `IA32_PEBS_ENABLE = 0`. The CPU reads this list on every VM-exit
+        // when `VmExitMsrLoadCount > 0`. We only set the count > 0 once a
+        // PEBS scratch page has been registered, so this page is dormant for
+        // VMs that never use precise exits.
+        // Intel SDM Vol 3C Section 25.7.2 (VM-exit MSR areas), Table 25-15.
+        let pebs_exit_msr_load_page = machine
+            .kernel()
+            .alloc_zeroed_page()
+            .ok_or(VmStateError::PebsExitMsrLoadAlloc)?;
+        // Layout per SDM Table 25-15: msr_index (u32), reserved (u32), value (u64).
+        let entry_ptr = pebs_exit_msr_load_page.virtual_address().as_u64() as *mut u32;
+        // SAFETY: page is freshly allocated, zero-initialized, page-aligned;
+        // writing 16 bytes at offset 0 is within bounds.
+        unsafe {
+            core::ptr::write(entry_ptr, msr::IA32_PEBS_ENABLE);
+            // Bytes 4..8 stay zero (reserved). Bytes 8..16 stay zero (value = 0).
+        }
+
+        // Allocate the VM-entry MSR-load page and pre-populate the MSR-index
+        // fields for the five PEBS-related MSRs we swap on each arming. The
+        // value fields stay zero here; `pebs_pre_vm_entry` writes the actual
+        // per-arming values just before VM-entry. Same SDM reference as the
+        // exit-load page above (Section 25.7.2).
+        let pebs_entry_msr_load_page = machine
+            .kernel()
+            .alloc_zeroed_page()
+            .ok_or(VmStateError::PebsExitMsrLoadAlloc)?;
+        init_pebs_entry_msr_indexes(pebs_entry_msr_load_page.virtual_address().as_u64());
 
         // Enable passthrough (no VM exit) for MSRs that have dedicated VMCS
         // guest state fields. Hardware automatically saves/restores these at
@@ -770,6 +933,18 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             0,
         );
 
+        // Detect EPT-friendly PEBS support once at VM construction. Reading
+        // `IA32_PERF_CAPABILITIES` is itself optional — on processors without
+        // the architectural PMU, the MSR `#GP`s and `read_msr` returns `Err`,
+        // which we treat as "not supported". Requires
+        // `PEBS_BASELINE = 1` (bit 14) and `PEBS_FMT >= 4` (bits 11:8).
+        // See SDM Vol 3B Section 21.8.
+        let pebs_supported = machine
+            .msr_access()
+            .read_msr(msr::IA32_PERF_CAPABILITIES)
+            .map(|v| (v >> 14) & 1 != 0 && ((v >> 8) & 0xF) >= 4)
+            .unwrap_or(false);
+
         vmcs.setup(ept.eptp(), Some(msr_bitmap.physical_address()), &host_state)
             .map_err(VmStateError::VmcsSetup)?;
 
@@ -790,6 +965,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             gprs: GeneralPurposeRegisters::default(),
             ept,
             msr_bitmap,
+            pebs_exit_msr_load_page,
+            pebs_entry_msr_load_page,
             serial_buffer_page,
             serial_tsc_page,
             serial_len: 0,
@@ -825,9 +1002,16 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             exit_stats: heap_box(AllExitStats::default()),
             last_checkpoint_idx: 0,
             last_exit_deterministic: true,
+            last_pebs_skid: 0,
+            last_pebs_inst_delta: 0,
+            last_pebs_tsc_offset_delta: 0,
+            last_pebs_iters_since_arm: 0,
+            last_pebs_arm_delta: 0,
             feedback_buffers: box_feedback_buffers_empty(),
             vpid,
             intercept_pf: false,
+            pebs_state: None,
+            pebs_supported,
             last_cpu: None,
         })
     }
@@ -1275,8 +1459,22 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             pending_dbg_exceptions,
             interruptibility_state,
             cow_page_count: 0,
-            _padding: [0; 26],
+            pebs_skid: self.last_pebs_skid,
+            pebs_inst_delta: self.last_pebs_inst_delta,
+            pebs_tsc_offset_delta: self.last_pebs_tsc_offset_delta,
+            pebs_iters_since_arm: self.last_pebs_iters_since_arm,
+            pebs_arm_delta: self.last_pebs_arm_delta,
+            _padding: [0; 21],
         };
+        // Consume the PEBS diagnostics: only the EPT_VIOLATION_PEBS log
+        // entry that captured them should report non-zero values;
+        // subsequent exits would otherwise show stale data until the next
+        // PEBS exit.
+        self.last_pebs_skid = 0;
+        self.last_pebs_inst_delta = 0;
+        self.last_pebs_tsc_offset_delta = 0;
+        self.last_pebs_iters_since_arm = 0;
+        self.last_pebs_arm_delta = 0;
 
         // Write entry to buffer
         // SAFETY: ptr is valid for 1MB, entry_count < MAX_LOG_ENTRIES.
@@ -1323,6 +1521,12 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         let host_xsave_page = kernel
             .alloc_zeroed_page()
             .ok_or("Host XSAVE alloc failed")?;
+        let pebs_exit_msr_load_page = kernel
+            .alloc_zeroed_page()
+            .ok_or("PEBS exit MSR load page alloc failed")?;
+        let pebs_entry_msr_load_page = kernel
+            .alloc_zeroed_page()
+            .ok_or("PEBS entry MSR load page alloc failed")?;
 
         Ok(Self {
             vmcs,
@@ -1330,6 +1534,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             gprs: GeneralPurposeRegisters::default(),
             ept,
             msr_bitmap,
+            pebs_exit_msr_load_page,
+            pebs_entry_msr_load_page,
             serial_buffer_page,
             serial_tsc_page,
             serial_len: 0,
@@ -1364,9 +1570,16 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             exit_stats: heap_box(AllExitStats::default()),
             last_checkpoint_idx: 0,
             last_exit_deterministic: true,
+            last_pebs_skid: 0,
+            last_pebs_inst_delta: 0,
+            last_pebs_tsc_offset_delta: 0,
+            last_pebs_iters_since_arm: 0,
+            last_pebs_arm_delta: 0,
             feedback_buffers: box_feedback_buffers_empty(),
             vpid: 0, // Tests don't use VPID
             intercept_pf: false,
+            pebs_state: None,
+            pebs_supported: false,
             last_cpu: None,
         })
     }
@@ -1412,6 +1625,26 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         unsafe {
             core::ptr::copy_nonoverlapping(parent_bitmap_ptr, bitmap_ptr, PAGE_SIZE);
         }
+
+        // Allocate the PEBS VM-exit MSR-load page. Forks start fresh — each
+        // forked VM gets its own page with the same `IA32_PEBS_ENABLE = 0`
+        // entry pre-populated. Forks don't inherit `pebs_state` so the VMCS
+        // exit-load count stays 0 until the fork registers a scratch page.
+        let pebs_exit_msr_load_page = machine
+            .kernel()
+            .alloc_zeroed_page()
+            .ok_or(VmStateError::PebsExitMsrLoadAlloc)?;
+        let entry_ptr = pebs_exit_msr_load_page.virtual_address().as_u64() as *mut u32;
+        // SAFETY: page is freshly allocated and zero-initialized; writing 4 bytes at
+        // offset 0 stays within the page.
+        unsafe {
+            core::ptr::write(entry_ptr, msr::IA32_PEBS_ENABLE);
+        }
+        let pebs_entry_msr_load_page = machine
+            .kernel()
+            .alloc_zeroed_page()
+            .ok_or(VmStateError::PebsExitMsrLoadAlloc)?;
+        init_pebs_entry_msr_indexes(pebs_entry_msr_load_page.virtual_address().as_u64());
 
         // Allocate serial buffer page (4KB, zeroed)
         let serial_buffer_page = machine
@@ -1549,6 +1782,8 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             gprs: parent_state.gprs, // Copy GPRs from parent
             ept,
             msr_bitmap,
+            pebs_exit_msr_load_page,
+            pebs_entry_msr_load_page,
             serial_buffer_page,
             serial_tsc_page,
             serial_len: 0,
@@ -1583,9 +1818,19 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             exit_stats: heap_box(AllExitStats::default()), // Forked VMs start with fresh stats
             last_checkpoint_idx: 0, // Forked VMs start checkpoint tracking fresh
             last_exit_deterministic: true,
+            last_pebs_skid: 0,
+            last_pebs_inst_delta: 0,
+            last_pebs_tsc_offset_delta: 0,
+            last_pebs_iters_since_arm: 0,
+            last_pebs_arm_delta: 0,
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent
             vpid: allocated_vpid,
             intercept_pf: false,
+            // PEBS precise-exit state is per-VM and is not inherited by forked
+            // VMs. Forks start without precise exits armed; if the user wants
+            // them, they re-arm after the fork.
+            pebs_state: None,
+            pebs_supported: parent_state.pebs_supported,
             last_cpu: None,
         })
     }

@@ -37,6 +37,9 @@ struct bedrock_vmx_caps {
 	u64 cr4_fixed1;
 	bool has_ept;
 	bool has_vpid;
+	u8 pebs_format;
+	bool pebs_baseline;
+	bool pebs_trap;
 };
 
 /*
@@ -436,7 +439,9 @@ void bedrock_vcpu_set_capabilities(u32 pin_based, u32 cpu_based, u32 cpu_based2,
 				   u32 vmexit, u32 vmentry,
 				   u64 cr0_fixed0, u64 cr0_fixed1,
 				   u64 cr4_fixed0, u64 cr4_fixed1,
-				   bool has_ept, bool has_vpid)
+				   bool has_ept, bool has_vpid,
+				   u8 pebs_format, bool pebs_baseline,
+				   bool pebs_trap)
 {
 	struct bedrock_vcpu *vcpu = this_cpu_ptr(&bedrock_pcpu_vcpu);
 	vcpu->capabilities.pin_based_exec_ctrl = pin_based;
@@ -450,6 +455,9 @@ void bedrock_vcpu_set_capabilities(u32 pin_based, u32 cpu_based, u32 cpu_based2,
 	vcpu->capabilities.cr4_fixed1 = cr4_fixed1;
 	vcpu->capabilities.has_ept = has_ept;
 	vcpu->capabilities.has_vpid = has_vpid;
+	vcpu->capabilities.pebs_format = pebs_format;
+	vcpu->capabilities.pebs_baseline = pebs_baseline;
+	vcpu->capabilities.pebs_trap = pebs_trap;
 }
 EXPORT_SYMBOL_GPL(bedrock_vcpu_set_capabilities);
 

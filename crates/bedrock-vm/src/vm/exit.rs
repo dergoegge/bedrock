@@ -114,6 +114,7 @@ impl VmExit {
             260 => "VMCALL_SNAPSHOT",
             261 => "VMCALL_FEEDBACK_BUFFER",
             262 => "POOL_EXHAUSTED",
+            263 => "VMCALL_PEBS_PAGE",
             _ => "UNKNOWN",
         }
     }
@@ -132,8 +133,10 @@ impl VmExit {
             61 => ExitKind::Rdseed,
             257 => ExitKind::LogBufferFull,
             // Continuable: preemption timer, need_resched, mwait, monitor,
-            // I/O instruction, pool exhausted
-            52 | 256 | 36 | 39 | 30 | 262 => ExitKind::Continue,
+            // I/O instruction, pool exhausted, PEBS scratch-page registration
+            // (no userspace action needed — bookkeeping is entirely between
+            // the guest and the kernel module).
+            52 | 256 | 36 | 39 | 30 | 262 | 263 => ExitKind::Continue,
             reason => ExitKind::UnhandledExit { reason },
         }
     }

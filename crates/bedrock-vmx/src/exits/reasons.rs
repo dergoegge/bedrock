@@ -194,6 +194,9 @@ pub enum ExitReason {
     /// Page pool exhausted during COW fault handling.
     /// Synthetic exit to allow refilling the page pool in sleepable context.
     PoolExhausted = 262,
+    /// VMCALL hypercall: PEBS scratch page registered.
+    /// Guest registered a PEBS scratch page via VMCALL with RAX=3.
+    VmcallPebsPage = 263,
 }
 
 /// Error when converting from raw exit reason value.

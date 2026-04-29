@@ -25,6 +25,12 @@ pub mod msr {
     pub const IA32_BIOS_SIGN_ID: u32 = 0x8B;
     /// General purpose performance counter 0.
     pub const IA32_PMC0: u32 = 0xC1;
+    /// Full-width-write alias for `IA32_PMC0`. `WRMSR` to `IA32_PMC0`
+    /// truncates the input to 32 bits and sign-extends from bit 31; writes
+    /// to `IA32_A_PMC0` write all 48 counter bits directly. Available when
+    /// `IA32_PERF_CAPABILITIES.FW_WRITES` (bit 13) is set. See SDM Vol 3B
+    /// Section 21.2.8.
+    pub const IA32_A_PMC0: u32 = 0x4C1;
     /// General purpose performance counter 1.
     pub const IA32_PMC1: u32 = 0xC2;
     /// General purpose performance counter 2.
@@ -120,10 +126,22 @@ pub mod msr {
     /// Last fixed range MTRR for 4K (at 0xF8000).
     pub const IA32_MTRR_FIX4K_F8000: u32 = 0x26F;
 
+    /// PEBS enable. Per-counter bits enabling PEBS record generation when the
+    /// counter overflows. GP counter bits start at bit 0; fixed counter bits
+    /// start at bit 32. See Intel SDM Vol 3B Section 21.9.1, Figure 21-68.
+    pub const IA32_PEBS_ENABLE: u32 = 0x3F1;
+    /// Adaptive PEBS record content selector. Available when
+    /// IA32_PERF_CAPABILITIES.PEBS_BASELINE = 1. See Intel SDM Vol 3B Section
+    /// 21.9.2.3.
+    pub const MSR_PEBS_DATA_CFG: u32 = 0x3F2;
     /// PEBS load latency threshold.
     pub const IA32_PEBS_LD_LAT_THRESHOLD: u32 = 0x3F6;
     /// PEBS frontend.
     pub const IA32_PEBS_FRONTEND: u32 = 0x3F7;
+    /// Debug Store area. Linear address of the DS_BUFFER_MANAGEMENT_AREA used
+    /// by BTS and PEBS to locate the BTS/PEBS buffers and counter reset values.
+    /// See Intel SDM Vol 3B Section 19.6.3.4.
+    pub const IA32_DS_AREA: u32 = 0x600;
     /// Atom core frequency ratios.
     pub const MSR_ATOM_CORE_RATIOS: u32 = 0x66A;
     /// Atom core voltage ID ratios.
@@ -132,6 +150,24 @@ pub mod msr {
     pub const MSR_ATOM_CORE_TURBO_RATIOS: u32 = 0x66C;
     /// Performance capabilities.
     pub const IA32_PERF_CAPABILITIES: u32 = 0x345;
+    /// Performance global status (read-only on most parts; reports overflow
+    /// bits per counter, plus PEBS_BO and CondChg). See SDM Vol 3B 21.4.6.
+    pub const IA32_PERF_GLOBAL_STATUS: u32 = 0x38E;
+    /// Performance global control — per-counter enable bits (bit 0 = PMC0,
+    /// bit 32 = FIXED_CTR0). Both `IA32_PERFEVTSELx.EN` and the
+    /// corresponding bit here must be 1 for the counter to count.
+    pub const IA32_PERF_GLOBAL_CTRL: u32 = 0x38F;
+    /// Performance global status reset — write-1-to-clear for the bits in
+    /// `IA32_PERF_GLOBAL_STATUS`. Used to clear lingering counter-overflow
+    /// state that would otherwise cause the PEBS engine to flush a buffered
+    /// record the moment `IA32_PEBS_ENABLE` is re-asserted.
+    pub const IA32_PERF_GLOBAL_STATUS_RESET: u32 = 0x390;
+    /// Fixed counter 0 (INST_RETIRED.ANY).
+    pub const IA32_FIXED_CTR0: u32 = 0x309;
+    /// Fixed counter 1 (CPU_CLK_UNHALTED.THREAD).
+    pub const IA32_FIXED_CTR1: u32 = 0x30A;
+    /// Fixed counter 2 (CPU_CLK_UNHALTED.REF_TSC).
+    pub const IA32_FIXED_CTR2: u32 = 0x30B;
     /// Fixed counter control.
     pub const IA32_FIXED_CTR_CTRL: u32 = 0x38D;
     /// TSC deadline.

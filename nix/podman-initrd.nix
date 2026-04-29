@@ -20,6 +20,13 @@ let
     installPhase = "mkdir -p $out/bin && cp bedrock-miner $out/bin/";
   };
 
+  bedrockPebsRegister = pkgs.pkgsStatic.stdenv.mkDerivation {
+    name = "bedrock-pebs-register";
+    dontUnpack = true;
+    buildPhase = "$CC -O2 -static -o bedrock-pebs-register ${../scripts/initrd-podman/pebs-register.c}";
+    installPhase = "mkdir -p $out/bin && cp bedrock-pebs-register $out/bin/";
+  };
+
   bitcoinImage = pkgs.dockerTools.pullImage {
     imageName = "docker.io/bitcoin/bitcoin";
     imageDigest = "sha256:2d6c59f5a2209eaf560379eff2a566b6d61fc9bca7852d216bbd799067401091";
@@ -54,6 +61,7 @@ let
     pkgs.podman-compose
     bedrockShutdown
     bedrockMiner
+    bedrockPebsRegister
   ];
 
   # Merged environment — creates a single store path with bin/, sbin/, etc.
@@ -139,6 +147,13 @@ let
     # Create directories needed for containers and networking
     mkdir -p /run/netns /var/run/netns /run/containers/storage /var/lib/cni /var/tmp
 
+    # Register a PEBS scratch page with the hypervisor so precise VM exits
+    # (timer interrupt injection, stop-at-tsc) can trap on EPT writes. The
+    # program registers, then blocks forever to keep the page pinned, so we
+    # background it. Failure is expected outside bedrock; the workload runs
+    # regardless.
+    bedrock-pebs-register &
+
     # Reset podman state
     podman system reset -f 2>/dev/null || true
 
@@ -210,6 +225,7 @@ pkgs.stdenv.mkDerivation {
     # Bedrock utilities at /usr/local/bin (compose.yaml bind-mounts from here)
     ln -sf ${bedrockShutdown}/bin/bedrock-shutdown rootfs/usr/local/bin/bedrock-shutdown
     ln -sf ${bedrockMiner}/bin/bedrock-miner rootfs/usr/local/bin/bedrock-miner
+    ln -sf ${bedrockPebsRegister}/bin/bedrock-pebs-register rootfs/usr/local/bin/bedrock-pebs-register
 
     # SSL certificates
     mkdir -p rootfs/etc/ssl/certs

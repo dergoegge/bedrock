@@ -124,7 +124,7 @@ impl From<u64> for IoQualification {
 }
 
 /// EPT violation exit qualification.
-/// Intel SDM Vol 3C, Table 28-7.
+/// Intel SDM Vol 3C, Table 29-7.
 #[derive(Debug, Clone, Copy)]
 pub struct EptViolationQualification {
     /// Violation was caused by a data read.
@@ -141,6 +141,11 @@ pub struct EptViolationQualification {
     pub executable: bool,
     /// Guest linear-address field is valid.
     pub guest_linear_valid: bool,
+    /// The access was asynchronous to instruction execution and not part of
+    /// event delivery — set for accesses caused by Intel PT trace output, by
+    /// PEBS on processors with the EPT-friendly enhancement, or by user-
+    /// interrupt delivery.
+    pub asynchronous: bool,
 }
 
 impl From<u64> for EptViolationQualification {
@@ -153,6 +158,7 @@ impl From<u64> for EptViolationQualification {
             writable: qual & (1 << 4) != 0,
             executable: qual & (1 << 5) != 0,
             guest_linear_valid: qual & (1 << 7) != 0,
+            asynchronous: qual & (1 << 16) != 0,
         }
     }
 }

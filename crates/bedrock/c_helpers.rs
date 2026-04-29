@@ -41,6 +41,9 @@ pub(crate) struct BedrockVmxCaps {
     pub(crate) cr4_fixed1: u64,
     pub(crate) has_ept: bool,
     pub(crate) has_vpid: bool,
+    pub(crate) pebs_format: u8,
+    pub(crate) pebs_baseline: bool,
+    pub(crate) pebs_trap: bool,
 }
 
 #[allow(improper_ctypes)]
@@ -216,6 +219,9 @@ extern "C" {
         cr4_fixed1: u64,
         has_ept: bool,
         has_vpid: bool,
+        pebs_format: u8,
+        pebs_baseline: bool,
+        pebs_trap: bool,
     );
 
     /// Set VMXON region for the current CPU.

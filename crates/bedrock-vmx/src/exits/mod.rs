@@ -29,6 +29,7 @@ mod interrupts;
 mod io;
 mod misc;
 mod msr;
+mod pebs;
 mod qualifications;
 mod rdrand;
 mod reasons;
@@ -39,6 +40,10 @@ mod vmcall;
 pub use apic::{APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE};
 pub use helpers::{ExitError, ExitHandlerResult};
 pub use interrupts::{inject_pending_interrupt, reinject_vectored_event};
+pub use pebs::{
+    arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, pebs_post_vm_exit,
+    pebs_pre_vm_entry, ArmResult, DsManagementArea, PebsAction, PebsState, PEBS_MIN_DELTA,
+};
 pub use qualifications::{
     CrAccessQualification, EptViolationQualification, IoQualification, RdrandInstructionInfo,
     RdrandOperandSize,
@@ -135,17 +140,27 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         ExitReason::ExternalInterrupt
         | ExitReason::VmxPreemptionTimer
         | ExitReason::ExceptionNmi => true,
-        // Non-APIC EPT violations (COW faults, stale TLB hits) are treated as
-        // non-deterministic — they don't advance the emulated TSC or get logged.
-        // APIC/IOAPIC MMIO EPT violations are deterministic (device emulation).
+        // EPT violations are deterministic when they correspond to a known
+        // emulated event:
+        // - APIC/IOAPIC MMIO accesses (device emulation)
+        // - PEBS-induced exits (bit 16 of exit qualification — fire at a
+        //   precise retired-instruction count, that's the whole point of
+        //   the precise-exit machinery)
+        // Other EPT violations (COW faults, stale TLB hits, unmapped pages)
+        // are non-deterministic.
         ExitReason::EptViolation => {
-            let gpa = ctx
-                .state()
-                .vmcs
-                .read64(VmcsField64::GuestPhysicalAddr)
-                .unwrap_or(0);
-            !((APIC_BASE..APIC_BASE + APIC_SIZE).contains(&gpa)
-                || (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&gpa))
+            let ept_qual = EptViolationQualification::from(qual);
+            if ept_qual.asynchronous && ept_qual.write {
+                false
+            } else {
+                let gpa = ctx
+                    .state()
+                    .vmcs
+                    .read64(VmcsField64::GuestPhysicalAddr)
+                    .unwrap_or(0);
+                !((APIC_BASE..APIC_BASE + APIC_SIZE).contains(&gpa)
+                    || (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&gpa))
+            }
         }
         _ => false,
     };
