@@ -611,6 +611,18 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// The #PF is logged and reinjected so the guest handles it normally.
     /// Used for determinism analysis to observe spurious page faults.
     pub intercept_pf: bool,
+    /// Logical CPU this VM most recently ran on, or `None` before the first
+    /// run-loop entry. Used to detect cross-CPU migration between ioctls.
+    ///
+    /// VMCLEAR/VMPTRLD do not invalidate guest-physical mappings (Intel SDM
+    /// Vol 3C §30.4.3.2), and EPT TLB entries are per-logical-processor —
+    /// propagating EPT changes to other LPs is software's responsibility
+    /// (§30.4.3.4). When the run thread migrates between ioctls, CoW
+    /// remappings done on the intermediate CPU may leave this CPU's EPT TLB
+    /// pointing at parent HPAs. The run-loop entry path issues
+    /// `INVEPT single-context` whenever `last_cpu` differs from the current
+    /// CPU to flush those potentially-stale entries.
+    pub last_cpu: Option<u32>,
 }
 
 /// Error type for VmState creation.
@@ -816,6 +828,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_empty(),
             vpid,
             intercept_pf: false,
+            last_cpu: None,
         })
     }
 
@@ -1354,6 +1367,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_empty(),
             vpid: 0, // Tests don't use VPID
             intercept_pf: false,
+            last_cpu: None,
         })
     }
 
@@ -1572,6 +1586,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent
             vpid: allocated_vpid,
             intercept_pf: false,
+            last_cpu: None,
         })
     }
 }

@@ -112,6 +112,25 @@ where
     // Load the VMCS
     ctx.state().vmcs.load().map_err(VmRunError::VmcsLoad)?;
 
+    // Cross-CPU EPT TLB invalidation. VMCLEAR/VMPTRLD do not invalidate
+    // guest-physical mappings (Intel SDM Vol 3C §30.4.3.2), and EPT TLB
+    // entries are per-logical-processor — propagating EPT changes to other
+    // LPs is software's responsibility (§30.4.3.4). Within one ioctl
+    // preempt is disabled so we stay on one CPU, but between ioctls the
+    // thread can migrate; CoW remappings done on the intermediate CPU may
+    // leave this CPU's EPT TLB pointing at parent HPAs. Auto-invalidation
+    // on EPT violations only saves us when the cached entry's permissions
+    // would block the access — a permitted read through a stale entry
+    // silently returns the parent's data (§30.4.2). Issue INVEPT
+    // single-context whenever the run thread is on a different CPU than
+    // it last ran on for this VM.
+    let cur_cpu = machine.kernel().current_cpu_id() as u32;
+    if ctx.state().last_cpu != Some(cur_cpu) {
+        let eptp = ctx.state().ept.eptp();
+        <Ctx::V as Vmx>::invept_single_context(eptp).map_err(VmRunError::InveptFailed)?;
+        ctx.state_mut().last_cpu = Some(cur_cpu);
+    }
+
     // Apply #PF interception to exception bitmap (requires VMCS to be loaded).
     ctx.state().apply_intercept_pf();
 
