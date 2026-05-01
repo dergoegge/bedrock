@@ -168,6 +168,16 @@ pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
         && count >= new_next.saturating_sub(PERIODIC_EXIT_MARGIN)
         && count < new_next;
 
+    // Record PMU skid on the exit that first enters the margin window for
+    // this target. The PMI was configured to fire at
+    // `new_next - PERIODIC_EXIT_MARGIN`; the actual firing point is `count`,
+    // so skid = count - (new_next - PERIODIC_EXIT_MARGIN). Stashed on
+    // VmState for the next log_exit call to attach to this entry.
+    if in_margin && !currently_enabled {
+        let want = new_next - PERIODIC_EXIT_MARGIN;
+        ctx.state_mut().pending_pmi_skid = count.saturating_sub(want);
+    }
+
     let should_enable = should_single_step || in_margin;
 
     if should_enable != currently_enabled {

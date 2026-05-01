@@ -118,9 +118,15 @@ pub struct LogEntry {
     /// count of instructions actually executed by the guest.
     pub instructions: u64,
 
-    // Padding (200 bytes)
+    /// PMU skid: instructions retired between the desired PMI position
+    /// (`next_periodic_exit_count - PERIODIC_EXIT_MARGIN`) and the actual
+    /// PMI VM-exit. Set only on the external-interrupt exit that enters the
+    /// margin window; 0 on all other entries.
+    pub pmi_skid: u64,
+
+    // Padding (192 bytes)
     /// Padding to reach 512 bytes.
-    pub _padding: [u64; 25],
+    pub _padding: [u64; 24],
 }
 
 // Compile-time assertion that LogEntry is exactly 256 bytes
@@ -171,7 +177,8 @@ impl LogEntry {
             interruptibility_state: 0,
             cow_page_count: 0,
             instructions: 0,
-            _padding: [0; 25],
+            pmi_skid: 0,
+            _padding: [0; 24],
         }
     }
 }

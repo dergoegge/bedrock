@@ -643,6 +643,13 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// PMI `PERIODIC_EXIT_MARGIN` instructions before this point so MTF can
     /// step the guest precisely onto it.
     pub next_periodic_exit_count: u64,
+    /// PMU skid recorded on the most recent margin-entering exit, in
+    /// instructions past the desired PMI position
+    /// (`next_periodic_exit_count - PERIODIC_EXIT_MARGIN`). Set by
+    /// `update_mtf_state` when an exit transitions us into the margin
+    /// window, consumed by the next `write_log_entry` and cleared. 0 means
+    /// "no fresh skid measurement to attach to this exit".
+    pub pending_pmi_skid: u64,
 }
 
 /// Error type for VmState creation.
@@ -849,6 +856,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             vpid,
             intercept_pf: false,
             next_periodic_exit_count: u64::MAX,
+            pending_pmi_skid: 0,
         })
     }
 
@@ -1296,8 +1304,10 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             interruptibility_state,
             cow_page_count: 0,
             instructions: self.last_instruction_count,
-            _padding: [0; 25],
+            pmi_skid: self.pending_pmi_skid,
+            _padding: [0; 24],
         };
+        self.pending_pmi_skid = 0;
 
         // Write entry to buffer
         // SAFETY: ptr is valid for 1MB, entry_count < MAX_LOG_ENTRIES.
@@ -1389,6 +1399,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             vpid: 0, // Tests don't use VPID
             intercept_pf: false,
             next_periodic_exit_count: u64::MAX,
+            pending_pmi_skid: 0,
         })
     }
 
@@ -1609,6 +1620,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             intercept_pf: false,
             // Reset target tracking; update_mtf_state recomputes on first exit.
             next_periodic_exit_count: u64::MAX,
+            pending_pmi_skid: 0,
         })
     }
 }

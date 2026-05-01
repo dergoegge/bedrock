@@ -57,7 +57,8 @@ fn test_write_jsonl() {
         interruptibility_state: 0,
         cow_page_count: 0,
         instructions: 0,
-        _padding: [0; 25],
+        pmi_skid: 0,
+        _padding: [0; 24],
     };
 
     let mut output = Vec::new();
