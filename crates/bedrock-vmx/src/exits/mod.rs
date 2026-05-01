@@ -453,7 +453,7 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
     //
     // TODO: log the exit above but only return to userspace here, otherwise we're missing one exit
     // from the log
-    if ctx.state().log_enabled() {
+    if ctx.state().log_enabled() && reason != ExitReason::MonitorTrapFlag {
         ctx.state_mut()
             .log_exit(reason, qual, !non_deterministic_exit);
         if ctx.state().log_buffer_full() {
