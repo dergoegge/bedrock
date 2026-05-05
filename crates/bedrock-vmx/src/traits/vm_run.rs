@@ -242,6 +242,38 @@ where
         .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
         .map_err(VmRunError::WriteHostRsp)?;
 
+    // Program host PMU state (e.g. IA32_FIXED_CTR_CTRL) and reset the
+    // counter. Must run with preemption disabled and on the CPU the loop
+    // will execute on — both guaranteed by our caller.
+    ctx.state_mut().instruction_counter.prepare();
+
+    // Configure VMCS auto-save/load of the instruction counter MSR. The CPU
+    // stores the counter into the entry on VM exit and reloads it on VM
+    // entry, so any host-side ticks (e.g. from a perf NMI re-enabling
+    // PERF_GLOBAL_CTRL.bit32) are wiped on the next entry. Without this, the
+    // count between VM exits is non-deterministic when perf's NMI handler
+    // runs, since perf's `__intel_pmu_enable_all` rewrites GLOBAL_CTRL based
+    // on `intel_ctrl_guest_mask` — which doesn't include our counter when
+    // we're not registered with perf.
+    if let Some(entry_phys) = ctx.state().instruction_counter.msr_save_load_entry_phys() {
+        let _ = ctx
+            .state()
+            .vmcs
+            .write64(VmcsField64::VmExitMsrStoreAddr, entry_phys);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write32(VmcsField32::VmExitMsrStoreCount, 1);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write64(VmcsField64::VmEntryMsrLoadAddr, entry_phys);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write32(VmcsField32::VmEntryMsrLoadCount, 1);
+    }
+
     // Configure hardware-assisted perf counter switching if available.
     // The perf_global_ctrl values and entry/exit control bits are constant
     // for the entire run loop — write them once to avoid per-exit VMCS
@@ -307,9 +339,6 @@ where
         // Record guest execution time (includes VMX entry/exit transitions)
         let post_exit_tsc = rdtsc();
         ctx.state_mut().exit_stats.guest_cycles += post_exit_tsc.saturating_sub(pre_entry_tsc);
-
-        // Clear guest state for perf_guest_cbs after VM exit.
-        ctx.state_mut().instruction_counter.clear_guest_state();
 
         // Serialize instruction stream before reading the PMU counter.
         // LFENCE guarantees all prior instructions have completed locally and no
@@ -401,6 +430,10 @@ where
             }
         }
     };
+
+    // Restore host PMU state. Must happen before we leave the
+    // preemption-disabled region so we are still on the same CPU as `prepare`.
+    ctx.state_mut().instruction_counter.finish();
 
     // Save exit info for userspace (VMCS is still loaded).
     // Deferred to here to avoid 2 VMREAD per iteration — only needed on the

@@ -66,6 +66,10 @@ pub enum VmcsField64 {
     // 64-bit control fields (type 0)
     /// Address of MSR bitmaps.
     MsrBitmapAddr = 0x2004,
+    /// VM-exit MSR-store list address (MSRs saved into memory on VM exit).
+    VmExitMsrStoreAddr = 0x2006,
+    /// VM-entry MSR-load list address (MSRs loaded from memory on VM entry).
+    VmEntryMsrLoadAddr = 0x200A,
     /// Page-modification log address.
     PmlAddress = 0x200E,
     /// EPT pointer (EPTP).
@@ -115,8 +119,12 @@ pub enum VmcsField32 {
     Cr3TargetCount = 0x400A,
     /// Primary VM-exit controls.
     PrimaryVmExitControls = 0x400C,
+    /// VM-exit MSR-store list count.
+    VmExitMsrStoreCount = 0x400E,
     /// VM-entry controls.
     VmEntryControls = 0x4012,
+    /// VM-entry MSR-load list count.
+    VmEntryMsrLoadCount = 0x4014,
     /// VM-entry interruption-information field.
     VmEntryInterruptionInfo = 0x4016,
     /// VM-entry exception error code.
