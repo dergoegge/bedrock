@@ -1632,10 +1632,13 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             core::ptr::copy_nonoverlapping(parent_bitmap_ptr, bitmap_ptr, PAGE_SIZE);
         }
 
-        // Allocate the PEBS VM-exit MSR-load page. Forks start fresh — each
-        // forked VM gets its own page with the same `IA32_PEBS_ENABLE = 0`
-        // entry pre-populated. Forks don't inherit `pebs_state` so the VMCS
-        // exit-load count stays 0 until the fork registers a scratch page.
+        // Allocate the PEBS VM-exit MSR-load page. Each forked VM owns its
+        // own page with the same `IA32_PEBS_ENABLE = 0` entry pre-populated.
+        // If the parent had PEBS registered, the parent's VMCS referenced the
+        // parent's exit-load page; the child's VMCS is a memcpy of that VMCS,
+        // so the child's `VmExitMsrLoadAddr` initially points at parent
+        // memory. The post-VMCS-copy block below repoints it at this child
+        // page when `pebs_state` is being inherited.
         let pebs_exit_msr_load_page = machine
             .kernel()
             .alloc_zeroed_page()
@@ -1736,6 +1739,26 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             vmcs.write32(VmcsField32::VmxPreemptionTimerValue, 0x100000)
                 .map_err(|_| VmStateError::GuestStateCopy)?;
 
+            // Repoint the VM-exit MSR-load list at the child's own page when
+            // the parent had PEBS registered. `register_pebs_page` writes the
+            // exit-load address once at registration time and never again, so
+            // a memcpy of the parent VMCS leaves the child's exit-load
+            // pointer dangling at parent memory. The page is dormant unless
+            // count > 0, but the dangle is fragile — the parent could free
+            // the page at teardown while the child still references it. The
+            // entry-load fields are rewritten per-iteration in `prepare_vm_run`
+            // and `pebs_pre/post_vm_*`, so they self-correct on first run; only
+            // the exit-load fields need explicit repointing here.
+            if parent_state.pebs_state.is_some() {
+                vmcs.write64(
+                    VmcsField64::VmExitMsrLoadAddr,
+                    pebs_exit_msr_load_page.physical_address().as_u64(),
+                )
+                .map_err(|_| VmStateError::GuestStateCopy)?;
+                vmcs.write32(VmcsField32::VmExitMsrLoadCount, 1)
+                    .map_err(|_| VmStateError::GuestStateCopy)?;
+            }
+
             // Allocate a new VPID for the forked VM.
             // The copied VMCS inherits the parent's VPID, which would cause TLB
             // sharing between parent and child. With VPID enabled, TLB entries are
@@ -1832,10 +1855,19 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             feedback_buffers: box_feedback_buffers_from(&parent_state.feedback_buffers), // Copy feedback buffers from parent
             vpid: allocated_vpid,
             intercept_pf: false,
-            // PEBS precise-exit state is per-VM and is not inherited by forked
-            // VMs. Forks start without precise exits armed; if the user wants
-            // them, they re-arm after the fork.
-            pebs_state: None,
+            // Inherit PEBS registration from the parent — the forked guest is
+            // at the parent's snapshot point and will never re-issue
+            // `HYPERCALL_REGISTER_PEBS_PAGE`, so without this the child runs
+            // forever with `pebs_state = None`, `pebs_pre_vm_entry` never
+            // fires, and every timer falls through to the late-inject path.
+            // `clone_for_fork` copies the registration constants and resets
+            // all runtime fields so the child arms freshly. The PEBS scratch
+            // page itself is shared with the parent through the EPT clone
+            // (which preserves the parent's R+E leaf for the registered GPA).
+            pebs_state: parent_state
+                .pebs_state
+                .as_deref()
+                .map(|p| heap_box(p.clone_for_fork())),
             pebs_supported: parent_state.pebs_supported,
             last_cpu: None,
         })

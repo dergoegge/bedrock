@@ -164,6 +164,42 @@ pub struct PebsState {
     pub logged_first_arm: bool,
 }
 
+impl PebsState {
+    /// Inherit PEBS registration from a parent VM into a forked child.
+    ///
+    /// The forked guest is at the parent's snapshot point and will never
+    /// re-issue `HYPERCALL_REGISTER_PEBS_PAGE`; without this, the child runs
+    /// with `pebs_state = None`, `pebs_pre_vm_entry` never fires, and every
+    /// timer falls through to the late-inject path. We carry the registration
+    /// constants — scratch-page GPAs, the `IA32_DS_AREA` linear address, and
+    /// the static MSR values — from the parent and reset all runtime fields
+    /// (no arming live, no skid measurements, no first-arm log gate) so the
+    /// child arms fresh on its first iteration.
+    ///
+    /// The PEBS scratch page itself is shared with the parent through the
+    /// child's EPT clone (`clone_for_fork` preserves the parent's R+E leaf for
+    /// the registered GPA). The fork model assumes the parent does not run
+    /// concurrently with the child, so sharing the host page is safe.
+    pub fn clone_for_fork(&self) -> Self {
+        Self {
+            ds_management_gpa: self.ds_management_gpa,
+            pebs_buffer_gpa: self.pebs_buffer_gpa,
+            ds_area_va: self.ds_area_va,
+            fixed_ctr_ctrl: self.fixed_ctr_ctrl,
+            pebs_enable: self.pebs_enable,
+            pebs_data_cfg: self.pebs_data_cfg,
+            armed_action: None,
+            armed_target_tsc: 0,
+            armed_inst_count: 0,
+            armed_tsc_offset: 0,
+            iters_since_arm: 0,
+            counter_reload: 0,
+            host_msrs: PebsHostMsrs::default(),
+            logged_first_arm: false,
+        }
+    }
+}
+
 /// `IA32_FIXED_CTR_CTRL` value enabling `IA32_FIXED_CTR0` in OS+USR with no
 /// AnyThread, no PMI, no Adaptive_Record. Bits 0-1 (FC0_EN) = 0b11. The
 /// other fixed counters' fields are zeroed because the IC doesn't use them
