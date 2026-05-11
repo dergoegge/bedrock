@@ -411,6 +411,12 @@ pub struct AllExitStats {
     pub irq_window_cycles: u64,
     /// Copy-on-write page allocation statistics.
     pub cow: CowStats,
+    /// Count of non-deterministic MTF exits taken inside the PEBS margin
+    /// window (the `PEBS_MARGIN` instructions between PEBS firing and the
+    /// timer-deadline boundary). Bucketed separately from `mtf` because
+    /// the count depends on PEBS skid and would otherwise diverge across
+    /// runs in the determinism harness's exit-stats comparison.
+    pub pebs_margin_steps: u64,
     /// `arm_precise_exit` returned `BelowMinDelta` — the requested target
     /// is within `PEBS_MIN_DELTA + PEBS_MARGIN` of the current count, so
     /// PEBS doesn't arm and MTF margin stepping is expected to land the

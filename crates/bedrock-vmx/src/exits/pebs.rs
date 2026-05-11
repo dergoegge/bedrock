@@ -188,17 +188,29 @@ const PERF_GLOBAL_CTRL_FIXED_CTR0: u64 = 1 << 32;
 const PMC_COUNTER_WIDTH_BITS: u32 = 48;
 const PMC_COUNTER_MASK: u64 = (1u64 << PMC_COUNTER_WIDTH_BITS) - 1;
 
-/// Minimum delta (target_tsc - current_tsc) for a PEBS-armed precise exit.
+/// Minimum encoded delta (counter_reload distance from overflow) for PDist.
 ///
 /// PDist (Precise Distribution) requires the counter reload value to be at
-/// least 256 events away from overflow (Intel SDM Vol 3B 21.9.6). With our
-/// math `counter_reload = -delta`, that means `delta >= 256`. We use 257
-/// to keep a margin of safety. Below this, PDist silently disengages and
-/// PEBS falls back to Reduced Skid — the resulting exits land 1
-/// instruction late relative to the PDist case, breaking the skid=0
-/// invariant we rely on. Short deltas use the MTF single-step path
-/// (`exits/mod.rs` `update_mtf_state`) which is architecturally exact.
+/// least 256 events away from overflow (Intel SDM Vol 3B 21.9.6). Below
+/// this, PDist silently disengages and PEBS falls back to Reduced Skid —
+/// the resulting exits land 1 instruction late relative to the PDist case,
+/// breaking the skid=0 invariant we rely on. Short deltas use the MTF
+/// single-step path (`exits/mod.rs` `update_mtf_state`) which is
+/// architecturally exact.
 pub const PEBS_MIN_DELTA: u64 = 257;
+
+/// Margin (in retired guest instructions) by which the PEBS-armed precise
+/// exit fires *before* the requested target. The PEBS exit lands at
+/// `target_tsc - PEBS_MARGIN`; MTF then single-steps the remaining
+/// `PEBS_MARGIN` instructions to land exactly on `target_tsc`.
+///
+/// PEBS+PDist on `IA32_FIXED_CTR0` lands with skid 0 in the common case —
+/// but the asynchronous record-write path can occasionally drift by 1
+/// instruction. The margin absorbs that drift so the timer interrupt
+/// always arrives at the requested deadline rather than off-by-one. The
+/// MTF single-step path (`update_mtf_state` in `exits/mod.rs`) takes over
+/// once the count is within `PEBS_MARGIN` of the target.
+pub const PEBS_MARGIN: u64 = 2;
 
 /// Outcome of arming a precise exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,22 +222,25 @@ pub enum ArmResult {
     /// already passed. Caller should take the requested action immediately
     /// without VM-entry.
     AlreadyPast,
-    /// `target_tsc - current_tsc` is below `PEBS_MIN_DELTA`. Caller should
-    /// fall back to MTF single-step.
+    /// `target_tsc - current_tsc` is below `PEBS_MIN_DELTA + PEBS_MARGIN`
+    /// — too short for PDist. Count is already inside the MTF single-step
+    /// window; caller relies on `update_mtf_state` to land on the
+    /// boundary.
     BelowMinDelta,
     /// No `PebsState` is installed (no scratch page registered).
     NotRegistered,
 }
 
-/// Arm a precise exit at `target_tsc` with the given `action`.
+/// Arm a precise exit at `target_tsc - PEBS_MARGIN` with the given `action`.
 ///
-/// Computes the `IA32_FIXED_CTR0` reload value such that the counter
-/// overflows on the `delta`-th retired instruction from now and PEBS,
-/// running with PDist on `IA32_FIXED_CTR0` (SDM Vol 3B 21.9.6, Table
-/// 21-51), records on that same instruction with no skid. The EPT
-/// violation produced by the trapped record write is the precise exit.
-/// Bedrock's emulated TSC ticks once per retired instruction, so
+/// PEBS lands the exit `PEBS_MARGIN` instructions before `target_tsc`;
+/// `update_mtf_state` takes over from there to single-step onto the exact
+/// target. Bedrock's emulated TSC ticks once per retired instruction, so
 /// `delta_tsc == delta_instructions`.
+///
+/// The encoded distance to overflow is `delta - PEBS_MARGIN`, which must
+/// be at least `PEBS_MIN_DELTA` for PDist to engage; below that, the
+/// caller falls back to MTF stepping for the entire remaining distance.
 pub fn arm_precise_exit(
     pebs: &mut PebsState,
     current_tsc: u64,
@@ -238,15 +253,26 @@ pub fn arm_precise_exit(
         return ArmResult::AlreadyPast;
     }
     let delta = target_tsc - current_tsc;
-    if delta < PEBS_MIN_DELTA {
+    // Encoded distance to overflow must be ≥ PEBS_MIN_DELTA for PDist to
+    // engage; below that, PEBS would land in Reduced-Skid regime and
+    // break the skid=0 invariant. When delta is too small to arm with
+    // PDist the count is already inside the MTF single-step window
+    // (sized at PEBS_MIN_DELTA + PEBS_MARGIN in update_mtf_state) and
+    // MTF stepping will land on the boundary directly.
+    if delta < PEBS_MIN_DELTA + PEBS_MARGIN {
         return ArmResult::BelowMinDelta;
     }
-    // Counter reload: FIXED_CTR0 = -delta, masked to the 48-bit counter
-    // width. After `delta` increments the counter wraps to 0 (overflow);
-    // PDist records on that same overflowing instruction — the delta-th
-    // instruction from now — yielding zero skid relative to target_tsc.
-    pebs.counter_reload = delta.wrapping_neg() & PMC_COUNTER_MASK;
-    pebs.armed_target_tsc = target_tsc;
+    let encoded_delta = delta - PEBS_MARGIN;
+    // Counter reload: FIXED_CTR0 = -encoded_delta, masked to the 48-bit
+    // counter width. After `encoded_delta` increments the counter wraps to 0
+    // (overflow); PDist records on that same overflowing instruction —
+    // the (encoded_delta)-th instruction from now, i.e. PEBS_MARGIN before
+    // the requested target — and MTF single-steps the remaining margin.
+    pebs.counter_reload = encoded_delta.wrapping_neg() & PMC_COUNTER_MASK;
+    // Track the actual PEBS firing point (target - margin) for skid
+    // diagnostics: skid = emulated_tsc_at_pebs_exit - armed_target_tsc
+    // should be 0 with PDist, regardless of margin.
+    pebs.armed_target_tsc = target_tsc - PEBS_MARGIN;
     pebs.armed_inst_count = inst_count_now;
     pebs.armed_tsc_offset = tsc_offset_now;
     pebs.iters_since_arm = 0;
@@ -259,7 +285,7 @@ pub fn arm_precise_exit(
             pebs.pebs_enable,
             pebs.pebs_data_cfg,
             pebs.counter_reload,
-            delta,
+            encoded_delta,
         );
     }
     ArmResult::Armed
@@ -795,10 +821,10 @@ mod tests {
     #[test]
     fn arm_below_min_delta_returns_below_min_delta() {
         let mut p = make_pebs_state();
-        // delta = PEBS_MIN_DELTA - 1 → reload would be < 256 events from
-        // overflow, which PDist doesn't support. Caller is expected to
-        // fall back to MTF.
-        let target = 100 + PEBS_MIN_DELTA - 1;
+        // delta < PEBS_MIN_DELTA + PEBS_MARGIN: encoded distance would be
+        // below the PDist threshold. Caller falls back to MTF stepping
+        // for the entire remaining range.
+        let target = 100 + PEBS_MIN_DELTA + PEBS_MARGIN - 1;
         let r = arm_precise_exit(&mut p, 100, target, PebsAction::InjectInterrupt(0x20), 0, 0);
         assert_eq!(r, ArmResult::BelowMinDelta);
         assert!(p.armed_action.is_none());
@@ -807,8 +833,9 @@ mod tests {
     #[test]
     fn arm_minimum_delta_writes_correct_counter_reload() {
         let mut p = make_pebs_state();
-        // delta = PEBS_MIN_DELTA → counter_reload = -delta within 48 bits.
-        let delta = PEBS_MIN_DELTA;
+        // Smallest delta that arms PEBS: encoded distance = PEBS_MIN_DELTA
+        // (exactly at the PDist threshold).
+        let delta = PEBS_MIN_DELTA + PEBS_MARGIN;
         let r = arm_precise_exit(
             &mut p,
             100,
@@ -818,7 +845,11 @@ mod tests {
             0,
         );
         assert_eq!(r, ArmResult::Armed);
-        assert_eq!(p.counter_reload, delta.wrapping_neg() & PMC_COUNTER_MASK);
+        let encoded = delta - PEBS_MARGIN;
+        assert_eq!(p.counter_reload, encoded.wrapping_neg() & PMC_COUNTER_MASK);
+        // armed_target_tsc tracks the PEBS firing point (target - margin),
+        // not the requested target — so skid measures hardware imprecision.
+        assert_eq!(p.armed_target_tsc, 100 + delta - PEBS_MARGIN);
         assert!(matches!(
             p.armed_action,
             Some(PebsAction::InjectInterrupt(0x20))
@@ -828,15 +859,15 @@ mod tests {
     #[test]
     fn arm_large_delta_writes_correct_counter_reload() {
         let mut p = make_pebs_state();
-        // delta = 1_000_000 → counter_reload = -delta within 48 bits.
+        // delta = 1_000_000 → counter_reload encodes (delta - PEBS_MARGIN).
         let delta: u64 = 1_000_000;
         let r = arm_precise_exit(&mut p, 0, delta, PebsAction::InjectInterrupt(0x20), 0, 0);
         assert_eq!(r, ArmResult::Armed);
-        let expected = delta.wrapping_neg() & PMC_COUNTER_MASK;
+        let encoded = delta - PEBS_MARGIN;
+        let expected = encoded.wrapping_neg() & PMC_COUNTER_MASK;
         assert_eq!(p.counter_reload, expected);
-        // Sanity: the counter, viewed as a 48-bit unsigned, is 2^48 -
-        // delta. Adding delta should wrap it to zero.
-        let wrapped = p.counter_reload.wrapping_add(delta) & PMC_COUNTER_MASK;
+        // Sanity: counter wraps to zero after `encoded` increments.
+        let wrapped = p.counter_reload.wrapping_add(encoded) & PMC_COUNTER_MASK;
         assert_eq!(wrapped, 0);
     }
 

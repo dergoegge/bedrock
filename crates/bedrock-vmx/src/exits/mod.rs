@@ -42,7 +42,8 @@ pub use helpers::{ExitError, ExitHandlerResult};
 pub use interrupts::{inject_pending_interrupt, reinject_vectored_event};
 pub use pebs::{
     arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, pebs_post_vm_exit,
-    pebs_pre_vm_entry, ArmResult, DsManagementArea, PebsAction, PebsState, PEBS_MIN_DELTA,
+    pebs_pre_vm_entry, ArmResult, DsManagementArea, PebsAction, PebsState, PEBS_MARGIN,
+    PEBS_MIN_DELTA,
 };
 pub use qualifications::{
     CrAccessQualification, EptViolationQualification, IoQualification, RdrandInstructionInfo,
@@ -68,20 +69,87 @@ use super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
-/// Update MTF (Monitor Trap Flag) state based on TSC range configuration.
+/// Compute the retired-instruction count at which the next pending APIC
+/// timer would fire (= `timer_deadline - tsc_offset`). Returns `None` if
+/// the timer is disarmed, the APIC is software-disabled, or the LVT entry
+/// is masked.
+fn next_timer_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
+    let state = ctx.state();
+    let apic = &state.devices.apic;
+    if apic.timer_deadline == 0 {
+        return None;
+    }
+    if (apic.svr & (1 << 8)) == 0 {
+        return None;
+    }
+    if (apic.lvt_timer & (1 << 16)) != 0 {
+        return None;
+    }
+    Some(apic.timer_deadline.saturating_sub(state.tsc_offset))
+}
+
+/// Width of the MTF single-step window approaching an APIC timer deadline.
 ///
-/// If single-stepping is configured and the current TSC is within the range,
-/// enables MTF to cause a VM exit after each guest instruction.
-/// Disables MTF when outside the range to avoid performance overhead.
+/// PEBS arms to fire at `target - PEBS_MARGIN`. When the encoded distance
+/// is too short for PDist (`delta < PEBS_MIN_DELTA + PEBS_MARGIN` in
+/// `arm_precise_exit`), PEBS doesn't arm at all — but the count is by
+/// construction within `PEBS_MIN_DELTA + PEBS_MARGIN` of the target, so
+/// MTF single-stepping starting at the entering exit lands on the
+/// boundary in at most that many steps. Sized to cover both the normal
+/// case (PEBS lands inside the window, MTF steps the final
+/// `PEBS_MARGIN`) and the BelowMinDelta case (no PEBS, MTF steps the
+/// full window). Without this width, a non-deterministic exit landing
+/// close to the deadline produces a `BelowMinDelta` arming, no PEBS
+/// trap, and the timer fires at whatever natural deterministic exit
+/// happens past the deadline — which differs across runs.
+const MTF_MARGIN: u64 = PEBS_MIN_DELTA + PEBS_MARGIN;
+
+/// Update MTF (Monitor Trap Flag) state.
+///
+/// Enables MTF (one VM-exit per retired guest instruction) when either:
+///
+/// 1. Single-stepping is configured and the current TSC is within the
+///    configured range, or
+/// 2. PEBS is registered (`pebs_state.is_some()`) and the retired-
+///    instruction count is within `MTF_MARGIN` of the next APIC timer
+///    deadline. In the normal case PEBS fires at `target - PEBS_MARGIN`
+///    and MTF single-steps the final `PEBS_MARGIN` instructions; in the
+///    short-delta case PEBS doesn't arm and MTF steps the entire
+///    remaining range. Either way the boundary MTF (count == target)
+///    lands deterministically and `inject_pending_interrupt` delivers
+///    the timer at the exact instruction.
+///
+/// The PEBS-registered gate on (2) prevents a determinism trap before
+/// the guest registers the PEBS scratch page: with no PEBS arming, the
+/// margin window only ever engages when some non-deterministic exit
+/// (e.g., a host external interrupt) happens to land inside it. One run
+/// gets that exit and lands the boundary MTF precisely; the other run
+/// doesn't and falls through to a late inject at the next deterministic
+/// exit past the deadline. Suppressing the margin while PEBS is
+/// unregistered forces both runs onto the same late-inject path.
+///
+/// Uses `last_instruction_count + tsc_offset` rather than `emulated_tsc`
+/// so the check is correct on non-deterministic exits (where
+/// `emulated_tsc` is stale) and on intermediate MTF margin steps.
 pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
-    let tsc = ctx.state().emulated_tsc;
+    let count = ctx.state().last_instruction_count;
+    let tsc = count + ctx.state().tsc_offset;
     let range = ctx.state().single_step_tsc_range;
     let currently_enabled = ctx.state().mtf_enabled;
+    let pebs_registered = ctx.state().pebs_state.is_some();
 
-    let should_enable = match range {
+    let in_single_step = match range {
         Some((start, end)) => tsc >= start && tsc < end,
         None => false,
     };
+
+    let in_pebs_margin = pebs_registered
+        && match next_timer_exit_count(ctx) {
+            Some(target) => count >= target.saturating_sub(MTF_MARGIN) && count < target,
+            None => false,
+        };
+
+    let should_enable = in_single_step || in_pebs_margin;
 
     if should_enable != currently_enabled {
         // Toggle MTF in primary processor-based controls
@@ -140,18 +208,17 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         ExitReason::ExternalInterrupt
         | ExitReason::VmxPreemptionTimer
         | ExitReason::ExceptionNmi => true,
-        // EPT violations are deterministic when they correspond to a known
-        // emulated event:
-        // - APIC/IOAPIC MMIO accesses (device emulation)
-        // - PEBS-induced exits (bit 16 of exit qualification — fire at a
-        //   precise retired-instruction count, that's the whole point of
-        //   the precise-exit machinery)
-        // Other EPT violations (COW faults, stale TLB hits, unmapped pages)
-        // are non-deterministic.
+        // EPT violations are deterministic only when they correspond to
+        // APIC/IOAPIC MMIO emulation. PEBS-induced exits (bit 16 of the
+        // exit qualification) fire at `target - PEBS_MARGIN` with possible
+        // PDist skid, so they're treated as non-deterministic — only the
+        // boundary MTF (count == target) below is deterministic. Other
+        // EPT violations (COW faults, stale TLB hits, unmapped pages) are
+        // non-deterministic.
         ExitReason::EptViolation => {
             let ept_qual = EptViolationQualification::from(qual);
             if ept_qual.asynchronous && ept_qual.write {
-                false
+                true
             } else {
                 let gpa = ctx
                     .state()
@@ -161,6 +228,24 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
                 !((APIC_BASE..APIC_BASE + APIC_SIZE).contains(&gpa)
                     || (IOAPIC_BASE..IOAPIC_BASE + IOAPIC_SIZE).contains(&gpa))
             }
+        }
+        // MTF exits are deterministic only when they land on the next
+        // APIC-timer-deadline boundary (the precise-injection use case)
+        // or inside a configured single-step TSC range. Intermediate
+        // margin-window steps fire at instruction counts that depend on
+        // PEBS skid, so they're non-deterministic.
+        ExitReason::MonitorTrapFlag => {
+            let count = ctx.state().last_instruction_count;
+            let tsc = count + ctx.state().tsc_offset;
+            let on_boundary = matches!(
+                next_timer_exit_count(ctx),
+                Some(target) if count == target,
+            );
+            let in_single_step_range = match ctx.state().single_step_tsc_range {
+                Some((start, end)) => tsc >= start && tsc < end,
+                None => false,
+            };
+            !(on_boundary || in_single_step_range)
         }
         _ => false,
     };
@@ -289,23 +374,30 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
         _ => ExitHandlerResult::ExitToUserspace(reason),
     };
 
-    // Record exit handler timing statistics
+    // Record exit handler timing statistics. Non-deterministic margin-
+    // window MTF steps go to a separate bucket so `mtf.count` stays
+    // reproducible across runs (the determinism harness compares it).
     let end_tsc = rdtsc();
     let cycles = end_tsc.saturating_sub(start_tsc);
-    ctx.state_mut().exit_stats.record(reason, cycles);
+    if reason == ExitReason::MonitorTrapFlag && non_deterministic_exit {
+        ctx.state_mut().exit_stats.pebs_margin_steps += 1;
+    } else {
+        ctx.state_mut().exit_stats.record(reason, cycles);
+    }
 
     // Now that the exit is handled, do logging and threshold checks.
     // These happen AFTER exit handling so device state is clean.
 
-    // Update MTF state after the handler. Time-advancing exits (MWAIT/HLT
-    // via handle_idle) modify emulated_tsc and tsc_offset to reach the APIC
-    // timer deadline. This must happen before the MTF check because the
-    // pre-handler TSC can be far below the single-step range while the
-    // post-handler TSC (timer deadline) is inside it.
-    if !non_deterministic_exit {
-        if let Err(e) = update_mtf_state(ctx) {
-            return ExitHandlerResult::Error(e);
-        }
+    // Update MTF state after the handler. Runs unconditionally because the
+    // PEBS-margin window needs to enable on the PEBS-induced EPT violation
+    // (non-deterministic) and stay enabled across the intermediate MTF
+    // margin steps (also non-deterministic) until the count lands on the
+    // boundary (count == target, deterministic). Time-advancing exits
+    // (MWAIT/HLT via handle_idle) update emulated_tsc and tsc_offset; we
+    // use last_instruction_count + tsc_offset directly so the check is
+    // correct regardless.
+    if let Err(e) = update_mtf_state(ctx) {
+        return ExitHandlerResult::Error(e);
     }
 
     // Check if stop-at-tsc threshold is reached (deterministic exits only)

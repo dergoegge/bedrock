@@ -164,9 +164,26 @@ def main():
     min_len = min(len(ref_entries), len(bad_entries))
     diverge_idx = None
 
+    # PEBS diagnostic fields are recorded only on the (non-deterministic)
+    # EPT_VIOLATION_PEBS entries and depend on host-side timing — armings
+    # carry across non-deterministic exits like external interrupts, so
+    # iters_since_arm and the inst/offset deltas drift across runs even
+    # when guest execution is identical. Skip them in the divergence
+    # comparison.
+    DIAGNOSTIC_FIELDS = {
+        "pebs_skid",
+        "pebs_inst_delta",
+        "pebs_tsc_offset_delta",
+        "pebs_iters_since_arm",
+        "pebs_arm_delta",
+    }
+
     for i in range(min_len):
         r, b = ref_entries[i], bad_entries[i]
-        diffs = [k for k in r if k in b and r[k] != b[k]]
+        diffs = [
+            k for k in r
+            if k in b and k not in DIAGNOSTIC_FIELDS and r[k] != b[k]
+        ]
         if diffs:
             diverge_idx = i
             break
@@ -201,7 +218,10 @@ def main():
     # Show the divergent exit
     if diverge_idx < min_len:
         r, b = ref_entries[diverge_idx], bad_entries[diverge_idx]
-        diffs = [k for k in r if k in b and r[k] != b[k]]
+        diffs = [
+            k for k in r
+            if k in b and k not in DIAGNOSTIC_FIELDS and r[k] != b[k]
+        ]
 
         print(f"--- First divergent exit [{diverge_idx}] ---")
         print(f"  Differing fields: {', '.join(diffs)}")
