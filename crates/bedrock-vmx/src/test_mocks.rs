@@ -274,6 +274,9 @@ impl MockVmxCpu {
                 cr4_fixed1: !0,
                 has_ept: true,
                 has_vpid: false,
+                pebs_format: 0,
+                pebs_baseline: false,
+                pebs_trap: false,
             },
         }
     }

@@ -5,6 +5,7 @@
 use core::arch::asm;
 
 use super::helpers::{inject_exception, ExitError};
+use super::pebs::arm_for_next_iteration;
 use super::qualifications::InterruptionInfo;
 
 #[cfg(not(feature = "cargo"))]
@@ -16,27 +17,33 @@ use crate::prelude::*;
 /// Uses emulated TSC for determinism.
 pub fn check_apic_timer<C: VmContext>(ctx: &mut C) {
     let current_tsc = ctx.state().emulated_tsc;
+    let timer_deadline = ctx.state().devices.apic.timer_deadline;
+    let svr = ctx.state().devices.apic.svr;
+    let lvt_timer_init = ctx.state().devices.apic.lvt_timer;
+
+    if timer_deadline == 0 {
+        return;
+    }
+    if current_tsc < timer_deadline {
+        return;
+    }
+    if (svr & (1 << 8)) == 0 {
+        return;
+    }
+    if (lvt_timer_init & (1 << 16)) != 0 {
+        return;
+    }
+
+    // Diagnostic: count timer firings that arrive past the deadline. The
+    // precise PEBS+MTF boundary lands `current_tsc == timer_deadline`;
+    // anything strictly greater means PEBS didn't fire at the
+    // `target - PEBS_MARGIN` point and the timer is being delivered late
+    // on whatever deterministic exit happened past the deadline.
+    if current_tsc > timer_deadline {
+        ctx.state_mut().exit_stats.apic_timer_late_inject += 1;
+    }
+
     let apic = &mut ctx.state_mut().devices.apic;
-
-    // Check if timer is running
-    if apic.timer_deadline == 0 {
-        return;
-    }
-
-    // Check if timer has expired
-    if current_tsc < apic.timer_deadline {
-        return;
-    }
-
-    // Timer expired - check if APIC is enabled (SVR bit 8)
-    if (apic.svr & (1 << 8)) == 0 {
-        return;
-    }
-
-    // Check if timer is masked (LVT timer bit 16)
-    if (apic.lvt_timer & (1 << 16)) != 0 {
-        return;
-    }
 
     // Get vector from LVT timer (bits 7:0)
     let vector = (apic.lvt_timer & 0xFF) as u8;
@@ -188,40 +195,65 @@ pub fn reinject_vectored_event<C: VmContext>(ctx: &mut C) -> Result<bool, ExitEr
 /// Inject any pending interrupt into the guest before VM entry.
 /// This should be called before each VMLAUNCH/VMRESUME.
 pub fn inject_pending_interrupt<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
-    // First, check if there's an interrupted event that needs re-injection.
-    // This handles the case where interrupt delivery was aborted by an EPT violation
-    // (e.g., CoW fault when pushing interrupt frame to guest stack).
-    // Per Intel SDM Vol 3C Section 29.2.4, we must re-inject before handling new events.
-    // This path runs unconditionally — the event was already in flight and must complete.
-    if reinject_vectored_event(ctx)? {
-        // Event will be re-injected on VM entry, don't inject anything else
+    // Decide whether a fresh APIC-timer interrupt is eligible for injection
+    // this iteration. The PEBS re-arm at the end runs unconditionally, so
+    // every branch here is a "what about the pending-interrupt side" decision.
+    //
+    // Three reasons to skip new injection:
+    //
+    //   - `reinject_vectored_event` returned true: an interrupt or exception
+    //     delivery was aborted (e.g. CoW EPT violation while pushing the
+    //     interrupt frame) and must complete first. Per Intel SDM Vol 3C
+    //     §29.2.4, we re-inject before handling new events. Runs
+    //     unconditionally — the event was already in flight.
+    //
+    //   - Last exit was non-deterministic (host NMI, external interrupt, VMX
+    //     preemption timer): we'd risk setting IRR / re-injecting at a
+    //     non-deterministic boundary, e.g. a host NMI landing at the same
+    //     instruction where hardware would have fired an interrupt-window VM
+    //     exit, silently absorbing the IWE exit and shortening the determ log
+    //     by one entry.
+    //
+    //   - `VmEntryInterruptionInfo` already has an exception pending (e.g.
+    //     reinjected #PF): don't overwrite it with an interrupt; it gets
+    //     handled on the next exit.
+    //
+    // For the surviving deterministic path we run `check_apic_timer` to set
+    // IRR and (for periodic timers) auto-reload `apic.timer_deadline`.
+    // The PEBS re-arm below reads that deadline, so the timer-expiry check
+    // must run before re-arming or we'd arm against the already-fired
+    // deadline.
+    let inject_eligible =
+        !reinject_vectored_event(ctx)? && ctx.state().last_exit_deterministic && {
+            let pending = ctx
+                .state()
+                .vmcs
+                .read32(VmcsField32::VmEntryInterruptionInfo)
+                .unwrap_or(0);
+            if pending & (1 << 31) != 0 {
+                false
+            } else {
+                check_apic_timer(ctx);
+                true
+            }
+        };
+
+    // Re-arm PEBS for the next APIC timer deadline regardless of which branch
+    // above we took. After a non-deterministic exit, the previous iteration's
+    // `counter_reload` no longer matches "instructions remaining to deadline":
+    // the interrupted iter retired some instructions toward the overflow
+    // target, but FIXED_CTR0 resets to the same `counter_reload` on the next
+    // VM-entry, so PEBS would fire `delta - 1` instructions into the *new*
+    // iter — past the original deadline by exactly however many instructions
+    // were burned in the interrupted iter. Re-arming recomputes the remaining
+    // delta from the current `last_instruction_count + tsc_offset` (fresh on
+    // every VM-exit, unlike `emulated_tsc` which only updates on deterministic
+    // exits) and keeps the precise emulated_tsc landing point intact.
+    arm_for_next_iteration(ctx);
+
+    if !inject_eligible {
         return Ok(());
     }
-
-    // Skip new-interrupt evaluation after non-deterministic exits. Otherwise a host NMI
-    // (or other non-det exit) landing at the same instruction where hardware would fire
-    // an interrupt-window VM exit (SDM Vol 3C §27.2: NMIs outrank IWE) lets us observe
-    // IF=1 / interruptibility=0 and inject directly, silently absorbing the IWE exit.
-    // The guest behaves the same but the deterministic-exit log is short one entry,
-    // causing divergence. Re-entering without re-evaluating lets the armed IWE control
-    // produce its deterministic exit on the next instruction boundary.
-    if !ctx.state().last_exit_deterministic {
-        return Ok(());
-    }
-
-    // If an exception reinjection (e.g., #PF) is already pending in VmEntryInterruptionInfo,
-    // don't overwrite it with an interrupt. The interrupt will be injected on the next exit.
-    let pending = ctx
-        .state()
-        .vmcs
-        .read32(VmcsField32::VmEntryInterruptionInfo)
-        .unwrap_or(0);
-    if pending & (1 << 31) != 0 {
-        return Ok(());
-    }
-
-    // Check timer expiry and update IRR
-    check_apic_timer(ctx);
 
     // Find highest priority pending interrupt
     let vector = match apic_pending_vector(ctx) {

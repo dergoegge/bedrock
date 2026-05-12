@@ -220,6 +220,14 @@ pub(crate) struct BedrockExitStats {
     pub vmexit_overhead_cycles: u64,
     /// Cycles spent in the IRQ window between VM exits.
     pub irq_window_cycles: u64,
+    /// PEBS arm returned BelowMinDelta.
+    pub pebs_arm_below_min_delta: u64,
+    /// PEBS arm returned AlreadyPast.
+    pub pebs_arm_already_past: u64,
+    /// Iters that VM-entered with PEBS armed but didn't fire.
+    pub pebs_armed_iter_no_fire: u64,
+    /// Timer fires where emulated_tsc > deadline (silent-PEBS late path).
+    pub apic_timer_late_inject: u64,
 }
 
 /// VM exit information returned to userspace from RUN ioctl.

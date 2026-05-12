@@ -4,6 +4,7 @@
 
 use super::ept::translate_gva_range_to_gpas;
 use super::helpers::{advance_rip, ExitHandlerResult};
+use super::pebs::register_pebs_page;
 use super::reasons::ExitReason;
 
 #[cfg(not(feature = "cargo"))]
@@ -116,6 +117,17 @@ pub fn handle_vmcall<C: VmContext, A: CowAllocator<C::CowPage>>(
             }
             // Exit to userspace so it can map the feedback buffer
             ExitHandlerResult::ExitToUserspace(ExitReason::VmcallFeedbackBuffer)
+        }
+        HYPERCALL_REGISTER_PEBS_PAGE => {
+            let page_va = ctx.state().gprs.rbx;
+            let result = register_pebs_page(ctx, allocator, page_va);
+            ctx.state_mut().gprs.rax = result as u64;
+            if let Err(e) = advance_rip(ctx) {
+                return ExitHandlerResult::Error(e);
+            }
+            // Exit to userspace so it can sync any per-VM bookkeeping (e.g.,
+            // record that precise exits are now usable for this VM).
+            ExitHandlerResult::ExitToUserspace(ExitReason::VmcallPebsPage)
         }
         _ => {
             // Unknown hypercall - exit to userspace with generic Vmcall reason

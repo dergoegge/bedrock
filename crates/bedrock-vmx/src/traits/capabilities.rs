@@ -38,6 +38,31 @@ pub struct VmxCapabilities {
     pub has_ept: bool,
     /// VPID support available.
     pub has_vpid: bool,
+
+    /// IA32_PERF_CAPABILITIES.PEBS_FMT (bits 11:8). Encoding of the PEBS record
+    /// layout. Format >= 4 is required for adaptive / EPT-friendly PEBS.
+    /// See Intel SDM Vol 3B Section 21.8.
+    pub pebs_format: u8,
+    /// IA32_PERF_CAPABILITIES.PEBS_BASELINE (bit 14). When set:
+    /// IA32_PEBS_ENABLE exists, all counters support PEBS, adaptive PEBS via
+    /// MSR_PEBS_DATA_CFG is supported. See Intel SDM Vol 3B Section 21.8.
+    pub pebs_baseline: bool,
+    /// IA32_PERF_CAPABILITIES.PEBS_TRAP (bit 6). 1 = trap-like (record points
+    /// to instruction following overflow); 0 = fault-like.
+    pub pebs_trap: bool,
+}
+
+impl VmxCapabilities {
+    /// Whether the processor supports the architectural prerequisites for
+    /// EPT-friendly PEBS as used by precise VM exits: PEBS_BASELINE = 1 and
+    /// PEBS record format >= 4. See Intel SDM Vol 3B Section 21.9.5.
+    ///
+    /// Note: EPT-friendly PEBS itself has no separate CPUID/MSR enumeration
+    /// bit; it is implicit on parts that satisfy these constraints (Ice Lake-SP
+    /// / 12th-gen Core and later).
+    pub fn supports_precise_pebs_exits(&self) -> bool {
+        self.pebs_baseline && self.pebs_format >= 4
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

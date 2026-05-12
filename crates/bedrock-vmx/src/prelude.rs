@@ -98,13 +98,17 @@ pub use bedrock_ept::{EptMemoryType, EptPageTable, EptPermissions, FrameAllocato
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::exits::{
-    handle_exit, inject_pending_interrupt, update_mtf_state, ExitError, ExitHandlerResult,
-    ExitReason, APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE,
+    arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, handle_exit,
+    inject_pending_interrupt, pebs_post_vm_exit, pebs_pre_vm_entry, update_mtf_state, ArmResult,
+    DsManagementArea, ExitError, ExitHandlerResult, ExitReason, PebsAction, PebsState, APIC_BASE,
+    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA,
 };
 #[cfg(feature = "cargo")]
 pub use crate::exits::{
-    handle_exit, inject_pending_interrupt, update_mtf_state, ExitError, ExitHandlerResult,
-    ExitReason, APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE,
+    arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, handle_exit,
+    inject_pending_interrupt, pebs_post_vm_exit, pebs_pre_vm_entry, update_mtf_state, ArmResult,
+    DsManagementArea, ExitError, ExitHandlerResult, ExitReason, PebsAction, PebsState, APIC_BASE,
+    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA,
 };
 
 // =============================================================================
@@ -136,11 +140,13 @@ pub use crate::decoder::decode_instruction;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::hypercalls::{
-    HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_SHUTDOWN, HYPERCALL_SNAPSHOT,
+    HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_REGISTER_PEBS_PAGE, HYPERCALL_SHUTDOWN,
+    HYPERCALL_SNAPSHOT,
 };
 #[cfg(feature = "cargo")]
 pub use crate::hypercalls::{
-    HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_SHUTDOWN, HYPERCALL_SNAPSHOT,
+    HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_REGISTER_PEBS_PAGE, HYPERCALL_SHUTDOWN,
+    HYPERCALL_SNAPSHOT,
 };
 
 // =============================================================================

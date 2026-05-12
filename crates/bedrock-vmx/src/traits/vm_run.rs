@@ -112,6 +112,25 @@ where
     // Load the VMCS
     ctx.state().vmcs.load().map_err(VmRunError::VmcsLoad)?;
 
+    // Cross-CPU EPT TLB invalidation. VMCLEAR/VMPTRLD do not invalidate
+    // guest-physical mappings (Intel SDM Vol 3C §30.4.3.2), and EPT TLB
+    // entries are per-logical-processor — propagating EPT changes to other
+    // LPs is software's responsibility (§30.4.3.4). Within one ioctl
+    // preempt is disabled so we stay on one CPU, but between ioctls the
+    // thread can migrate; CoW remappings done on the intermediate CPU may
+    // leave this CPU's EPT TLB pointing at parent HPAs. Auto-invalidation
+    // on EPT violations only saves us when the cached entry's permissions
+    // would block the access — a permitted read through a stale entry
+    // silently returns the parent's data (§30.4.2). Issue INVEPT
+    // single-context whenever the run thread is on a different CPU than
+    // it last ran on for this VM.
+    let cur_cpu = machine.kernel().current_cpu_id() as u32;
+    if ctx.state().last_cpu != Some(cur_cpu) {
+        let eptp = ctx.state().ept.eptp();
+        <Ctx::V as Vmx>::invept_single_context(eptp).map_err(VmRunError::InveptFailed)?;
+        ctx.state_mut().last_cpu = Some(cur_cpu);
+    }
+
     // Apply #PF interception to exception bitmap (requires VMCS to be loaded).
     ctx.state().apply_intercept_pf();
 
@@ -223,11 +242,57 @@ where
         .write_natural(VmcsFieldNatural::HostRsp, host_rsp)
         .map_err(VmRunError::WriteHostRsp)?;
 
+    // Program host PMU state (e.g. IA32_FIXED_CTR_CTRL) and reset the
+    // counter. Must run with preemption disabled and on the CPU the loop
+    // will execute on — both guaranteed by our caller.
+    ctx.state_mut().instruction_counter.prepare();
+
+    // Configure VMCS auto-save/load of the instruction counter MSR. The CPU
+    // stores the counter into the entry on VM exit and reloads it on VM
+    // entry, so any host-side ticks (e.g. from a perf NMI re-enabling
+    // PERF_GLOBAL_CTRL.bit32) are wiped on the next entry. Without this, the
+    // count between VM exits is non-deterministic when perf's NMI handler
+    // runs, since perf's `__intel_pmu_enable_all` rewrites GLOBAL_CTRL based
+    // on `intel_ctrl_guest_mask` — which doesn't include our counter when
+    // we're not registered with perf.
+    if let Some(entry_phys) = ctx.state().instruction_counter.msr_save_load_entry_phys() {
+        let _ = ctx
+            .state()
+            .vmcs
+            .write64(VmcsField64::VmExitMsrStoreAddr, entry_phys);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write32(VmcsField32::VmExitMsrStoreCount, 1);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write64(VmcsField64::VmEntryMsrLoadAddr, entry_phys);
+        let _ = ctx
+            .state()
+            .vmcs
+            .write32(VmcsField32::VmEntryMsrLoadCount, 1);
+    }
+
     // Configure hardware-assisted perf counter switching if available.
     // The perf_global_ctrl values and entry/exit control bits are constant
     // for the entire run loop — write them once to avoid per-exit VMCS
     // operations (each VMWRITE traps to L0 in nested virt).
-    if let Some((guest_val, host_val)) = ctx.state().instruction_counter.perf_global_ctrl_values() {
+    //
+    // When PEBS is registered, OR in bit 0 (`IA32_PMC0` enable) on the guest
+    // side: PEBS uses PMC0 as its event counter, and the host's
+    // `IA32_PERF_GLOBAL_CTRL` snapshot the IC reads in `prepare()` doesn't
+    // include that bit. Without this, `register_pebs_page`'s one-shot OR
+    // gets clobbered the next time `run_loop` is entered, leaving PMC0
+    // disabled in the guest — PEBS never overflows, no record write, no
+    // EPT violation.
+    let pebs_registered = ctx.state().pebs_state.is_some();
+    if let Some((mut guest_val, host_val)) =
+        ctx.state().instruction_counter.perf_global_ctrl_values()
+    {
+        if pebs_registered {
+            guest_val |= 1;
+        }
         let _ = ctx
             .state()
             .vmcs
@@ -271,6 +336,21 @@ where
         let msr = machine.msr_access();
         let _ = msr.write_msr(msr::IA32_KERNEL_GS_BASE, ctx.state().kernel_gs_base);
 
+        // Swap PEBS PMU MSRs around guest execution if a precise exit is
+        // armed for this iteration. IA32_DS_AREA has no dedicated guest VMCS
+        // field, so we save the host value, write the guest value, run the
+        // guest, then restore the host value. `pebs_armed_this_iter` is
+        // captured before VM-entry because the exit handler may clear
+        // `armed_action`.
+        let pebs_armed_this_iter = ctx
+            .state()
+            .pebs_state
+            .as_deref()
+            .is_some_and(|p| p.armed_action.is_some());
+        if pebs_armed_this_iter {
+            pebs_pre_vm_entry(ctx, msr);
+        }
+
         // Enter the guest.
         // We need to split the borrow here to get mutable access to vmx_ctx
         // while keeping immutable access to vmcs.
@@ -278,6 +358,15 @@ where
         // SAFETY: Caller guarantees VMCS is properly configured and loaded,
         // interrupts are disabled, and preemption cannot migrate us.
         let run_result = unsafe { runner.run(&mut state.vmx_ctx, &state.vmcs) };
+
+        // Restore host PMU MSRs immediately after VM exit if we loaded our
+        // PEBS state on entry. This must precede any other host-side MSR
+        // reads (e.g. KERNEL_GS_BASE below) only in spirit — the order
+        // doesn't matter for correctness, but doing PMU first matches the
+        // load order to keep the diff symmetric.
+        if pebs_armed_this_iter {
+            pebs_post_vm_exit(ctx, msr);
+        }
 
         // Save guest KERNEL_GS_BASE immediately after VM exit, before any IRQ
         // window can let a host interrupt handler overwrite the MSR. Then
@@ -288,9 +377,6 @@ where
         // Record guest execution time (includes VMX entry/exit transitions)
         let post_exit_tsc = rdtsc();
         ctx.state_mut().exit_stats.guest_cycles += post_exit_tsc.saturating_sub(pre_entry_tsc);
-
-        // Clear guest state for perf_guest_cbs after VM exit.
-        ctx.state_mut().instruction_counter.clear_guest_state();
 
         // Serialize instruction stream before reading the PMU counter.
         // LFENCE guarantees all prior instructions have completed locally and no
@@ -382,6 +468,10 @@ where
             }
         }
     };
+
+    // Restore host PMU state. Must happen before we leave the
+    // preemption-disabled region so we are still on the same CPU as `prepare`.
+    ctx.state_mut().instruction_counter.finish();
 
     // Save exit info for userspace (VMCS is still loaded).
     // Deferred to here to avoid 2 VMREAD per iteration — only needed on the

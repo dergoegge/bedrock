@@ -257,8 +257,7 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     let fork_result = {
         let mut allocator = KernelFrameAllocator::new(MACHINE.kernel());
         let exit_handler_rip = vmx::VmxContext::exit_handler_addr();
-        let instruction_counter =
-            LinuxInstructionCounter::new().unwrap_or_else(LinuxInstructionCounter::null);
+        let instruction_counter = LinuxInstructionCounter::new();
 
         match parent_type {
             VmFileType::Root => {
@@ -373,10 +372,6 @@ impl kernel::InPlaceModule for Bedrock {
             ::pin_init::pin_init_from_closure(|slot: *mut Self| {
                 log_info!("Bedrock module loading...\n");
 
-                // Register perf guest callbacks for instruction counting
-                c_helpers::bedrock_register_perf_callbacks();
-                log_info!("Registered perf guest callbacks\n");
-
                 // SAFETY: Called exactly once during module initialization.
                 HANDLER.init();
 
@@ -388,7 +383,6 @@ impl kernel::InPlaceModule for Bedrock {
                     }
                     Err(e) => {
                         log_err!("Failed to initialize VMX: {:?}\n", e);
-                        c_helpers::bedrock_unregister_perf_callbacks();
                         return Err(EINVAL);
                     }
                 };
@@ -435,9 +429,6 @@ impl PinnedDrop for Bedrock {
             Err(e) => log_err!("Error during VMX deinit: {:?}\n", e),
         }
 
-        // Unregister perf guest callbacks
-        // SAFETY: Called exactly once during module cleanup.
-        unsafe { c_helpers::bedrock_unregister_perf_callbacks() };
         log_info!("Bedrock module unloaded successfully\n");
     }
 }

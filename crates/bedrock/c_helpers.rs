@@ -4,15 +4,6 @@
 
 use kernel::bindings::{page, phys_addr_t, smp_call_func_t};
 
-/// Opaque type representing a Linux perf_event structure.
-///
-/// We only interact with perf_events through our C helper functions,
-/// so we don't need to know its internal layout.
-#[repr(C)]
-pub(crate) struct PerfEvent {
-    _private: [u8; 0],
-}
-
 /// XXH64 streaming state structure.
 ///
 /// Matches the kernel's struct xxh64_state from <linux/xxhash.h>.
@@ -50,6 +41,9 @@ pub(crate) struct BedrockVmxCaps {
     pub(crate) cr4_fixed1: u64,
     pub(crate) has_ept: bool,
     pub(crate) has_vpid: bool,
+    pub(crate) pebs_format: u8,
+    pub(crate) pebs_baseline: bool,
+    pub(crate) pebs_trap: bool,
 }
 
 #[allow(improper_ctypes)]
@@ -183,50 +177,6 @@ extern "C" {
     /// Returns non-zero if TIF_NEED_RESCHED is set.
     pub(crate) fn bedrock_need_resched() -> core::ffi::c_int;
 
-    /// Register bedrock's perf guest callbacks.
-    /// Call this during module initialization.
-    pub(crate) fn bedrock_register_perf_callbacks();
-
-    /// Unregister bedrock's perf guest callbacks.
-    /// Call this during module cleanup.
-    pub(crate) fn bedrock_unregister_perf_callbacks();
-
-    /// Mark that we're entering guest mode on the current CPU.
-    /// Call this just before VM entry (with preemption disabled).
-    pub(crate) fn bedrock_set_guest_state(user_mode: bool, rip: core::ffi::c_ulong);
-
-    /// Mark that we've exited guest mode on the current CPU.
-    /// Call this just after VM exit (with preemption still disabled).
-    pub(crate) fn bedrock_clear_guest_state();
-
-    /// Create an instruction counter for guest instruction counting.
-    ///
-    /// Uses exclude_kernel=1 and exclude_host=1 to only count guest instructions.
-    /// Creates counter on current CPU - userspace must pin thread to desired CPU
-    /// before calling this (use sched_setaffinity for P-core pinning on hybrid CPUs).
-    ///
-    /// Returns: perf_event pointer, or ERR_PTR on failure
-    pub(crate) fn bedrock_create_instruction_counter() -> *mut PerfEvent;
-
-    /// Destroy an instruction counter created with bedrock_create_instruction_counter.
-    pub(crate) fn bedrock_destroy_instruction_counter(event: *mut PerfEvent);
-
-    /// Enable instruction counting (call before VM entry).
-    pub(crate) fn bedrock_perf_event_enable(event: *mut PerfEvent);
-
-    /// Disable instruction counting (call after VM exit).
-    pub(crate) fn bedrock_perf_event_disable(event: *mut PerfEvent);
-
-    /// Read the current instruction count (exact value, no skid).
-    pub(crate) fn bedrock_perf_event_read(event: *mut PerfEvent) -> u64;
-
-    /// Get the PERF_GLOBAL_CTRL MSR values for hardware-assisted switching.
-    ///
-    /// Returns true if values were found, false otherwise.
-    /// When true, guest_val and host_val contain the values to write to
-    /// GUEST_IA32_PERF_GLOBAL_CTRL and HOST_IA32_PERF_GLOBAL_CTRL VMCS fields.
-    pub(crate) fn bedrock_get_perf_global_ctrl(guest_val: *mut u64, host_val: *mut u64) -> bool;
-
     /// One-shot XXH64 hash.
     pub(crate) fn bedrock_xxh64(input: *const core::ffi::c_void, length: usize, seed: u64) -> u64;
 
@@ -269,6 +219,9 @@ extern "C" {
         cr4_fixed1: u64,
         has_ept: bool,
         has_vpid: bool,
+        pebs_format: u8,
+        pebs_baseline: bool,
+        pebs_trap: bool,
     );
 
     /// Set VMXON region for the current CPU.

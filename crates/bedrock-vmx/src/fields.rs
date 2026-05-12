@@ -66,6 +66,17 @@ pub enum VmcsField64 {
     // 64-bit control fields (type 0)
     /// Address of MSR bitmaps.
     MsrBitmapAddr = 0x2004,
+    /// Address of the VM-exit MSR-store area — list of MSRs the CPU reads
+    /// guest values from on VM-exit.
+    VmExitMsrStoreAddr = 0x2006,
+    /// Address of the VM-exit MSR-load area — list of MSRs the CPU writes
+    /// host values to on VM-exit. Used to atomically disable host-side PEBS
+    /// so any PEBS record that skids past VM-exit is silently dropped instead
+    /// of writing into stale `IA32_DS_AREA` mappings.
+    VmExitMsrLoadAddr = 0x2008,
+    /// Address of the VM-entry MSR-load area — list of MSRs the CPU writes
+    /// guest values to on VM-entry.
+    VmEntryMsrLoadAddr = 0x200A,
     /// Page-modification log address.
     PmlAddress = 0x200E,
     /// EPT pointer (EPTP).
@@ -115,8 +126,14 @@ pub enum VmcsField32 {
     Cr3TargetCount = 0x400A,
     /// Primary VM-exit controls.
     PrimaryVmExitControls = 0x400C,
+    /// Number of MSRs in the VM-exit MSR-store area.
+    VmExitMsrStoreCount = 0x400E,
+    /// Number of MSRs in the VM-exit MSR-load area.
+    VmExitMsrLoadCount = 0x4010,
     /// VM-entry controls.
     VmEntryControls = 0x4012,
+    /// Number of MSRs in the VM-entry MSR-load area.
+    VmEntryMsrLoadCount = 0x4014,
     /// VM-entry interruption-information field.
     VmEntryInterruptionInfo = 0x4016,
     /// VM-entry exception error code.

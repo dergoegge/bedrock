@@ -418,6 +418,16 @@ pub trait VmxCpu {
             cap.cr4_fixed1 = value;
         }
 
+        // Read PEBS-related capability bits from IA32_PERF_CAPABILITIES.
+        // Absent on processors without PMU architectural enumeration; treat
+        // a read failure as "no PEBS support".
+        // See Intel SDM Vol 3B Section 21.8 / Figure 21-67.
+        if let Ok(value) = msr.read_msr(msr::IA32_PERF_CAPABILITIES) {
+            cap.pebs_trap = (value >> 6) & 1 != 0;
+            cap.pebs_format = ((value >> 8) & 0xF) as u8;
+            cap.pebs_baseline = (value >> 14) & 1 != 0;
+        }
+
         cap
     }
 

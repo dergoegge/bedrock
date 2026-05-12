@@ -87,6 +87,9 @@ impl VmxCpu for RealVmxCpu {
                 caps.cr4_fixed1,
                 caps.has_ept,
                 caps.has_vpid,
+                caps.pebs_format,
+                caps.pebs_baseline,
+                caps.pebs_trap,
             );
         }
     }

@@ -122,6 +122,15 @@ pub struct ExitStats {
     pub vmexit_overhead_cycles: u64,
     /// Cycles spent in the IRQ window between VM exits.
     pub irq_window_cycles: u64,
+    /// PEBS arm returned `BelowMinDelta` — target within `PEBS_MIN_DELTA + PEBS_MARGIN`
+    /// of current count, so PEBS doesn't arm and MTF takes over.
+    pub pebs_arm_below_min_delta: u64,
+    /// PEBS arm returned `AlreadyPast` — target_tsc < current_tsc.
+    pub pebs_arm_already_past: u64,
+    /// Iterations that VM-entered with PEBS armed and exited without firing PEBS.
+    pub pebs_armed_iter_no_fire: u64,
+    /// Timer fires with `emulated_tsc > deadline` (the late-delivery safety net).
+    pub apic_timer_late_inject: u64,
 }
 
 impl ExitStats {
@@ -350,6 +359,31 @@ impl fmt::Display for ExitStatsReport<'_> {
             cycles_to_wall_pct(run)
         )?;
         writeln!(f, "  Wall clock time:    {:>16.3} seconds", wall_secs)?;
+        writeln!(f, "{TABLE_SEP}")?;
+
+        writeln!(f)?;
+        writeln!(f, "PEBS Diagnostics:")?;
+        writeln!(f, "{TABLE_SEP}")?;
+        writeln!(
+            f,
+            "  arm BelowMinDelta:  {:>16}",
+            format_count(stats.pebs_arm_below_min_delta)
+        )?;
+        writeln!(
+            f,
+            "  arm AlreadyPast:    {:>16}",
+            format_count(stats.pebs_arm_already_past)
+        )?;
+        writeln!(
+            f,
+            "  armed iter no fire: {:>16}",
+            format_count(stats.pebs_armed_iter_no_fire)
+        )?;
+        writeln!(
+            f,
+            "  timer late inject:  {:>16}",
+            format_count(stats.apic_timer_late_inject)
+        )?;
         write!(f, "{TABLE_SEP}")
     }
 }

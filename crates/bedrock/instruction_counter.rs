@@ -1,170 +1,218 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! Linux perf_event-based instruction counter implementation.
+//! Direct MSR-based instruction counter using `IA32_PMC0`.
 //!
-//! This module provides `LinuxInstructionCounter`, which uses the Linux kernel's
-//! perf_event subsystem to count guest instructions executed during VM runs.
+//! Counts guest instructions retired (`INST_RETIRED.ANY_P`, event 0xC0) on
+//! general-purpose counter 0, programmed directly via MSRs. Determinism is
+//! achieved by hooking the counter MSR into the VMCS VM-exit MSR-store list
+//! and VM-entry MSR-load list pointing at the same memory entry, so:
+//!
+//! * On VM exit, the CPU atomically saves `IA32_PMC0` into the entry before
+//!   any host code runs.
+//! * On the next VM entry, the CPU atomically reloads `IA32_PMC0` from the
+//!   entry, wiping any ticks the host counter accumulated in between.
+//!
+//! `IA32_PMC0` is used here (rather than the more obvious `IA32_FIXED_CTR0`)
+//! because the precise-VM-exit PEBS facility wants `IA32_FIXED_CTR0` for its
+//! own arming (see `exits/pebs.rs`); putting the IC on a GP counter frees the
+//! fixed counter for PEBS.
+//!
+//! Userspace must pin the thread to the desired CPU before creating the VM;
+//! on hybrid CPUs that should be a P-core (where general-purpose counter 0
+//! supports `INST_RETIRED.ANY_P`).
 
-use crate::c_helpers::{
-    bedrock_clear_guest_state, bedrock_create_instruction_counter,
-    bedrock_destroy_instruction_counter, bedrock_get_perf_global_ctrl, bedrock_perf_event_disable,
-    bedrock_perf_event_enable, bedrock_perf_event_read, bedrock_set_guest_state, PerfEvent,
-};
+use core::arch::asm;
+
+use super::page::{alloc_zeroed_page, KernelPage};
 use crate::vmx::traits::InstructionCounter;
 
-/// Linux perf_event-based instruction counter implementation.
-///
-/// Uses the kernel's perf_event subsystem with `exclude_host=1` to only count
-/// guest instructions. The counter is created on the current CPU - userspace
-/// must pin the thread to the desired CPU before creating the VM.
-///
-/// On hybrid CPUs (like Raptor Lake), userspace should pin to a P-core for
-/// reliable instruction counting.
-pub(crate) struct LinuxInstructionCounter {
-    /// Pointer to the kernel perf_event structure.
-    /// NULL if creation failed.
-    event: *mut PerfEvent,
-    /// Whether counting is currently enabled.
-    _enabled: bool,
+/// Full-width-write alias for general-purpose counter 0 (`IA32_PMC0`,
+/// MSR `0xC1`). `WRMSR` to `IA32_PMC0` itself truncates the input to 32
+/// bits and sign-extends from bit 31, which garbles the counter once
+/// the value crosses ~2.1 billion. Writing through `IA32_A_PMC0` writes
+/// all 48 counter bits directly. Available when
+/// `IA32_PERF_CAPABILITIES.FW_WRITES` (bit 13) is set; required by the
+/// VMCS auto-load round-trip the IC depends on. See SDM Vol 3B Section
+/// 21.2.8.
+const IA32_A_PMC0: u32 = 0x4C1;
+/// Performance event-select register for `IA32_PMC0`.
+const IA32_PERFEVTSEL0: u32 = 0x186;
+/// Global enable for performance counters (SDM Vol 4 Table 2-2).
+const IA32_PERF_GLOBAL_CTRL: u32 = 0x38F;
+
+/// `IA32_PERFEVTSEL0` programming for `INST_RETIRED.ANY_P`: event select
+/// 0xC0, unit mask 0x00, USR (bit 16), OS (bit 17), EN (bit 22). Counts
+/// every retired instruction.
+const PERFEVTSEL0_INST_RETIRED_ANY_P: u64 = (1u64 << 16) | (1u64 << 17) | (1u64 << 22) | 0xC0;
+/// Bit 0 in `IA32_PERF_GLOBAL_CTRL` enables `IA32_PMC0`.
+const PERF_GLOBAL_CTRL_PMC0: u64 = 1;
+
+/// VMCS MSR list entry layout (SDM Vol 3C §25.7.2).
+#[repr(C)]
+struct MsrListEntry {
+    msr_index: u32,
+    reserved: u32,
+    msr_data: u64,
 }
 
-// SAFETY: LinuxInstructionCounter is tied to a specific CPU via its perf_event.
-// We ensure it's only used within the VM run loop where preemption is disabled,
-// so it won't migrate CPUs. The pointer is only accessed via our helper functions.
+#[inline]
+fn rdmsr(addr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    // SAFETY: reading an architectural MSR with no side effects.
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") addr,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+#[inline]
+fn wrmsr(addr: u32, value: u64) {
+    let low = value as u32;
+    let high = (value >> 32) as u32;
+    // SAFETY: caller is responsible for the MSR address and value being
+    // architecturally valid; we only write PMU control MSRs here.
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") addr,
+            in("eax") low,
+            in("edx") high,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+}
+
+/// Direct MSR-based instruction counter for Fixed Counter 0.
+pub(crate) struct LinuxInstructionCounter {
+    /// Backing page for the VMCS MSR-list entry. The first 16 bytes are the
+    /// entry; the rest is unused. None on null counters.
+    msr_entry_page: Option<KernelPage>,
+    /// Saved `IA32_PERFEVTSEL0`, captured in `prepare`, restored in `finish`.
+    saved_perfevtsel0: u64,
+    /// Value the CPU loads into `IA32_PERF_GLOBAL_CTRL` on VM entry.
+    guest_perf_global_ctrl: u64,
+    /// Value the CPU loads into `IA32_PERF_GLOBAL_CTRL` on VM exit.
+    host_perf_global_ctrl: u64,
+    /// Whether `prepare` has run since the last `finish`.
+    armed: bool,
+}
+
+// SAFETY: KernelPage is itself Send (its only state is a kernel `Page` and
+// physical/virtual addresses). The MSR list entry it backs is accessed only
+// while preemption is disabled inside the run loop, on the CPU that owns the
+// VMCS, so there is no concurrent access.
 unsafe impl Send for LinuxInstructionCounter {}
 
 impl LinuxInstructionCounter {
-    /// Create a new instruction counter on the current CPU.
-    ///
-    /// Userspace must pin the thread to the desired CPU before calling this.
-    /// On hybrid CPUs, this should be a P-core for reliable instruction counting.
-    ///
-    /// Returns `None` if perf_event creation fails.
-    pub(crate) fn new() -> Option<Self> {
-        // SAFETY: We call the helper which creates a perf_event on the current CPU.
-        // The pointer is owned by us and will be freed in Drop.
-        let event = unsafe { bedrock_create_instruction_counter() };
+    pub(crate) fn new() -> Self {
+        let msr_entry_page = alloc_zeroed_page().inspect(|page| {
+            // SAFETY: the page is freshly allocated, zeroed, and not aliased.
+            // We initialize the first 16 bytes as a single MSR list entry
+            // pointing at IA32_A_PMC0 (full-width-write alias).
+            unsafe {
+                let entry = page.virt.as_u64() as *mut MsrListEntry;
+                core::ptr::write(
+                    entry,
+                    MsrListEntry {
+                        msr_index: IA32_A_PMC0,
+                        reserved: 0,
+                        msr_data: 0,
+                    },
+                );
+            }
+        });
 
-        // Check for ERR_PTR - error pointers have high bits set
-        // IS_ERR_VALUE checks if the value is in the error range
-        if is_err_ptr(event) {
-            return None;
-        }
-
-        Some(Self {
-            event,
-            _enabled: false,
-        })
-    }
-
-    /// Create a null instruction counter that doesn't actually count.
-    ///
-    /// This is used when instruction counting is not requested.
-    pub(crate) fn null() -> Self {
         Self {
-            event: core::ptr::null_mut(),
-            _enabled: false,
+            msr_entry_page,
+            saved_perfevtsel0: 0,
+            guest_perf_global_ctrl: 0,
+            host_perf_global_ctrl: 0,
+            armed: false,
         }
     }
 
-    /// Check if this counter has a valid perf_event.
-    pub(crate) fn is_valid(&self) -> bool {
-        !self.event.is_null()
-    }
-}
-
-impl Drop for LinuxInstructionCounter {
-    fn drop(&mut self) {
-        // SAFETY: The helper handles NULL and ERR_PTR safely.
-        unsafe {
-            bedrock_destroy_instruction_counter(self.event);
+    /// Read the MSR-data field of the VMCS list entry. The CPU writes this
+    /// atomically on VM exit, so it's the counter value at exit time.
+    #[inline]
+    fn entry_msr_data(&self) -> u64 {
+        match self.msr_entry_page.as_ref() {
+            Some(page) => {
+                // SAFETY: the entry was initialized in `new` and lives as
+                // long as `self`. The CPU writes it on VM exit (under our
+                // VMCS configuration) and we read it from the host between
+                // exits; there is no concurrent access while preemption is
+                // disabled.
+                unsafe {
+                    let entry = page.virt.as_u64() as *const MsrListEntry;
+                    core::ptr::read_volatile(&(*entry).msr_data)
+                }
+            }
+            None => 0,
         }
     }
 }
 
 impl InstructionCounter for LinuxInstructionCounter {
-    fn set_guest_state(&mut self, user_mode: bool, rip: u64) {
-        // SAFETY: This sets per-CPU state for perf_guest_cbs.
-        // We're in the VM run loop with preemption disabled, so this is safe.
-        unsafe {
-            bedrock_set_guest_state(user_mode, rip as core::ffi::c_ulong);
+    fn prepare(&mut self) {
+        if self.msr_entry_page.is_none() {
+            return;
         }
+
+        // Compute PERF_GLOBAL_CTRL values for VMCS auto-load. These act as a
+        // first-line gate: bit 0 is cleared on host so the counter is disabled
+        // outside of guest execution. NMI handlers can still flip this bit,
+        // but the VMCS auto-save/load of IA32_PMC0 makes any host-side ticks
+        // irrelevant — they're overwritten on the next VM entry.
+        let current_global = rdmsr(IA32_PERF_GLOBAL_CTRL);
+        self.host_perf_global_ctrl = current_global & !PERF_GLOBAL_CTRL_PMC0;
+        self.guest_perf_global_ctrl = self.host_perf_global_ctrl | PERF_GLOBAL_CTRL_PMC0;
+
+        // Save the host's IA32_PERFEVTSEL0 and program ours.
+        let saved = rdmsr(IA32_PERFEVTSEL0);
+        self.saved_perfevtsel0 = saved;
+        wrmsr(IA32_PERFEVTSEL0, PERFEVTSEL0_INST_RETIRED_ANY_P);
+
+        self.armed = true;
     }
 
-    fn clear_guest_state(&mut self) {
-        // SAFETY: This clears per-CPU state for perf_guest_cbs.
-        // We're in the VM run loop with preemption disabled, so this is safe.
-        unsafe {
-            bedrock_clear_guest_state();
+    fn finish(&mut self) {
+        if !self.armed {
+            return;
         }
-    }
-
-    fn enable(&mut self) {
-        if !self._enabled && self.is_valid() {
-            // SAFETY: event is a valid perf_event pointer.
-            unsafe {
-                bedrock_perf_event_enable(self.event);
-            }
-            self._enabled = true;
-        }
-    }
-
-    fn disable(&mut self) {
-        if self._enabled && self.is_valid() {
-            // SAFETY: event is a valid perf_event pointer.
-            unsafe {
-                bedrock_perf_event_disable(self.event);
-            }
-            self._enabled = false;
-        }
+        // Restore the host's IA32_PERFEVTSEL0. PERF_GLOBAL_CTRL was already
+        // loaded by hardware on the most recent VM exit.
+        wrmsr(IA32_PERFEVTSEL0, self.saved_perfevtsel0);
+        self.armed = false;
     }
 
     fn read(&self) -> u64 {
-        if self.is_valid() {
-            // SAFETY: event is a valid perf_event pointer.
-            unsafe { bedrock_perf_event_read(self.event) }
-        } else {
-            0
-        }
+        // The MSR-data field grows monotonically across iterations and across
+        // run loops: each VM entry reloads `IA32_PMC0` from this entry, so
+        // guest ticks land back here on the next VM exit's auto-save and host
+        // ticks (between exits) get overwritten on the next entry.
+        self.entry_msr_data()
     }
 
     fn is_configured(&self) -> bool {
-        self.is_valid()
+        self.msr_entry_page.is_some()
     }
 
     fn perf_global_ctrl_values(&self) -> Option<(u64, u64)> {
-        if !self.is_valid() {
-            return None;
-        }
-
-        let mut guest_val: u64 = 0;
-        let mut host_val: u64 = 0;
-
-        // SAFETY: We pass valid pointers to the helper.
-        let found = unsafe {
-            bedrock_get_perf_global_ctrl(
-                core::ptr::from_mut(&mut guest_val),
-                core::ptr::from_mut(&mut host_val),
-            )
-        };
-
-        if found {
-            Some((guest_val, host_val))
+        if self.armed {
+            Some((self.guest_perf_global_ctrl, self.host_perf_global_ctrl))
         } else {
             None
         }
     }
-}
 
-/// Check if a pointer is a Linux ERR_PTR.
-///
-/// Linux error pointers are in the range [MAX_ERRNO, ULONG_MAX].
-/// MAX_ERRNO is typically 4095 (0xFFF).
-#[inline]
-fn is_err_ptr<T>(ptr: *mut T) -> bool {
-    const MAX_ERRNO: usize = 4095;
-    let addr = ptr as usize;
-    // Error pointers are negative values cast to unsigned,
-    // so they're >= (usize::MAX - MAX_ERRNO + 1)
-    addr >= usize::MAX - MAX_ERRNO
+    fn msr_save_load_entry_phys(&self) -> Option<u64> {
+        self.msr_entry_page.as_ref().map(|p| p.phys.as_u64())
+    }
 }

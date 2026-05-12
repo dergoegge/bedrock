@@ -6,6 +6,7 @@ use super::apic::{
     handle_apic_access, handle_ioapic_access, APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE,
 };
 use super::helpers::ExitHandlerResult;
+use super::pebs::{handle_pebs_precise_exit, is_pebs_induced};
 use super::qualifications::EptViolationQualification;
 use super::reasons::ExitReason;
 
@@ -20,6 +21,14 @@ pub fn handle_ept_violation<C: VmContext, A: CowAllocator<C::CowPage>>(
     qual: EptViolationQualification,
     allocator: &mut A,
 ) -> ExitHandlerResult {
+    // PEBS-induced EPT violations (bit 16 of the exit qualification on
+    // processors with the EPT-friendly enhancement) are dispatched first:
+    // they are asynchronous to the offending instruction and only meaningful
+    // for the precise-exit machinery, not for normal MMIO/CoW handling.
+    if is_pebs_induced(&qual) {
+        return handle_pebs_precise_exit(ctx);
+    }
+
     // Read guest physical address that caused the violation
     let guest_phys = ctx
         .state()

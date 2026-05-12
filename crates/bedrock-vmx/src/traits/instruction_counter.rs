@@ -2,100 +2,68 @@
 
 //! Instruction counter trait for deterministic guest execution.
 //!
-//! This module provides an abstraction for counting guest instructions executed
-//! during VM runs. The primary use case is supporting deterministic virtual time
-//! for fuzzing and replay.
-//!
-//! The trait abstracts over the underlying implementation (perf_events on Linux)
-//! to allow testing without hardware.
+//! Backed by Intel Fixed Counter 0 (INST_RETIRED.ANY). On VM entry/exit the
+//! CPU swaps `IA32_PERF_GLOBAL_CTRL` automatically via the VMCS
+//! `LOAD_IA32_PERF_GLOBAL_CTRL` controls, so the counter only ticks during
+//! guest execution. The trait abstracts the implementation so the VM run loop
+//! can be tested without hardware.
 
-/// Trait for counting guest instructions.
+/// Trait for counting guest instructions retired.
 ///
-/// Implementations must track the total number of instructions executed by the
-/// guest. The counter should be:
-/// - Set guest state before VM entry (for perf_guest_cbs)
-/// - Enabled before VM entry
-/// - Disabled after VM exit
-/// - Clear guest state after VM exit
-/// - Read after VM exit to get the exact count
-///
-/// Note: PF_VCPU flag management (for htop guest time accounting) is handled
-/// directly in VmRunner::run() to ensure it wraps only the actual guest execution,
-/// not exit handling.
-///
-/// The polling-based approach (reading on every exit) provides deterministic
-/// counts with no skid, unlike overflow-based approaches.
+/// `prepare` is called once before the VM run loop starts (with preemption
+/// disabled, on the CPU the loop will run on) and `finish` once after it
+/// exits. `read` returns the current guest-instruction count and may be
+/// called from inside the loop after each VM exit.
 pub trait InstructionCounter {
-    /// Set guest state before VM entry.
+    /// Prepare host PMU state for counting.
     ///
-    /// This tells the perf subsystem that we're entering guest mode. On Linux,
-    /// this updates per-CPU state that perf_guest_cbs uses to determine if
-    /// we're in guest mode.
-    ///
-    /// # Arguments
-    /// * `user_mode` - true if guest CPL > 0 (user mode), false if ring 0
-    /// * `rip` - guest instruction pointer
-    fn set_guest_state(&mut self, user_mode: bool, rip: u64);
+    /// Implementations may program MSRs (e.g. `IA32_FIXED_CTR_CTRL`) and
+    /// reset the underlying counter. Must be called with preemption disabled.
+    #[inline]
+    fn prepare(&mut self) {}
 
-    /// Clear guest state after VM exit.
+    /// Restore host PMU state.
     ///
-    /// This tells the perf subsystem that we've exited guest mode.
-    fn clear_guest_state(&mut self);
+    /// Called once after the VM run loop exits, on the same CPU as `prepare`.
+    #[inline]
+    fn finish(&mut self) {}
 
-    /// Enable instruction counting.
-    ///
-    /// Call this before VM entry. If counting is already enabled, this is a no-op.
-    fn enable(&mut self);
-
-    /// Disable instruction counting.
-    ///
-    /// Call this after VM exit. If counting is already disabled, this is a no-op.
-    fn disable(&mut self);
-
-    /// Read the current instruction count.
-    ///
-    /// Returns the total number of guest instructions executed since the counter
-    /// was created. This is an exact value with no skid when read after VM exit.
+    /// Read the current guest instruction count.
     fn read(&self) -> u64;
 
-    /// Check if instruction counting is configured.
-    ///
-    /// Returns `true` if this counter is backed by real hardware (e.g., perf_events),
-    /// `false` for null/mock implementations.
+    /// Whether this counter is hardware-backed (`false` for the null impl).
     fn is_configured(&self) -> bool;
 
-    /// Get the PERF_GLOBAL_CTRL MSR values for hardware-assisted switching.
+    /// `IA32_PERF_GLOBAL_CTRL` values for VMCS hardware-assisted switching.
     ///
-    /// Returns `Some((guest_val, host_val))` if hardware perf counter switching is
-    /// available, `None` otherwise. The values should be written to the VMCS
-    /// `GUEST_IA32_PERF_GLOBAL_CTRL` and `HOST_IA32_PERF_GLOBAL_CTRL` fields.
-    ///
-    /// When the VM entry/exit control bits `LOAD_IA32_PERF_GLOBAL_CTRL` are set,
-    /// the CPU atomically loads these values during VM transitions, eliminating
-    /// instruction counting overhead from manual MSR switching.
+    /// Returns `Some((guest_val, host_val))` when the counter wants the CPU
+    /// to atomically swap the MSR on VM entry/exit; `None` for null counters.
+    /// Only valid after `prepare` has been called.
     fn perf_global_ctrl_values(&self) -> Option<(u64, u64)>;
+
+    /// Physical address of a single 16-byte VMCS MSR list entry that should be
+    /// hooked into both the VM-exit MSR-store list and the VM-entry MSR-load
+    /// list. The entry's MSR-data field is what `read` returns.
+    ///
+    /// The CPU saves the counter MSR into this entry on VM exit, and reloads
+    /// it on the next VM entry, so anything the host (NMI handlers, perf, …)
+    /// does to the live counter MSR between exits is wiped on the next entry.
+    /// This is what makes the count deterministic without registering a perf
+    /// event for the host's PMU subsystem to coordinate around.
+    ///
+    /// Returns `None` for implementations that don't need VMCS auto-save/load
+    /// (null counters, mocks).
+    #[inline]
+    fn msr_save_load_entry_phys(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Null implementation for VMs without instruction counting.
-///
-/// This is used when instruction counting is not requested or not available.
-/// All operations are no-ops and `read()` always returns 0.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NullInstructionCounter;
 
 impl InstructionCounter for NullInstructionCounter {
-    #[inline]
-    fn set_guest_state(&mut self, _user_mode: bool, _rip: u64) {}
-
-    #[inline]
-    fn clear_guest_state(&mut self) {}
-
-    #[inline]
-    fn enable(&mut self) {}
-
-    #[inline]
-    fn disable(&mut self) {}
-
     #[inline]
     fn read(&self) -> u64 {
         0

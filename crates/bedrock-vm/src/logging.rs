@@ -112,10 +112,29 @@ pub struct LogEntry {
     /// Number of COW pages at time of exit.
     pub cow_page_count: u32,
 
-    // Padding (208 bytes)
+    /// Skid of a PEBS-induced EPT-violation exit, in TSC ticks
+    /// (= retired guest instructions) past the intended target. Non-zero
+    /// only on EPT_VIOLATION_PEBS entries; zero everywhere else. With
+    /// architecturally-precise PEBS this should be 0 or 1.
+    pub pebs_skid: i64,
+    /// Guest INST_RETIRED gain between the arming and the firing of this
+    /// PEBS exit. Non-zero only on EPT_VIOLATION_PEBS entries.
+    pub pebs_inst_delta: i64,
+    /// Tsc_offset gain (HLT/MWAIT clamps) between arming and firing.
+    /// Should be 0 for a well-behaved PEBS exit. Non-zero only on
+    /// EPT_VIOLATION_PEBS entries.
+    pub pebs_tsc_offset_delta: i64,
+    /// Run-loop iterations the firing arming persisted across (0 if armed
+    /// fresh in the firing iter, > 0 if stale across non-PEBS exits).
+    /// Non-zero only on EPT_VIOLATION_PEBS entries.
+    pub pebs_iters_since_arm: u32,
+    /// `target_tsc - current_tsc` at arming time — i.e. the requested
+    /// distance to the precise exit, in retired guest instructions.
+    pub pebs_arm_delta: u64,
+
     /// Padding to reach 512 bytes.
     #[serde(skip)]
-    pub _padding: [u64; 26],
+    pub _padding: [u64; 21],
 }
 
 impl LogEntry {

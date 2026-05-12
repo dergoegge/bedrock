@@ -77,15 +77,39 @@ pub fn handle_rdpmc<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
 /// Both are idle instructions that wait for an interrupt. For deterministic
 /// execution, we advance the TSC offset so emulated_tsc reaches the APIC timer
 /// deadline, causing the timer to fire on the next VM entry.
+///
+/// If `stop_at_tsc` is set and falls strictly before the timer deadline,
+/// advance only to `stop_at_tsc` instead. Otherwise the dispatch's coarse
+/// stop check fires at the deadline (overshooting the requested stop point
+/// by up to one timer period). PEBS-precise arming can't help during idle —
+/// the counter only ticks on retired instructions, and MWAIT retires none.
+///
+/// When `timer_deadline == 0` (no timer armed — typically just after a
+/// one-shot tick fired and before the guest re-arms via TSC_DEADLINE) we do
+/// NOT advance `emulated_tsc`. The Linux idle thread spends brief windows in
+/// MWAIT with the timer momentarily disarmed; jumping to `stop_at_tsc` in
+/// that window would terminate the run early on every brief idle, even
+/// though the guest is about to do real work. With no advance, the next
+/// iteration's `inject_pending_interrupt` delivers any pending IRR (e.g.
+/// the timer that just fired) and the guest resumes.
 pub fn handle_idle<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
     let current_tsc = ctx.state().emulated_tsc;
     let timer_deadline = ctx.state().devices.apic.timer_deadline;
+    let stop_at_tsc = ctx.state().stop_at_tsc;
 
-    // If timer is armed and deadline is in the future, advance TSC offset
-    if timer_deadline > 0 && timer_deadline > current_tsc {
-        let delta = timer_deadline - current_tsc;
-        ctx.state_mut().tsc_offset += delta;
-        ctx.state_mut().emulated_tsc = timer_deadline;
+    // Only advance when a timer is armed. With no timer the wake source
+    // could be any pending interrupt (timer just fired, IPI, device, etc.)
+    // — let the next iteration handle injection without skipping ahead.
+    if timer_deadline > 0 {
+        let target = match stop_at_tsc {
+            Some(s) => timer_deadline.min(s),
+            None => timer_deadline,
+        };
+        if target > current_tsc {
+            let delta = target - current_tsc;
+            ctx.state_mut().tsc_offset += delta;
+            ctx.state_mut().emulated_tsc = target;
+        }
     }
 
     if let Err(e) = advance_rip(ctx) {

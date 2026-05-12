@@ -218,4 +218,7 @@ pub enum VmRunError {
     WriteHostTrBase(VmcsWriteError),
     /// Failed to write host GDTR base to VMCS.
     WriteHostGdtrBase(VmcsWriteError),
+    /// INVEPT failed when invalidating stale EPT TLB entries on cross-CPU
+    /// migration into the run loop.
+    InveptFailed(InveptError),
 }

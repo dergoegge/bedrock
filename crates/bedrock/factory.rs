@@ -122,17 +122,10 @@ pub(crate) fn create_vm(
     let exit_handler_rip = super::vmx::VmxContext::exit_handler_addr();
     log_info!("Exit handler RIP: {:#x}\n", exit_handler_rip);
 
-    // Create instruction counter for deterministic execution
-    let instruction_counter = match LinuxInstructionCounter::new() {
-        Some(counter) => {
-            log_info!("Instruction counter created successfully\n");
-            counter
-        }
-        None => {
-            log_err!("Failed to create instruction counter, using null counter\n");
-            LinuxInstructionCounter::null()
-        }
-    };
+    // Create instruction counter for deterministic execution. The actual PMU
+    // setup happens lazily inside the run loop (with preemption disabled);
+    // construction itself is infallible.
+    let instruction_counter = LinuxInstructionCounter::new();
 
     // Create RootVm with EPT mapping, MSR bitmap, and instruction counter
     match RootVm::new(

@@ -37,17 +37,34 @@ EXIT_REASONS = {
     55: "XSETBV",
     57: "RDRAND",
     61: "RDSEED",
+    256: "NEED_RESCHED",
+    257: "LOG_BUFFER_FULL",
     258: "VMCALL_SHUTDOWN",
+    259: "STOP_TSC_REACHED",
     260: "VMCALL_SNAPSHOT",
+    261: "VMCALL_FEEDBACK_BUFFER",
+    262: "POOL_EXHAUSTED",
+    263: "VMCALL_PEBS_PAGE",
 }
 
+# Bit 16 of the EPT-violation exit qualification indicates the access was
+# asynchronous to instruction execution — set for PEBS record writes on
+# processors with the EPT-friendly enhancement (Intel SDM Vol 3C Table 29-7).
+EPT_QUAL_ASYNCHRONOUS = 1 << 16
 
-def exit_name(code):
-    return EXIT_REASONS.get(code, f"UNKNOWN({code})")
+
+def exit_name(code, qualification=None):
+    name = EXIT_REASONS.get(code, f"UNKNOWN({code})")
+    # Distinguish PEBS-induced EPT violations from CoW/MMIO/etc. — they
+    # fire at a precise retired-instruction count via the precise-exit
+    # machinery, rather than at the next opportunistic boundary.
+    if code == 48 and qualification is not None and qualification & EPT_QUAL_ASYNCHRONOUS:
+        name = "EPT_VIOLATION_PEBS"
+    return name
 
 
 def fmt_entry(e, prefix=""):
-    reason = exit_name(e["exit_reason"])
+    reason = exit_name(e["exit_reason"], e.get("exit_qualification"))
     rip = hex(e["rip"])
     parts = [
         f"{prefix}tsc={e['tsc']}  exit={e['exit_reason']}({reason})  rip={rip}",
@@ -89,7 +106,7 @@ def fmt_entry(e, prefix=""):
 
 
 def fmt_entry_short(e, prefix=""):
-    reason = exit_name(e["exit_reason"])
+    reason = exit_name(e["exit_reason"], e.get("exit_qualification"))
     return f"{prefix}tsc={e['tsc']}  exit={e['exit_reason']}({reason})  rip={hex(e['rip'])}  eq={e['exit_qualification']}"
 
 
@@ -147,9 +164,26 @@ def main():
     min_len = min(len(ref_entries), len(bad_entries))
     diverge_idx = None
 
+    # PEBS diagnostic fields are recorded only on the (non-deterministic)
+    # EPT_VIOLATION_PEBS entries and depend on host-side timing — armings
+    # carry across non-deterministic exits like external interrupts, so
+    # iters_since_arm and the inst/offset deltas drift across runs even
+    # when guest execution is identical. Skip them in the divergence
+    # comparison.
+    DIAGNOSTIC_FIELDS = {
+        "pebs_skid",
+        "pebs_inst_delta",
+        "pebs_tsc_offset_delta",
+        "pebs_iters_since_arm",
+        "pebs_arm_delta",
+    }
+
     for i in range(min_len):
         r, b = ref_entries[i], bad_entries[i]
-        diffs = [k for k in r if k in b and r[k] != b[k]]
+        diffs = [
+            k for k in r
+            if k in b and k not in DIAGNOSTIC_FIELDS and r[k] != b[k]
+        ]
         if diffs:
             diverge_idx = i
             break
@@ -184,7 +218,10 @@ def main():
     # Show the divergent exit
     if diverge_idx < min_len:
         r, b = ref_entries[diverge_idx], bad_entries[diverge_idx]
-        diffs = [k for k in r if k in b and r[k] != b[k]]
+        diffs = [
+            k for k in r
+            if k in b and k not in DIAGNOSTIC_FIELDS and r[k] != b[k]
+        ]
 
         print(f"--- First divergent exit [{diverge_idx}] ---")
         print(f"  Differing fields: {', '.join(diffs)}")
@@ -255,7 +292,7 @@ def main():
         nd_entries = load_jsonl(nd_path)
         counts = {}
         for e in nd_entries:
-            reason = exit_name(e["exit_reason"])
+            reason = exit_name(e["exit_reason"], e.get("exit_qualification"))
             counts[reason] = counts.get(reason, 0) + 1
         print(f"  {label} ({len(nd_entries)} total):")
         for reason, count in sorted(counts.items(), key=lambda x: -x[1]):

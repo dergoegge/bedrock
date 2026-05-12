@@ -6,31 +6,29 @@ use super::*;
 fn test_null_instruction_counter() {
     let mut counter = NullInstructionCounter;
 
-    // Should not be configured
     assert!(!counter.is_configured());
 
-    // Operations should be no-ops
-    counter.enable();
-    counter.disable();
+    // Default prepare/finish should be no-ops.
+    counter.prepare();
+    counter.finish();
 
-    // Should always return 0
     assert_eq!(counter.read(), 0);
+    assert!(counter.perf_global_ctrl_values().is_none());
 }
 
 #[test]
 fn test_null_counter_is_copy() {
     let counter = NullInstructionCounter;
-    let _copy = counter; // Should compile - NullInstructionCounter is Copy
-    let _another = counter; // Can use original after copy
+    let _copy = counter;
+    let _another = counter;
 }
 
 /// Mock counter for testing VM code that uses instruction counting.
 #[derive(Debug, Default)]
 pub struct MockInstructionCounter {
     pub count: u64,
-    pub enabled: bool,
-    pub enable_count: u32,
-    pub disable_count: u32,
+    pub prepare_count: u32,
+    pub finish_count: u32,
 }
 
 impl MockInstructionCounter {
@@ -43,22 +41,12 @@ impl MockInstructionCounter {
 }
 
 impl InstructionCounter for MockInstructionCounter {
-    fn set_guest_state(&mut self, _user_mode: bool, _rip: u64) {}
-
-    fn clear_guest_state(&mut self) {}
-
-    fn enable(&mut self) {
-        if !self.enabled {
-            self.enabled = true;
-            self.enable_count += 1;
-        }
+    fn prepare(&mut self) {
+        self.prepare_count += 1;
     }
 
-    fn disable(&mut self) {
-        if self.enabled {
-            self.enabled = false;
-            self.disable_count += 1;
-        }
+    fn finish(&mut self) {
+        self.finish_count += 1;
     }
 
     fn read(&self) -> u64 {
@@ -80,27 +68,12 @@ fn test_mock_instruction_counter() {
 
     assert!(counter.is_configured());
     assert_eq!(counter.read(), 1000);
-    assert!(!counter.enabled);
 
-    // Enable
-    counter.enable();
-    assert!(counter.enabled);
-    assert_eq!(counter.enable_count, 1);
+    counter.prepare();
+    assert_eq!(counter.prepare_count, 1);
+    counter.finish();
+    assert_eq!(counter.finish_count, 1);
 
-    // Enable again should be no-op
-    counter.enable();
-    assert_eq!(counter.enable_count, 1);
-
-    // Disable
-    counter.disable();
-    assert!(!counter.enabled);
-    assert_eq!(counter.disable_count, 1);
-
-    // Disable again should be no-op
-    counter.disable();
-    assert_eq!(counter.disable_count, 1);
-
-    // Can modify count for testing
     counter.count = 5000;
     assert_eq!(counter.read(), 5000);
 }
