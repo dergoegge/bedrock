@@ -6,7 +6,7 @@
 //! for various exit reasons.
 
 /// CR access type (bits 5:4 of exit qualification).
-/// Intel SDM Vol 3C, Table 28-3.
+/// Intel SDM Vol 3C, Table 29-3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CrAccessType {
@@ -35,7 +35,7 @@ impl TryFrom<u8> for CrAccessType {
 }
 
 /// CR access exit qualification.
-/// Intel SDM Vol 3C, Table 28-3.
+/// Intel SDM Vol 3C, Table 29-3.
 #[derive(Debug, Clone, Copy)]
 pub struct CrAccessQualification {
     /// Control register number (0, 3, 4, or 8).
@@ -94,7 +94,7 @@ impl TryFrom<u8> for IoAccessSize {
 }
 
 /// I/O instruction exit qualification.
-/// Intel SDM Vol 3C, Table 28-5.
+/// Intel SDM Vol 3C, Table 29-5.
 #[derive(Debug, Clone, Copy)]
 pub struct IoQualification {
     /// Size of access (1, 2, or 4 bytes).
@@ -164,7 +164,7 @@ impl From<u64> for EptViolationQualification {
 }
 
 /// Interruption type for VM-entry/exit interruption-info fields.
-/// Intel SDM Vol 3C, Table 25-14.
+/// Intel SDM Vol 3C, Tables 26-18, 26-20, and 26-21.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum InterruptionType {
@@ -187,7 +187,7 @@ pub enum InterruptionType {
 }
 
 /// VM-entry/exit interruption information field.
-/// Intel SDM Vol 3C, Section 25.8.3.
+/// Intel SDM Vol 3C, Section 26.8.3 and Sections 26.9.2-26.9.3.
 #[derive(Debug, Clone, Copy)]
 pub struct InterruptionInfo {
     /// Interrupt/exception vector (bits 7:0).

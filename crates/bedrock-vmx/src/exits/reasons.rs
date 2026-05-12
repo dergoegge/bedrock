@@ -2,7 +2,7 @@
 
 //! VM exit reasons as defined in Intel SDM.
 
-/// VM exit reasons as defined in Intel SDM Vol 3D, Appendix C.
+/// VM exit reasons as defined in Intel SDM Vol 3C, Appendix C.
 ///
 /// These are the basic exit reasons (bits 15:0 of the exit reason field).
 /// Bits 31:16 contain additional information (VM-entry failure, etc.).

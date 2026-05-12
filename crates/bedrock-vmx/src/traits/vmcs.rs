@@ -89,9 +89,10 @@ pub trait VirtualMachineControlStructure: Sized {
     /// Returns a pointer to the VMCS region for direct memory access.
     ///
     /// This is used for efficient VMCS copying during VM fork operations.
-    /// Per Intel SDM, the VMCS data format is implementation-specific but
-    /// consistent on the same processor, so memcpy is safe for forked VMs
-    /// running on the same CPU.
+    /// Per Intel SDM, the VMCS data format is implementation-specific; callers
+    /// that copy the region must ensure both VMCS regions use the same VMCS
+    /// revision and implementation format, and that VMCLEAR has made the
+    /// in-memory data current.
     ///
     /// # Safety
     ///
@@ -112,7 +113,7 @@ pub trait VirtualMachineControlStructure: Sized {
     ///
     /// Returns `VmcsWriteError` if any VMWRITE operation fails.
     ///
-    /// See Intel SDM Vol 3C, Section 25.5.
+    /// See Intel SDM Vol 3C, Section 26.5.
     fn setup_host_state(&self, host: &HostState) -> VmcsWriteResult {
         // Control registers
         self.write_natural(VmcsFieldNatural::HostCr0, host.cr0)?;
@@ -195,18 +196,18 @@ pub trait VirtualMachineControlStructure: Sized {
     ///   and USE_MSR_BITMAPS is enabled in the CPU-based controls, this address will be
     ///   written to the MSR bitmap address field.
     ///
-    /// Intel SDM Vol 3C, Chapter 25:
-    /// - Pin-based VM-execution controls (Section 25.6.1)
-    /// - Processor-based VM-execution controls (Section 25.6.2)
-    /// - VM-exit controls (Section 25.7.1)
-    /// - VM-entry controls (Section 25.8.1)
-    /// - MSR-bitmap address (Section 25.6.9)
+    /// Intel SDM Vol 3C, Chapter 26:
+    /// - Pin-based VM-execution controls (Section 26.6.1)
+    /// - Processor-based VM-execution controls (Section 26.6.2)
+    /// - VM-exit controls (Section 26.7.1)
+    /// - VM-entry controls (Section 26.8.1)
+    /// - MSR-bitmap address (Section 26.6.9)
     fn setup_controls(&self, msr_bitmap_addr: Option<HostPhysAddr>) -> Result<(), VmcsSetupError> {
         let vcpu = <Self::M as Machine>::V::current_vcpu();
         let caps = vcpu.capabilities();
 
         // MSR bitmap (required if USE_MSR_BITMAPS control is set)
-        // Intel SDM Vol 3C, Section 25.6.9
+        // Intel SDM Vol 3C, Section 26.6.9
         if caps.cpu_based_exec_ctrl & cpu_based::USE_MSR_BITMAPS != 0 {
             if let Some(addr) = msr_bitmap_addr {
                 self.write64(VmcsField64::MsrBitmapAddr, addr.as_u64())
@@ -215,7 +216,7 @@ pub trait VirtualMachineControlStructure: Sized {
         }
 
         // Pin-based VM-execution controls
-        // Intel SDM Vol 3C, Section 25.6.1
+        // Intel SDM Vol 3C, Section 26.6.1
         self.write32(
             VmcsField32::PinBasedVmExecControls,
             caps.pin_based_exec_ctrl,
@@ -223,7 +224,7 @@ pub trait VirtualMachineControlStructure: Sized {
         .map_err(VmcsSetupError::Controls)?;
 
         // VMX-preemption timer value
-        // Intel SDM Vol 3C, Section 25.5.1
+        // Intel SDM Vol 3C, Section 26.4 and Section 27.5.1
         // The actual timeout depends on TSC frequency and VMX_MISC[4:0] divisor.
         // A value of 0x100000 gives roughly 10ms on typical hardware.
         //
@@ -236,7 +237,7 @@ pub trait VirtualMachineControlStructure: Sized {
         }
 
         // Primary processor-based VM-execution controls
-        // Intel SDM Vol 3C, Section 25.6.2
+        // Intel SDM Vol 3C, Section 26.6.2
         self.write32(
             VmcsField32::PrimaryProcBasedVmExecControls,
             caps.cpu_based_exec_ctrl,
@@ -280,26 +281,26 @@ pub trait VirtualMachineControlStructure: Sized {
         }
 
         // VM-exit controls
-        // Intel SDM Vol 3C, Section 25.7.1
+        // Intel SDM Vol 3C, Section 26.7.1
         self.write32(VmcsField32::PrimaryVmExitControls, caps.vmexit_ctrl)
             .map_err(VmcsSetupError::Controls)?;
 
         // VM-entry controls
-        // Intel SDM Vol 3C, Section 25.8.1
+        // Intel SDM Vol 3C, Section 26.8.1
         self.write32(VmcsField32::VmEntryControls, caps.vmentry_ctrl)
             .map_err(VmcsSetupError::Controls)?;
 
         // Exception bitmap: only intercept #MC (Machine Check, vector 18).
         // Following bhyve's minimal approach - let guest handle its own exceptions.
         // KVM intercepts more but has sophisticated exception injection.
-        // Intel SDM Vol 3C, Section 25.6.3
+        // Intel SDM Vol 3C, Section 26.6.3
         self.write32(VmcsField32::ExceptionBitmap, 1 << 18) // #MC only
             .map_err(VmcsSetupError::Controls)?;
 
         // CR0/CR4 guest/host masks: mask the VMX-constrained bits.
         // When mask bit is 1, guest writes cause VM exit, reads return shadow.
         // This allows us to emulate CR writes while enforcing VMX constraints.
-        // Intel SDM Vol 3C, Section 25.6.6
+        // Intel SDM Vol 3C, Section 26.6.6
         //
         // Following bhyve's approach:
         // - ones_mask = fixed0 & fixed1 (bits that must be 1)
@@ -326,19 +327,19 @@ pub trait VirtualMachineControlStructure: Sized {
             .map_err(VmcsSetupError::Controls)?;
 
         // Page fault error code matching (disabled)
-        // Intel SDM Vol 3C, Section 25.6.3
+        // Intel SDM Vol 3C, Section 26.6.3
         self.write32(VmcsField32::PageFaultErrorCodeMask, 0)
             .map_err(VmcsSetupError::Controls)?;
         self.write32(VmcsField32::PageFaultErrorCodeMatch, 0)
             .map_err(VmcsSetupError::Controls)?;
 
         // CR3 target count (no CR3 target values)
-        // Intel SDM Vol 3C, Section 25.6.7
+        // Intel SDM Vol 3C, Section 26.6.7
         self.write32(VmcsField32::Cr3TargetCount, 0)
             .map_err(VmcsSetupError::Controls)?;
 
         // VM-entry interrupt injection (disabled - bit 31 is valid bit)
-        // Intel SDM Vol 3C, Section 25.8.3
+        // Intel SDM Vol 3C, Section 26.8.3
         self.write32(VmcsField32::VmEntryInterruptionInfo, 0)
             .map_err(VmcsSetupError::Controls)?;
 

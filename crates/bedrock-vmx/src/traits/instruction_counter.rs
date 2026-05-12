@@ -2,11 +2,11 @@
 
 //! Instruction counter trait for deterministic guest execution.
 //!
-//! Backed by Intel Fixed Counter 0 (INST_RETIRED.ANY). On VM entry/exit the
-//! CPU swaps `IA32_PERF_GLOBAL_CTRL` automatically via the VMCS
-//! `LOAD_IA32_PERF_GLOBAL_CTRL` controls, so the counter only ticks during
-//! guest execution. The trait abstracts the implementation so the VM run loop
-//! can be tested without hardware.
+//! Backed by a hardware PMU counter in kernel builds. On VM entry/exit the CPU
+//! swaps `IA32_PERF_GLOBAL_CTRL` automatically via VMCS controls, and the
+//! counter value itself is saved/restored through VMCS MSR lists, so the count
+//! reflects guest execution. The trait abstracts the implementation so the VM
+//! run loop can be tested without hardware.
 
 /// Trait for counting guest instructions retired.
 ///
@@ -17,7 +17,7 @@
 pub trait InstructionCounter {
     /// Prepare host PMU state for counting.
     ///
-    /// Implementations may program MSRs (e.g. `IA32_FIXED_CTR_CTRL`) and
+    /// Implementations may program PMU MSRs (e.g. `IA32_PERFEVTSEL0`) and
     /// reset the underlying counter. Must be called with preemption disabled.
     #[inline]
     fn prepare(&mut self) {}

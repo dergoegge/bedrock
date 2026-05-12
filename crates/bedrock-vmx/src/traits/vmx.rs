@@ -200,7 +200,7 @@ pub trait Vmx {
 
     /// Fix CR0 value to meet VMX requirements.
     ///
-    /// Per Intel SDM Vol 3D, Appendix A.7:
+    /// Per Intel SDM Vol 3C, Appendix A.7:
     /// - If bit X is 1 in IA32_VMX_CR0_FIXED0, that bit must be 1 in CR0
     /// - If bit X is 0 in IA32_VMX_CR0_FIXED1, that bit must be 0 in CR0
     ///
@@ -213,7 +213,7 @@ pub trait Vmx {
 
     /// Fix CR4 value to meet VMX requirements.
     ///
-    /// Per Intel SDM Vol 3D, Appendix A.8:
+    /// Per Intel SDM Vol 3C, Appendix A.8:
     /// - If bit X is 1 in IA32_VMX_CR4_FIXED0, that bit must be 1 in CR4
     /// - If bit X is 0 in IA32_VMX_CR4_FIXED1, that bit must be 0 in CR4
     ///

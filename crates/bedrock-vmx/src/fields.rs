@@ -2,7 +2,7 @@
 
 //! VMCS field encodings organized by width.
 //!
-//! Field encodings from Intel SDM Volume 3A, Appendix B.
+//! Field encodings from Intel SDM Volume 3C, Appendix B.
 //!
 //! Encoding structure (bits):
 //! - 14:13 = Width: 0=16-bit, 1=64-bit, 2=32-bit, 3=natural-width
@@ -66,16 +66,16 @@ pub enum VmcsField64 {
     // 64-bit control fields (type 0)
     /// Address of MSR bitmaps.
     MsrBitmapAddr = 0x2004,
-    /// Address of the VM-exit MSR-store area — list of MSRs the CPU reads
-    /// guest values from on VM-exit.
+    /// Address of the VM-exit MSR-store area — list of MSRs whose guest
+    /// values the CPU writes to memory on VM-exit.
     VmExitMsrStoreAddr = 0x2006,
-    /// Address of the VM-exit MSR-load area — list of MSRs the CPU writes
-    /// host values to on VM-exit. Used to atomically disable host-side PEBS
+    /// Address of the VM-exit MSR-load area — list of host MSR values the
+    /// CPU reads from memory and loads on VM-exit. Used to atomically disable host-side PEBS
     /// so any PEBS record that skids past VM-exit is silently dropped instead
     /// of writing into stale `IA32_DS_AREA` mappings.
     VmExitMsrLoadAddr = 0x2008,
-    /// Address of the VM-entry MSR-load area — list of MSRs the CPU writes
-    /// guest values to on VM-entry.
+    /// Address of the VM-entry MSR-load area — list of guest MSR values the
+    /// CPU reads from memory and loads on VM-entry.
     VmEntryMsrLoadAddr = 0x200A,
     /// Page-modification log address.
     PmlAddress = 0x200E,

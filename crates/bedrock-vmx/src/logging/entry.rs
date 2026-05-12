@@ -113,9 +113,9 @@ pub struct LogEntry {
     pub cow_page_count: u32,
 
     /// Skid of a PEBS-induced EPT-violation exit, in TSC ticks
-    /// (= retired guest instructions) past the intended target. Non-zero
-    /// only on EPT_VIOLATION_PEBS entries; zero everywhere else. With
-    /// architecturally-precise PEBS this should be 0 or 1.
+    /// (= retired guest instructions) past the PEBS firing target
+    /// (`target_tsc - PEBS_MARGIN`). Non-zero only on EPT_VIOLATION_PEBS
+    /// entries; zero everywhere else. With PDist this should usually be 0.
     pub pebs_skid: i64,
     /// Guest INST_RETIRED gain between the arming and the firing of this
     /// PEBS exit. Non-zero only on EPT_VIOLATION_PEBS entries.
@@ -128,17 +128,16 @@ pub struct LogEntry {
     /// fresh in the firing iter, > 0 if stale across non-PEBS exits).
     /// Non-zero only on EPT_VIOLATION_PEBS entries.
     pub pebs_iters_since_arm: u32,
-    /// `target_tsc - current_tsc` at arming time — i.e. the requested
-    /// distance to the precise exit, in retired guest instructions. Lets
-    /// post-mortem tooling correlate skid against arm delta (short deltas
-    /// take the Reduced Skid path; long deltas take PDist).
+    /// PEBS firing target minus current TSC at arming time, in retired guest
+    /// instructions. Lets
+    /// post-mortem tooling correlate skid against arm delta.
     pub pebs_arm_delta: u64,
 
     /// Padding to reach 512 bytes.
     pub _padding: [u64; 21],
 }
 
-// Compile-time assertion that LogEntry is exactly 256 bytes
+// Compile-time assertion that LogEntry is exactly LOG_ENTRY_SIZE bytes.
 const _: () = assert!(core::mem::size_of::<LogEntry>() == LOG_ENTRY_SIZE);
 
 impl LogEntry {

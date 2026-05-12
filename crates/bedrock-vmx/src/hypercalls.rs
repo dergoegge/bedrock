@@ -50,6 +50,6 @@ pub const HYPERCALL_REGISTER_FEEDBACK_BUFFER: u64 = 2;
 /// 3. Remaps the page in EPT as R+E (no W). The next time the PEBS engine
 ///    attempts to write a record, an EPT violation fires and the precise-exit
 ///    handler runs.
-/// 4. Stores `PebsState` in `VmState` so subsequent arming hypercalls /
-///    interrupt-injection / stop-at-tsc paths know where to direct PEBS.
+/// 4. Stores `PebsState` in `VmState` so the APIC-timer precise-exit path
+///    knows where to direct PEBS.
 pub const HYPERCALL_REGISTER_PEBS_PAGE: u64 = 3;

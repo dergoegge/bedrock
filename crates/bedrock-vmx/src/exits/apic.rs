@@ -176,7 +176,7 @@ fn read_apic_register(apic: &ApicState, offset: u32) -> u32 {
         0x370 => apic.lvt_error,
         // Timer Initial Count
         0x380 => apic.timer_initial,
-        // Timer Current Count (timer not running, always 0)
+        // Timer Current Count is not modeled; reads return 0.
         0x390 => 0,
         // Timer Divide Configuration
         0x3E0 => apic.timer_divide,

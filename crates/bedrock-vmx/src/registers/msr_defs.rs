@@ -28,7 +28,7 @@ pub mod msr {
     /// Full-width-write alias for `IA32_PMC0`. `WRMSR` to `IA32_PMC0`
     /// truncates the input to 32 bits and sign-extends from bit 31; writes
     /// to `IA32_A_PMC0` write all 48 counter bits directly. Available when
-    /// `IA32_PERF_CAPABILITIES.FW_WRITES` (bit 13) is set. See SDM Vol 3B
+    /// `IA32_PERF_CAPABILITIES.FULL_WRITE` (bit 13) is set. See SDM Vol 3B
     /// Section 21.2.8.
     pub const IA32_A_PMC0: u32 = 0x4C1;
     /// General purpose performance counter 1.

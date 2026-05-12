@@ -6,7 +6,7 @@
 //! loaded on every VM exit. This module provides the `HostState` struct to
 //! configure these fields.
 //!
-//! See Intel SDM Vol 3C, Section 25.5.
+//! See Intel SDM Vol 3C, Section 26.5.
 
 #[cfg(not(feature = "cargo"))]
 use super::prelude::*;
@@ -114,7 +114,7 @@ impl HostState {
     ///
     /// A fully populated `HostState` ready to be written to the VMCS.
     ///
-    /// See Intel SDM Vol 3C, Section 25.5.
+    /// See Intel SDM Vol 3C, Section 26.5.
     pub fn capture<C: CrAccess, M: MsrAccess, D: DescriptorTableAccess>(
         cr: &C,
         msr_access: &M,

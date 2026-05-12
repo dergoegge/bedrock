@@ -25,7 +25,7 @@ pub type FeedbackBuffersBox = VmallocBox<FeedbackBuffersArray>;
 /// writes the value field of each entry; the index field is set once at
 /// VmState construction by `init_pebs_entry_msr_indexes`.
 ///
-/// Entry 0 is `IA32_FIXED_CTR0` so that armed iterations preserve the
+/// Entry 0 is `IA32_A_PMC0` so that armed iterations preserve the
 /// instruction-counter's auto-reload semantics: while armed, the entry-load
 /// list is repointed from the instruction counter's single-entry page to this
 /// page, and entry 0's value is filled from the instruction counter's saved
@@ -41,7 +41,7 @@ pub type FeedbackBuffersBox = VmallocBox<FeedbackBuffersArray>;
 ///
 /// Entry 1 and the last entry write `IA32_PERF_GLOBAL_CTRL`. The MSR-load
 /// area runs *after* the VMCS-mediated `IA32_PERF_GLOBAL_CTRL` load (SDM
-/// Vol 3C 28.3.3), so without this, when entries 2–4 reconfigure
+/// Vol 3C 28.3.2 and 28.4), so without this, when entries 2–4 reconfigure
 /// `IA32_FIXED_CTR0` / `IA32_FIXED_CTR_CTRL` / `MSR_PEBS_DATA_CFG`, the
 /// counter is already enabled — that "reconfiguring a running counter"
 /// condition disqualifies PDist (SDM Vol 3B 21.9.6) and we want to play
@@ -66,13 +66,14 @@ pub const PEBS_ENTRY_MSR_INDEXES: [u32; 9] = [
 ];
 
 /// Pre-populate the MSR-index fields of a VM-entry MSR-load list page. Each
-/// entry is 16 bytes — u32 index, u32 reserved, u64 value (SDM Table 25-15).
+/// entry is 16 bytes — u32 index, u32 reserved, u64 value (SDM Vol 3C
+/// Table 26-16).
 /// The value fields stay zero; they're filled by `pebs_pre_vm_entry`.
 fn init_pebs_entry_msr_indexes(page_virt: u64) {
     let base = page_virt as *mut u32;
     for (i, &msr_index) in PEBS_ENTRY_MSR_INDEXES.iter().enumerate() {
         // SAFETY: page is freshly allocated, page-aligned, 4KB; we touch
-        // bytes 0..(5 * 16) = 0..80, well within the page.
+        // bytes 0..(9 * 16) = 0..144, well within the page.
         unsafe {
             core::ptr::write(base.add(i * 4), msr_index);
         }
@@ -189,7 +190,7 @@ impl Default for FeedbackBufferInfo {
 
 /// Clear the intercept bit for an MSR in the MSR bitmap (enable passthrough).
 ///
-/// Intel SDM Vol 3C, Section 25.6.9: MSR bitmap is 4KB with layout:
+/// Intel SDM Vol 3C, Section 26.6.9: MSR bitmap is 4KB with layout:
 /// - Offset 0:    Read bitmap for low MSRs (0x00000000-0x00001FFF)
 /// - Offset 1024: Read bitmap for high MSRs (0xC0000000-0xC0001FFF)
 /// - Offset 2048: Write bitmap for low MSRs (0x00000000-0x00001FFF)
@@ -650,8 +651,8 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// Emulated TSC value for deterministic time.
     /// Calculated as: last_instruction_count + tsc_offset
     pub emulated_tsc: u64,
-    /// TSC offset added to instruction count for time-advancing exits (MWAIT).
-    /// When MWAIT advances time to a timer deadline, this offset increases.
+    /// TSC offset added to instruction count for time-advancing idle exits.
+    /// When HLT/MWAIT advances time to a timer deadline, this offset increases.
     pub tsc_offset: u64,
     /// Configured TSC frequency in Hz.
     pub tsc_frequency: u64,
@@ -696,17 +697,16 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     pub last_exit_deterministic: bool,
     /// Skid of the most recent PEBS-induced EPT-violation exit, in TSC ticks
     /// (= retired guest instructions). Computed as
-    /// `emulated_tsc - armed_target_tsc` at handle_pebs_precise_exit time
+    /// `current_tsc - armed_target_tsc` at handle_pebs_precise_exit time
     /// and consumed by `write_log_entry`. A non-zero value indicates the
-    /// PEBS exit landed past its intended target instruction; in
-    /// architecturally-precise PEBS this should be 0 or 1. Stale value
-    /// outside the EPT_VIOLATION_PEBS log entry that captured it — the
-    /// log writer resets it to 0 after recording.
+    /// PEBS exit landed past the programmed PEBS firing point. With PDist this
+    /// should usually be 0. Stale value outside the EPT_VIOLATION_PEBS log
+    /// entry that captured it — the log writer resets it to 0 after recording.
     pub last_pebs_skid: i64,
     /// Guest INST_RETIRED gain between the most recent PEBS arming and the
     /// fire that produced `last_pebs_skid`. Subtracting the encoded
-    /// `target - current` delta gives the actual hardware skid; comparing
-    /// against `last_pebs_tsc_offset_delta` says whether emulated_tsc
+    /// PEBS-firing-point delta gives the actual hardware skid; comparing
+    /// against `last_pebs_tsc_offset_delta` says whether emulated TSC
     /// advanced via guest instructions or via HLT/MWAIT clamps.
     pub last_pebs_inst_delta: i64,
     /// Tsc_offset gain between the most recent PEBS arming and fire. For a
@@ -717,12 +717,9 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// in `arm_precise_exit`'s Armed path. A non-zero value at fire time
     /// indicates the firing iter used a stale (multi-iter) arming.
     pub last_pebs_iters_since_arm: u32,
-    /// `target_tsc - current_tsc` at the time of the most recent
-    /// successful arming — i.e. the requested distance to the precise
-    /// exit, in retired guest instructions. Useful for diagnosing skid
-    /// outliers: short deltas land in the Reduced-Skid regime, long
-    /// deltas in PDist; correlating skid against this value separates
-    /// regime-driven outliers from architectural ones.
+    /// PEBS firing target minus current TSC at the time of the most recent
+    /// successful arming, in retired guest instructions. Useful for diagnosing
+    /// skid outliers by correlating them against the programmed PDist distance.
     pub last_pebs_arm_delta: u64,
     /// Feedback buffers registered by guest via hypercall (up to MAX_FEEDBACK_BUFFERS).
     /// Used for efficient fuzzing feedback collection (e.g., coverage bitmap).
@@ -751,8 +748,8 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// Logical CPU this VM most recently ran on, or `None` before the first
     /// run-loop entry. Used to detect cross-CPU migration between ioctls.
     ///
-    /// VMCLEAR/VMPTRLD do not invalidate guest-physical mappings (Intel SDM
-    /// Vol 3C §30.4.3.2), and EPT TLB entries are per-logical-processor —
+    /// VM entries/exits are not required to invalidate guest-physical mappings
+    /// (Intel SDM Vol 3C §30.4.3.2), and EPT TLB entries are per-logical-processor —
     /// propagating EPT changes to other LPs is software's responsibility
     /// (§30.4.3.4). When the run thread migrates between ioctls, CoW
     /// remappings done on the intermediate CPU may leave this CPU's EPT TLB
@@ -810,7 +807,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
     ) -> Result<Self, VmStateError<A::Error>> {
         // Allocate and initialize the MSR bitmap page.
         // All bits set to 1 = intercept all MSR accesses.
-        // Intel SDM Vol 3C, Section 25.6.9
+        // Intel SDM Vol 3C, Section 26.6.9
         let msr_bitmap = machine
             .kernel()
             .alloc_zeroed_page()
@@ -828,12 +825,12 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         // when `VmExitMsrLoadCount > 0`. We only set the count > 0 once a
         // PEBS scratch page has been registered, so this page is dormant for
         // VMs that never use precise exits.
-        // Intel SDM Vol 3C Section 25.7.2 (VM-exit MSR areas), Table 25-15.
+        // Intel SDM Vol 3C Section 26.7.2 (VM-exit MSR areas), Table 26-16.
         let pebs_exit_msr_load_page = machine
             .kernel()
             .alloc_zeroed_page()
             .ok_or(VmStateError::PebsExitMsrLoadAlloc)?;
-        // Layout per SDM Table 25-15: msr_index (u32), reserved (u32), value (u64).
+        // Layout per SDM Table 26-16: msr_index (u32), reserved (u32), value (u64).
         let entry_ptr = pebs_exit_msr_load_page.virtual_address().as_u64() as *mut u32;
         // SAFETY: page is freshly allocated, zero-initialized, page-aligned;
         // writing 16 bytes at offset 0 is within bounds.
@@ -843,10 +840,10 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         }
 
         // Allocate the VM-entry MSR-load page and pre-populate the MSR-index
-        // fields for the five PEBS-related MSRs we swap on each arming. The
-        // value fields stay zero here; `pebs_pre_vm_entry` writes the actual
-        // per-arming values just before VM-entry. Same SDM reference as the
-        // exit-load page above (Section 25.7.2).
+        // fields for the PEBS entry-load list. The value fields stay zero
+        // here; `pebs_pre_vm_entry` writes the actual per-arming values just
+        // before VM-entry. Same entry format as the exit-load page above
+        // (Table 26-16).
         let pebs_entry_msr_load_page = machine
             .kernel()
             .alloc_zeroed_page()
@@ -856,7 +853,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         // Enable passthrough (no VM exit) for MSRs that have dedicated VMCS
         // guest state fields. Hardware automatically saves/restores these at
         // VM exit/entry.
-        // Intel SDM Vol 3C, Section 25.6.9: MSR Bitmap layout:
+        // Intel SDM Vol 3C, Section 26.6.9: MSR Bitmap layout:
         //   Offset 0:    Read bitmap for low MSRs (0x00000000-0x00001FFF)
         //   Offset 1024: Read bitmap for high MSRs (0xC0000000-0xC0001FFF)
         //   Offset 2048: Write bitmap for low MSRs (0x00000000-0x00001FFF)
@@ -1593,10 +1590,10 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
     /// Create a new VmState for a forked VM by cloning state from a parent.
     ///
     /// This method uses a direct memcpy of the VMCS region for efficiency.
-    /// Per Intel SDM, the VMCS data format is implementation-specific but
-    /// consistent on the same processor. Since forked VMs run on the same CPU,
-    /// we can safely memcpy the entire VMCS region and then update only the
-    /// fields that must differ (EPT pointer, MSR bitmap address).
+    /// Per Intel SDM, the VMCS data format is implementation-specific; this
+    /// assumes the parent and child VMCS regions use the same VMCS revision and
+    /// implementation format. After copying, fields that must differ (EPT
+    /// pointer, MSR bitmap address, and related per-child state) are updated.
     ///
     /// # Arguments
     ///
@@ -1707,8 +1704,9 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             // 2. If it is run, the caller is responsible for proper state management
 
             // Copy entire VMCS region from parent to child.
-            // The VMCS data format is implementation-specific but consistent
-            // on the same processor, so this is safe for forked VMs on same CPU.
+            // The VMCS data format is implementation-specific; the copy relies
+            // on the parent and child VMCS regions having the same revision ID
+            // and implementation format.
             // SAFETY: Both VMCS region pointers are valid PAGE_SIZE allocations.
             // Parent VMCS was cleared (flushed to memory) above, so the copy is coherent.
             unsafe {
@@ -1784,9 +1782,9 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
 
             // Invalidate EPT TLB entries for the child's EPT context.
             // This ensures the forked VM doesn't see stale translations from
-            // the parent. Without this, EPT violation exit_qualification bits
-            // (particularly bits 9-10 indicating page table walk vs cached)
-            // can differ between runs due to TLB caching.
+            // the parent. Without this, cached parent translations can let the
+            // child read parent pages or miss expected CoW/write-protection
+            // exits until an EPT violation happens to invalidate the entry.
             // We use single-context INVEPT (type 1) with the child's EPTP to
             // only invalidate this VM's entries without affecting other VMs.
             <V::M as Machine>::V::invept_single_context(ept.eptp())

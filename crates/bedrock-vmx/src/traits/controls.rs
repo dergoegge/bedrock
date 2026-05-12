@@ -4,7 +4,7 @@
 // =============================================================================
 
 /// Pin-based VM-execution controls.
-/// See Intel SDM Vol 3C, Section 25.6.1.
+/// See Intel SDM Vol 3C, Section 26.6.1.
 pub mod pin_based {
     /// External-interrupt exiting.
     pub const EXT_INTR_EXITING: u32 = 1 << 0;
@@ -15,7 +15,7 @@ pub mod pin_based {
 }
 
 /// Primary processor-based VM-execution controls.
-/// See Intel SDM Vol 3C, Section 25.6.2.
+/// See Intel SDM Vol 3C, Section 26.6.2.
 pub mod cpu_based {
     /// Interrupt-window exiting.
     pub const INTR_WINDOW_EXITING: u32 = 1 << 2;
@@ -48,7 +48,7 @@ pub mod cpu_based {
 }
 
 /// Secondary processor-based VM-execution controls.
-/// See Intel SDM Vol 3C, Section 25.6.2.
+/// See Intel SDM Vol 3C, Section 26.6.2.
 pub mod secondary_exec {
     /// Enable EPT.
     pub const ENABLE_EPT: u32 = 1 << 1;
@@ -67,7 +67,7 @@ pub mod secondary_exec {
 }
 
 /// VM-exit controls.
-/// See Intel SDM Vol 3C, Section 25.7.1.
+/// See Intel SDM Vol 3C, Section 26.7.1.
 pub mod vm_exit {
     /// Host address-space size (64-bit host).
     pub const HOST_ADDR_SPACE_SIZE: u32 = 1 << 9;
@@ -80,7 +80,7 @@ pub mod vm_exit {
 }
 
 /// VM-entry controls.
-/// See Intel SDM Vol 3C, Section 25.8.1.
+/// See Intel SDM Vol 3C, Section 26.8.1.
 pub mod vm_entry {
     /// IA-32e mode guest.
     pub const IA32E_MODE: u32 = 1 << 9;

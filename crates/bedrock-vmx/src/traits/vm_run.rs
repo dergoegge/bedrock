@@ -112,10 +112,10 @@ where
     // Load the VMCS
     ctx.state().vmcs.load().map_err(VmRunError::VmcsLoad)?;
 
-    // Cross-CPU EPT TLB invalidation. VMCLEAR/VMPTRLD do not invalidate
-    // guest-physical mappings (Intel SDM Vol 3C §30.4.3.2), and EPT TLB
-    // entries are per-logical-processor — propagating EPT changes to other
-    // LPs is software's responsibility (§30.4.3.4). Within one ioctl
+    // Cross-CPU EPT TLB invalidation. VM entries/exits are not required to
+    // invalidate guest-physical mappings (Intel SDM Vol 3C §30.4.3.2), and
+    // EPT TLB entries are per-logical-processor — propagating EPT changes to
+    // other LPs is software's responsibility (§30.4.3.4). Within one ioctl
     // preempt is disabled so we stay on one CPU, but between ioctls the
     // thread can migrate; CoW remappings done on the intermediate CPU may
     // leave this CPU's EPT TLB pointing at parent HPAs. Auto-invalidation
@@ -378,14 +378,14 @@ where
         let post_exit_tsc = rdtsc();
         ctx.state_mut().exit_stats.guest_cycles += post_exit_tsc.saturating_sub(pre_entry_tsc);
 
-        // Serialize instruction stream before reading the PMU counter.
+        // Order the instruction stream before reading the PMU counter.
         // LFENCE guarantees all prior instructions have completed locally and no
         // later instruction begins until it completes (SDM Vol 3A §10.3 footnote 3,
         // Vol 2A LFENCE description). This is sufficient for RDPMC which needs prior
         // instructions to have retired so their counter updates are visible.
         // CPUID would also work but causes an L0 VM exit in nested virt (~2000 cycles).
-        // SAFETY: LFENCE is a safe serializing instruction that ensures all prior
-        // instructions have retired before RDPMC reads the performance counter.
+        // SAFETY: LFENCE is a safe ordering instruction that ensures prior
+        // instructions complete locally before RDPMC reads the performance counter.
         #[cfg(not(feature = "cargo"))]
         unsafe {
             core::arch::asm!("lfence", options(preserves_flags, nostack));

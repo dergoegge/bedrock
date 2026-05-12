@@ -81,8 +81,9 @@ pub fn handle_rdpmc<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
 /// If `stop_at_tsc` is set and falls strictly before the timer deadline,
 /// advance only to `stop_at_tsc` instead. Otherwise the dispatch's coarse
 /// stop check fires at the deadline (overshooting the requested stop point
-/// by up to one timer period). PEBS-precise arming can't help during idle —
-/// the counter only ticks on retired instructions, and MWAIT retires none.
+/// by up to one timer period). PEBS-precise arming can't help during idle:
+/// after HLT/MWAIT there are no further retired guest instructions until the
+/// guest is woken.
 ///
 /// When `timer_deadline == 0` (no timer armed — typically just after a
 /// one-shot tick fired and before the guest re-arms via TSC_DEADLINE) we do

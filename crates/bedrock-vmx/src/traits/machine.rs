@@ -60,17 +60,15 @@ pub trait VmRunner {
     /// Execute a single VM entry/exit cycle.
     ///
     /// This function:
-    /// 1. Loads the VMCS if not already loaded
-    /// 2. Updates HOST_RSP to point to the VmxContext
-    /// 3. Loads guest GPRs from VmxContext into CPU registers
-    /// 4. Executes VMLAUNCH (first time) or VMRESUME (subsequent)
-    /// 5. On VM exit, saves guest GPRs back to VmxContext
-    /// 6. Returns success or failure
+    /// 1. Loads guest GPRs from VmxContext into CPU registers
+    /// 2. Executes VMLAUNCH (first time) or VMRESUME (subsequent)
+    /// 3. On VM exit, saves guest GPRs back to VmxContext
+    /// 4. Returns success or failure
     ///
     /// # Arguments
     ///
     /// * `ctx` - VMX context containing guest/host register state
-    /// * `vmcs` - The VMCS for this VM (used to update HOST_RSP)
+    /// * `vmcs` - The VMCS for this VM
     ///
     /// # Returns
     ///
@@ -80,7 +78,8 @@ pub trait VmRunner {
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - VMCS is properly configured (except HOST_RSP which is set by this function)
+    /// - VMCS is loaded and properly configured
+    /// - HOST_RSP points to `ctx`
     /// - Interrupts are in appropriate state
     /// - HOST_RIP is correctly set to the exit handler
     unsafe fn run(

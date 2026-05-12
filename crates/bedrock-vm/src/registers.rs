@@ -173,7 +173,7 @@ impl Regs {
             ..Default::default()
         };
 
-        // CR0: just protection and cache settings
+        // CR0: minimal real-mode defaults (ET + NE).
         regs.control_regs.cr0 = Cr0::new(cr0::NE | cr0::ET);
 
         // Real mode segments: base = selector << 4, limit = 0xFFFF

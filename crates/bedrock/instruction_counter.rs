@@ -31,7 +31,7 @@ use crate::vmx::traits::InstructionCounter;
 /// bits and sign-extends from bit 31, which garbles the counter once
 /// the value crosses ~2.1 billion. Writing through `IA32_A_PMC0` writes
 /// all 48 counter bits directly. Available when
-/// `IA32_PERF_CAPABILITIES.FW_WRITES` (bit 13) is set; required by the
+/// `IA32_PERF_CAPABILITIES.FULL_WRITE` (bit 13) is set; required by the
 /// VMCS auto-load round-trip the IC depends on. See SDM Vol 3B Section
 /// 21.2.8.
 const IA32_A_PMC0: u32 = 0x4C1;
@@ -47,7 +47,7 @@ const PERFEVTSEL0_INST_RETIRED_ANY_P: u64 = (1u64 << 16) | (1u64 << 17) | (1u64 
 /// Bit 0 in `IA32_PERF_GLOBAL_CTRL` enables `IA32_PMC0`.
 const PERF_GLOBAL_CTRL_PMC0: u64 = 1;
 
-/// VMCS MSR list entry layout (SDM Vol 3C §25.7.2).
+/// VMCS MSR-list entry layout (SDM Vol 3C Table 26-16).
 #[repr(C)]
 struct MsrListEntry {
     msr_index: u32,
@@ -89,7 +89,7 @@ fn wrmsr(addr: u32, value: u64) {
     }
 }
 
-/// Direct MSR-based instruction counter for Fixed Counter 0.
+/// Direct MSR-based instruction counter for general-purpose counter 0.
 pub(crate) struct LinuxInstructionCounter {
     /// Backing page for the VMCS MSR-list entry. The first 16 bytes are the
     /// entry; the rest is unused. None on null counters.

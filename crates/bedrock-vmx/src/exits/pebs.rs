@@ -2,17 +2,18 @@
 
 //! Precise VM exits via EPT-friendly PEBS.
 //!
-//! This module provides the per-VM state and EPT-trap setup used to generate
-//! precise VM exits at exact retired-instruction counts. The mechanism: program
-//! a PEBS-enabled GP counter to overflow at the desired event; mark the PEBS
-//! Buffer page R+E (no W) in EPT; the PEBS record write traps as an EPT
-//! violation, producing a synchronous VM exit.
+//! This module provides the per-VM state and EPT-trap setup used to get close
+//! to exact retired-instruction counts with PEBS; the final few instructions
+//! are handled by the MTF margin path in `exits/mod.rs`. The mechanism:
+//! program PEBS on `IA32_FIXED_CTR0` to overflow before the desired event; mark
+//! the PEBS Buffer page R+E (no W) in EPT; the PEBS record write traps as an
+//! EPT violation with the EPT-friendly asynchronous-access bit set.
 //!
 //! See:
-//! - Intel SDM Vol 3B Section 21.6.2.4.2 (Reduced Skid PEBS)
+//! - Intel SDM Vol 3B Section 21.9.4 (Reduced Skid PEBS)
 //! - Intel SDM Vol 3B Section 21.9 (PEBS Facility)
 //! - Intel SDM Vol 3B Section 21.9.5 (EPT-Friendly PEBS)
-//! - Intel SDM Vol 3C Section 27.2.1, Table 29-7 (EPT-violation exit
+//! - Intel SDM Vol 3C Section 29.2.1, Table 29-7 (EPT-violation exit
 //!   qualification, bit 16 = "asynchronous to instruction execution")
 
 use super::ept::translate_gva_to_gpa;
@@ -29,9 +30,9 @@ use crate::prelude::*;
 /// starts at 0x100 to leave clearance.
 pub const PEBS_BUFFER_OFFSET: u64 = 0x100;
 /// Number of bytes reserved for the PEBS Buffer within the scratch page.
-/// Sized to hold one adaptive PEBS record (largest formats are well under
-/// this); since the trap fires on the first record write we never use more
-/// than one record's worth in practice.
+/// Sized to hold one Basic adaptive PEBS record. Since the trap fires on the
+/// first record write, Bedrock never uses more than one record's worth in
+/// practice.
 pub const PEBS_BUFFER_SIZE: u64 = 0x800;
 
 /// Linux x86_64 kernel direct-map base with KASLR disabled (which bedrock
@@ -69,8 +70,7 @@ pub struct DsManagementArea {
     pub pebs_index: u64,
     /// Linear address one past the end of the PEBS Buffer.
     pub pebs_absolute_maximum: u64,
-    /// PEBS index threshold at which the PEBS PMI is signalled. Set
-    /// strictly above `pebs_absolute_maximum` to suppress the PMI.
+    /// PEBS index threshold at which the PEBS PMI is signalled.
     pub pebs_interrupt_threshold: u64,
     /// PEBS record reload values for IA32_PMC0..IA32_PMC7 (offsets 0x40..0x78).
     pub pebs_gp_counter_reset: [u64; 8],
@@ -117,12 +117,13 @@ pub struct PebsState {
     /// Action to apply when the next PEBS-induced EPT violation fires. None
     /// means PEBS is not currently armed for this VM.
     pub armed_action: Option<PebsAction>,
-    /// Target emulated TSC the most recent successful arming aimed at.
+    /// PEBS firing-point TSC the most recent successful arming aimed at
+    /// (`target_tsc - PEBS_MARGIN`, not the final interrupt deadline).
     /// Used to compute the PEBS skid (`current_tsc - armed_target_tsc`,
     /// where `current_tsc = last_instruction_count + tsc_offset`) recorded
     /// on the EPT_VIOLATION_PEBS entry in the non-deterministic exit log
-    /// so userspace can see how far each PEBS exit landed from its
-    /// intended target. Only meaningful while `armed_action.is_some()`.
+    /// so userspace can see how far each PEBS exit landed from its programmed
+    /// firing point. Only meaningful while `armed_action.is_some()`.
     pub armed_target_tsc: u64,
     /// `last_instruction_count` snapshot at the most recent successful
     /// arming. Combined with the value at fire time to derive the
@@ -218,21 +219,20 @@ pub const PERF_GLOBAL_CTRL_FIXED_CTR0: u64 = 1 << 32;
 
 /// Counter width (bits) used by Intel performance counters. PMC writes are
 /// effectively masked to this width by the architecture; for full-width
-/// writes (`IA32_PERF_CAPABILITIES.FW_WRITE`), the high bits are ignored.
+/// writes (`IA32_PERF_CAPABILITIES.FULL_WRITE`), the high bits are ignored.
 /// We intentionally write 48-bit values to stay within the architectural
 /// range. See Intel SDM Vol 3B Section 21.2.8.
 const PMC_COUNTER_WIDTH_BITS: u32 = 48;
 const PMC_COUNTER_MASK: u64 = (1u64 << PMC_COUNTER_WIDTH_BITS) - 1;
 
-/// Minimum encoded delta (counter_reload distance from overflow) for PDist.
+/// Minimum encoded delta (counter_reload distance from overflow) Bedrock uses
+/// for PDist.
 ///
 /// PDist (Precise Distribution) requires the counter reload value to be at
-/// least 256 events away from overflow (Intel SDM Vol 3B 21.9.6). Below
-/// this, PDist silently disengages and PEBS falls back to Reduced Skid —
-/// the resulting exits land 1 instruction late relative to the PDist case,
-/// breaking the skid=0 invariant we rely on. Short deltas use the MTF
-/// single-step path (`exits/mod.rs` `update_mtf_state`) which is
-/// architecturally exact.
+/// least 256 events away from overflow (Intel SDM Vol 3B 21.9.6). Bedrock
+/// uses 257 as a conservative cutoff, so the borderline 256-event period stays
+/// on the MTF single-step path (`exits/mod.rs` `update_mtf_state`) instead of
+/// depending on PDist.
 pub const PEBS_MIN_DELTA: u64 = 257;
 
 /// Margin (in retired guest instructions) by which the PEBS-armed precise
@@ -275,7 +275,7 @@ pub enum ArmResult {
 /// `delta_tsc == delta_instructions`.
 ///
 /// The encoded distance to overflow is `delta - PEBS_MARGIN`, which must
-/// be at least `PEBS_MIN_DELTA` for PDist to engage; below that, the
+/// be at least `PEBS_MIN_DELTA` for Bedrock to use PDist; below that, the
 /// caller falls back to MTF stepping for the entire remaining distance.
 pub fn arm_precise_exit(
     pebs: &mut PebsState,
@@ -289,12 +289,10 @@ pub fn arm_precise_exit(
         return ArmResult::AlreadyPast;
     }
     let delta = target_tsc - current_tsc;
-    // Encoded distance to overflow must be ≥ PEBS_MIN_DELTA for PDist to
-    // engage; below that, PEBS would land in Reduced-Skid regime and
-    // break the skid=0 invariant. When delta is too small to arm with
-    // PDist the count is already inside the MTF single-step window
-    // (sized at PEBS_MIN_DELTA + PEBS_MARGIN in update_mtf_state) and
-    // MTF stepping will land on the boundary directly.
+    // Encoded distance to overflow must be ≥ PEBS_MIN_DELTA for Bedrock to
+    // use PDist. The SDM minimum is 256 (Vol 3B 21.9.6); this code keeps a
+    // one-event cushion and lets the MTF single-step window handle shorter
+    // deltas directly.
     if delta < PEBS_MIN_DELTA + PEBS_MARGIN {
         return ArmResult::BelowMinDelta;
     }
@@ -509,10 +507,10 @@ pub fn pebs_pre_vm_entry<C: VmContext, M: MsrAccess>(ctx: &mut C, msr: &M) {
     ];
 
     // Each MSR-load entry is 16 bytes: u32 index, u32 reserved, u64 value
-    // (SDM Vol 3C Table 25-15). We only update the value field at offset +8;
+    // (SDM Vol 3C Table 26-16). We only update the value field at offset +8;
     // the index field was set once at VmState construction.
-    // SAFETY: page is 4KB, page-aligned; we touch bytes within (7 * 16) = 112,
-    // well within bounds.
+    // SAFETY: page is 4KB, page-aligned; we touch bytes within the 9-entry
+    // MSR-load area (9 * 16 = 144), well within bounds.
     unsafe {
         for (i, value) in values.iter().enumerate() {
             let value_ptr = (entry_load_va as *mut u8).add(i * 16 + 8).cast::<u64>();
@@ -773,13 +771,15 @@ pub fn register_pebs_page<C: VmContext, A: CowAllocator<C::CowPage>>(
     }
 
     // Wire the VM-exit MSR-load list to disable IA32_PEBS_ENABLE atomically
-    // on every VM-exit. PEBS records can skid past the exit-causing
-    // instruction by one event (Reduced Skid PEBS, SDM Vol 3B 21.6.2.4.2);
-    // if the skid lands in host context with the guest's IA32_DS_AREA still
-    // loaded, the record write attempts a supervisor read of the guest VA
-    // and faults under SMAP. Setting PEBS_ENABLE = 0 atomically with VM-exit
-    // tells the PEBS engine to drop any pending record before the host runs
-    // a single instruction. See SDM Vol 3C Section 25.7.2 (VM-exit MSR areas).
+    // on every VM-exit. PEBS records can be pending after the eventing
+    // instruction (Reduced Skid PEBS, SDM Vol 3B 21.9.4) and EPT-friendly
+    // PEBS may defer a record until after the subsequent VM entry (Vol 3B
+    // 21.9.5). If a pending record reaches host context with the guest's
+    // IA32_DS_AREA still loaded, the write attempts a supervisor access to the
+    // guest VA and faults under SMAP. Setting PEBS_ENABLE = 0 atomically with
+    // VM-exit tells the PEBS engine to drop any pending record before the host
+    // runs a single instruction. See SDM Vol 3C Section 26.7.2 and Section
+    // 29.6 (VM-exit MSR-load area).
     let exit_load_pa = ctx.state().pebs_exit_msr_load_page.physical_address();
     let _ = ctx
         .state()
@@ -869,8 +869,8 @@ mod tests {
     #[test]
     fn arm_minimum_delta_writes_correct_counter_reload() {
         let mut p = make_pebs_state();
-        // Smallest delta that arms PEBS: encoded distance = PEBS_MIN_DELTA
-        // (exactly at the PDist threshold).
+        // Smallest delta that arms PEBS under Bedrock's conservative cutoff:
+        // encoded distance = PEBS_MIN_DELTA.
         let delta = PEBS_MIN_DELTA + PEBS_MARGIN;
         let r = arm_precise_exit(
             &mut p,
@@ -1043,15 +1043,14 @@ pub fn handle_pebs_precise_exit<C: VmContext>(ctx: &mut C) -> ExitHandlerResult 
         .and_then(|p| p.armed_action.take());
     match action {
         Some(PebsAction::InjectInterrupt(_vector)) => {
-            // The emulated TSC is now exactly at the APIC timer deadline (the
-            // PEBS counter overflow + 1-event Reduced Skid lands precisely on
-            // the target instruction). The pre-VM-entry path runs
-            // `inject_pending_interrupt` which calls `check_apic_timer` —
-            // that will see emulated_tsc >= deadline, set IRR for the timer
-            // vector, and inject. We don't bypass that path because it also
-            // re-arms PEBS for the next periodic deadline and updates APIC
-            // ISR/IRR state correctly. The vector argument is informational
-            // (kept for future non-APIC-timer uses).
+            // PEBS fired near the APIC timer deadline, normally at
+            // `target - PEBS_MARGIN`. Continue through the normal pre-entry
+            // path so `update_mtf_state` can single-step the remaining margin
+            // and `inject_pending_interrupt` / `check_apic_timer` can set IRR
+            // and inject exactly at the deadline. We don't bypass that path
+            // because it also re-arms PEBS for the next periodic deadline and
+            // updates APIC ISR/IRR state correctly. The vector argument is
+            // informational (kept for future non-APIC-timer uses).
             ExitHandlerResult::Continue
         }
         None => {

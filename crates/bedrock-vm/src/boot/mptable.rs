@@ -132,7 +132,7 @@ pub fn setup_mptable(memory: &mut [u8]) {
     offset += 1;
     memory[offset] = 0x03; // CPU flags: enabled (bit 0) + BSP (bit 1)
     offset += 1;
-    // CPU signature: Family 6, Model 85, Stepping 7 (Skylake-SP like)
+    // CPU signature: Family 6, Model 5, Stepping 7.
     let cpu_signature: u32 = (6 << 8) | (5 << 4) | 7;
     memory[offset..offset + 4].copy_from_slice(&cpu_signature.to_le_bytes());
     offset += 4;

@@ -50,7 +50,7 @@ pub fn handle_exception_nmi<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
             .read32(VmcsField32::VmExitInterruptionErrorCode)
             .unwrap_or(0);
 
-        // The faulting linear address is in exit qualification (SDM Vol 3C, Section 28.2.2).
+        // The faulting linear address is in exit qualification (SDM Vol 3C, Section 29.2.1).
         // The CPU may not update the physical CR2 register before a VM exit caused by the
         // exception bitmap — the SDM only guarantees exit qualification. Explicitly copy it
         // to guest_cr2 so vmx_support.S restores the correct value on VM entry.

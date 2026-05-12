@@ -2,9 +2,9 @@
 
 //! MTRR (Memory Type Range Registers) emulation.
 //!
-//! Stores the guest's MTRR register values. With EPT, these values
-//! combine with EPT memory types to determine effective caching. Guests
-//! expect to be able to read/write them. Following bhyve's approach.
+//! Stores the guest's MTRR register values. Bedrock currently exposes these
+//! values back to the guest but does not use them to compute EPT memory types;
+//! EPT mappings are created as write-back elsewhere. Following bhyve's approach.
 
 #[cfg(not(feature = "cargo"))]
 use super::super::logging::{StateHash, Xxh64Hasher};
@@ -16,9 +16,9 @@ pub const MTRR_VAR_MAX: usize = 10;
 
 /// MTRR (Memory Type Range Registers) state for guest emulation.
 ///
-/// Stores the guest's MTRR register values. With EPT, these values
-/// combine with EPT memory types to determine effective caching. Guests
-/// expect to be able to read/write them. Following bhyve's approach.
+/// Stores the guest's MTRR register values. Bedrock currently exposes these
+/// values back to the guest but does not use them to compute EPT memory types;
+/// EPT mappings are created as write-back elsewhere. Following bhyve's approach.
 #[derive(Clone, Debug)]
 pub struct MtrrState {
     /// MTRRdefType (0x2FF) - default memory type and enable bits.

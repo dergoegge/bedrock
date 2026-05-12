@@ -124,7 +124,7 @@ impl Vmx for RealVmx {
     fn is_supported() -> bool {
         // Check CPUID.1:ECX.VMX[bit 5]
         // Note: We need to preserve rbx as LLVM uses it internally.
-        // We use xchg to save/restore rbx to a temporary register.
+        // Save/restore it through a temporary register around CPUID.
         let ecx: u32;
         let rbx_save: u64;
         // SAFETY: CPUID is a read-only instruction; we save/restore rbx around it.

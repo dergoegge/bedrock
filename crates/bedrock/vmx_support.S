@@ -3,8 +3,8 @@
  * Bedrock VMX Assembly Support
  *
  * Assembly code for VMLAUNCH/VMRESUME and guest/host context switching.
- * Based on KVM's vmenter.S approach where HOST_RSP points to the kernel stack,
- * not to the VmxContext structure.
+ * On VM exit, HOST_RSP points to the VmxContext structure so the exit handler
+ * can save guest registers before restoring the kernel stack frame.
  */
 
 #include <linux/linkage.h>

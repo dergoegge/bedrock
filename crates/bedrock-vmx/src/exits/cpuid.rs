@@ -25,7 +25,7 @@ pub fn handle_cpuid<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         0x0 => {
             // Vendor ID - pass through "GenuineIntel" from host
             // EAX = max supported basic leaf, limit to what we handle
-            // This is deterministic as long as we run on same CPU vendor
+            // This is deterministic as long as host CPUID is stable across runs.
             if eax > 0x16 {
                 eax = 0x16; // Cap at highest leaf we handle
             }
@@ -34,7 +34,7 @@ pub fn handle_cpuid<C: VmContext>(ctx: &mut C) -> ExitHandlerResult {
         0x1 => {
             // Basic CPUID information
             // Set fixed processor signature: Family 6, Model 85 (Skylake-SP), Stepping 7
-            // EAX format: [31:28]=ext_family, [27:20]=ext_model, [19:16]=type,
+            // EAX format: [31:28]=reserved, [27:20]=ext_family, [19:16]=ext_model,
             //             [15:14]=reserved, [13:12]=type, [11:8]=family, [7:4]=model, [3:0]=stepping
             // For Family 6, Model 85: ext_model=5, model=5, family=6, stepping=7
             eax = 0x00050657;

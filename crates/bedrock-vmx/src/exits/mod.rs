@@ -254,7 +254,7 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
 
     // Update emulated TSC from instruction count + offset for deterministic exits.
     // This ensures RDTSC/RDTSCP return values that correlate with guest progress.
-    // The offset is increased by time-advancing exits like MWAIT.
+    // The offset is increased by time-advancing exits like HLT/MWAIT.
     if !non_deterministic_exit {
         let tsc = ctx.state().last_instruction_count + ctx.state().tsc_offset;
         ctx.state_mut().emulated_tsc = tsc;

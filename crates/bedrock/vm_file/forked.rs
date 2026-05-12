@@ -127,8 +127,9 @@ unsafe extern "C" fn bedrock_forked_vm_release(
 
 /// Mmap callback for bedrock forked-vm files.
 ///
-/// Forked VMs only support mapping the serial buffer and log buffer.
-/// Guest memory cannot be mapped because it uses COW from the parent.
+/// Forked VMs support mapping auxiliary buffers (serial, log, serial TSC,
+/// feedback). Guest memory cannot be mapped as one contiguous region because
+/// it uses COW from the parent.
 ///
 /// # Safety
 ///
