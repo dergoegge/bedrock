@@ -214,7 +214,7 @@ impl PebsState {
 const FIXED_CTR_CTRL_FC0_OS_USR: u64 = 0b11;
 
 /// Bit 32 of `IA32_PERF_GLOBAL_CTRL` enables `IA32_FIXED_CTR0`.
-const PERF_GLOBAL_CTRL_FIXED_CTR0: u64 = 1 << 32;
+pub const PERF_GLOBAL_CTRL_FIXED_CTR0: u64 = 1 << 32;
 
 /// Counter width (bits) used by Intel performance counters. PMC writes are
 /// effectively masked to this width by the architecture; for full-width

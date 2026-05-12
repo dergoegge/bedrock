@@ -43,7 +43,7 @@ pub use interrupts::{inject_pending_interrupt, reinject_vectored_event};
 pub use pebs::{
     arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, pebs_post_vm_exit,
     pebs_pre_vm_entry, ArmResult, DsManagementArea, PebsAction, PebsState, PEBS_MARGIN,
-    PEBS_MIN_DELTA,
+    PEBS_MIN_DELTA, PERF_GLOBAL_CTRL_FIXED_CTR0,
 };
 pub use qualifications::{
     CrAccessQualification, EptViolationQualification, IoQualification, RdrandInstructionInfo,

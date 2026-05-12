@@ -101,14 +101,14 @@ pub use super::exits::{
     arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, handle_exit,
     inject_pending_interrupt, pebs_post_vm_exit, pebs_pre_vm_entry, update_mtf_state, ArmResult,
     DsManagementArea, ExitError, ExitHandlerResult, ExitReason, PebsAction, PebsState, APIC_BASE,
-    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA,
+    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA, PERF_GLOBAL_CTRL_FIXED_CTR0,
 };
 #[cfg(feature = "cargo")]
 pub use crate::exits::{
     arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, handle_exit,
     inject_pending_interrupt, pebs_post_vm_exit, pebs_pre_vm_entry, update_mtf_state, ArmResult,
     DsManagementArea, ExitError, ExitHandlerResult, ExitReason, PebsAction, PebsState, APIC_BASE,
-    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA,
+    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA, PERF_GLOBAL_CTRL_FIXED_CTR0,
 };
 
 // =============================================================================

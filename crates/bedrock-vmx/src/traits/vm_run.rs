@@ -279,19 +279,19 @@ where
     // for the entire run loop — write them once to avoid per-exit VMCS
     // operations (each VMWRITE traps to L0 in nested virt).
     //
-    // When PEBS is registered, OR in bit 0 (`IA32_PMC0` enable) on the guest
-    // side: PEBS uses PMC0 as its event counter, and the host's
-    // `IA32_PERF_GLOBAL_CTRL` snapshot the IC reads in `prepare()` doesn't
-    // include that bit. Without this, `register_pebs_page`'s one-shot OR
-    // gets clobbered the next time `run_loop` is entered, leaving PMC0
-    // disabled in the guest — PEBS never overflows, no record write, no
-    // EPT violation.
+    // When PEBS is registered, OR in bit 32 (`IA32_FIXED_CTR0` enable) on
+    // the guest side: PEBS uses `IA32_FIXED_CTR0` as its event counter, and
+    // the host's `IA32_PERF_GLOBAL_CTRL` snapshot the IC reads in
+    // `prepare()` doesn't include that bit. Without this,
+    // `register_pebs_page`'s one-shot OR gets clobbered the next time
+    // `run_loop` is entered, leaving `IA32_FIXED_CTR0` disabled in the
+    // guest — PEBS never overflows, no record write, no EPT violation.
     let pebs_registered = ctx.state().pebs_state.is_some();
     if let Some((mut guest_val, host_val)) =
         ctx.state().instruction_counter.perf_global_ctrl_values()
     {
         if pebs_registered {
-            guest_val |= 1;
+            guest_val |= PERF_GLOBAL_CTRL_FIXED_CTR0;
         }
         let _ = ctx
             .state()
