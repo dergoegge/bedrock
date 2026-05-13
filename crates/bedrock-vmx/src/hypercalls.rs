@@ -27,6 +27,50 @@ pub const HYPERCALL_SNAPSHOT: u64 = 1;
 /// Up to 16 feedback buffers can be registered per VM.
 pub const HYPERCALL_REGISTER_FEEDBACK_BUFFER: u64 = 2;
 
+/// Register the guest's 4KB shared I/O channel page.
+///
+/// Inputs:
+/// - RBX: Guest virtual address of the shared page (must be 4KB-aligned).
+///
+/// Outputs:
+/// - RAX: 0 on success, !0 (-1) on failure (unaligned or GVA translation failed).
+///
+/// The page is owned by a guest kernel module (`bedrock-io.ko`) and is the
+/// rendezvous buffer for the deterministic I/O channel. Hypervisor → guest
+/// communication is delivered as an external interrupt on IOAPIC pin
+/// `IO_CHANNEL_IRQ`; the guest handler then issues
+/// `HYPERCALL_IO_GET_REQUEST` to receive the request bytes the hypervisor
+/// has written into this page, performs the action, writes the response
+/// back into the same page, and issues `HYPERCALL_IO_PUT_RESPONSE` to hand
+/// it back to the host.
+///
+/// Re-registration is allowed and overwrites the previous registration.
+pub const HYPERCALL_IO_REGISTER_PAGE: u64 = 4;
+
+/// Fetch the pending I/O request into the registered shared page.
+///
+/// Issued by the guest from its IRQ workqueue after the I/O channel IRQ
+/// fires. The hypervisor writes the queued request bytes into the
+/// previously-registered shared page (offset 0) and returns the request
+/// length in RAX. RAX == 0 means there was no pending request (spurious or
+/// already-consumed IRQ); RAX == !0 indicates an error (no page registered).
+pub const HYPERCALL_IO_GET_REQUEST: u64 = 5;
+
+/// Deliver the I/O response back to the host.
+///
+/// Inputs:
+/// - RBX: Length in bytes of the response data written into the shared page
+///   (capped at `PAGE_SIZE`).
+///
+/// Outputs:
+/// - RAX: 0 on success, !0 on failure.
+///
+/// After this hypercall the hypervisor reads the response bytes out of the
+/// shared page into VmState, clears the in-flight request, and exits to
+/// userspace with `VmcallIoResponse` so the host driver can drain the
+/// response and queue the next request.
+pub const HYPERCALL_IO_PUT_RESPONSE: u64 = 6;
+
 /// Register a single 4KB page as the PEBS scratch page for precise VM exits.
 ///
 /// The page must be:

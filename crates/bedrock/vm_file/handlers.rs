@@ -691,3 +691,172 @@ pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: us
 
     0
 }
+
+/// Offset of the data payload past the header in a `BedrockIoActionPayload`.
+const IO_ACTION_DATA_OFFSET: usize = size_of::<BedrockIoActionHeader>();
+
+/// Handle `BEDROCK_VM_QUEUE_IO_ACTION` ioctl — userspace pushes a request
+/// onto the hypervisor's pending queue. The guest's `bedrock-io.ko` is
+/// free to fire long-running commands in parallel: this ioctl returns
+/// immediately once the request is queued, and `HYPERCALL_IO_GET_REQUEST`
+/// promotes the next pending entry as soon as the previous one has been
+/// consumed (independent of when the guest worker calls
+/// `HYPERCALL_IO_PUT_RESPONSE`).
+///
+/// The header is staged through the stack (16 bytes); the payload bytes
+/// are copied directly from userspace into a per-pending `HeapVec<u8>`,
+/// avoiding the 4KB stack burst a single `BedrockIoActionPayload` would
+/// cost. Returns `EBUSY` only if the pending queue is at
+/// `PENDING_IO_QUEUE_CAP` capacity.
+pub(crate) fn handle_queue_io_action<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+    let mut header = core::mem::MaybeUninit::<BedrockIoActionHeader>::uninit();
+
+    // SAFETY: `header.as_mut_ptr()` points to valid, aligned, writable memory
+    // for a `BedrockIoActionHeader` (16 bytes). `arg` is a user-provided
+    // pointer from the ioctl syscall; `bedrock_copy_from_user` performs a
+    // bounded copy.
+    let not_copied = unsafe {
+        bedrock_copy_from_user(
+            header.as_mut_ptr().cast::<core::ffi::c_void>(),
+            arg as *const core::ffi::c_void,
+            size_of::<BedrockIoActionHeader>() as core::ffi::c_ulong,
+        )
+    };
+    if not_copied != 0 {
+        return -(bindings::EFAULT as isize);
+    }
+    // SAFETY: `bedrock_copy_from_user` returned 0, so all bytes of `header`
+    // have been written.
+    let header = unsafe { header.assume_init() };
+
+    let len = header.len as usize;
+    if len > BEDROCK_IO_CHANNEL_BUF_SIZE {
+        return -(bindings::EINVAL as isize);
+    }
+
+    // Allocate the per-request data Vec tightly-sized to `len`. This keeps
+    // the per-pending heap footprint proportional to the actual request
+    // size rather than a fixed 4KB.
+    let mut data = match super::super::vmx::heap_vec_with_capacity::<u8>(len) {
+        Ok(v) => v,
+        Err(_) => return -(bindings::ENOMEM as isize),
+    };
+    if len > 0 {
+        // KVec doesn't have a `resize_with_zero` we can use cheaply, so
+        // push zeros first then overwrite via `bedrock_copy_from_user`
+        // (which only writes; doesn't require uninit memory). Pushing one
+        // byte at a time is acceptable for the queue depths we target.
+        // The capacity was reserved above, so push cannot grow the vector
+        // and `Err` here means a real allocation failure mid-fill.
+        for _ in 0..len {
+            if super::super::vmx::heap_vec_push(&mut data, 0u8).is_err() {
+                return -(bindings::ENOMEM as isize);
+            }
+        }
+        // SAFETY: `data` has exactly `len` bytes of valid, writable
+        // storage now; `arg + IO_ACTION_DATA_OFFSET` is a userspace
+        // pointer past the header.
+        let not_copied = unsafe {
+            bedrock_copy_from_user(
+                data.as_mut_ptr().cast::<core::ffi::c_void>(),
+                (arg + IO_ACTION_DATA_OFFSET) as *const core::ffi::c_void,
+                len as core::ffi::c_ulong,
+            )
+        };
+        if not_copied != 0 {
+            return -(bindings::EFAULT as isize);
+        }
+    }
+
+    let action = super::super::vmx::PendingIoAction {
+        target_tsc: header.target_tsc,
+        data,
+    };
+
+    let chan = &mut vm_file.vm_mut().state_mut().io_channel;
+    match chan.enqueue_pending(action) {
+        super::super::vmx::EnqueueResult::Queued => {}
+        super::super::vmx::EnqueueResult::Full => return -(bindings::EBUSY as isize),
+        super::super::vmx::EnqueueResult::OutOfMemory => return -(bindings::ENOMEM as isize),
+    }
+    // Fast-path: if the in-flight slot is currently free, promote
+    // immediately so the next `inject_pending_interrupt` can fire the
+    // IRQ without waiting for another VM exit.
+    chan.promote_next_pending();
+
+    0
+}
+
+/// Handle `BEDROCK_VM_DRAIN_IO_RESPONSE` ioctl — userspace fetches the
+/// most recent response captured from the guest via `HYPERCALL_IO_PUT_RESPONSE`.
+///
+/// Behaves like a single-shot consume: after the response bytes are
+/// copied to userspace, the kernel resets `response_len` to 0 so a
+/// subsequent drain returns an empty payload (and the next QUEUE can
+/// proceed).
+pub(crate) fn handle_drain_io_response<F: VmFileOps>(vm_file: &mut F, arg: usize) -> isize {
+    let mut header = core::mem::MaybeUninit::<BedrockIoActionHeader>::uninit();
+    // SAFETY: `header.as_mut_ptr()` points to 8 bytes of stack memory.
+    // `arg` is a user-provided pointer.
+    let not_copied = unsafe {
+        bedrock_copy_from_user(
+            header.as_mut_ptr().cast::<core::ffi::c_void>(),
+            arg as *const core::ffi::c_void,
+            size_of::<BedrockIoActionHeader>() as core::ffi::c_ulong,
+        )
+    };
+    if not_copied != 0 {
+        return -(bindings::EFAULT as isize);
+    }
+    // SAFETY: `bedrock_copy_from_user` returned 0, so the header is initialized.
+    let header = unsafe { header.assume_init() };
+
+    let user_capacity = header.len as usize;
+    if user_capacity > BEDROCK_IO_CHANNEL_BUF_SIZE {
+        return -(bindings::EINVAL as isize);
+    }
+
+    let chan = &mut vm_file.vm_mut().state_mut().io_channel;
+    let response_len = chan.response_len.min(user_capacity);
+
+    if response_len > 0 {
+        // SAFETY: `chan.response_buf` is a `Box<[u8; IO_CHANNEL_BUF_SIZE]>`
+        // so its pointer is valid for `response_len <= IO_CHANNEL_BUF_SIZE`
+        // bytes. The destination pointer is in userspace and validated by
+        // `bedrock_copy_to_user`.
+        let not_copied = unsafe {
+            bedrock_copy_to_user(
+                (arg + IO_ACTION_DATA_OFFSET) as *mut core::ffi::c_void,
+                chan.response_buf.as_ptr().cast::<core::ffi::c_void>(),
+                response_len as core::ffi::c_ulong,
+            )
+        };
+        if not_copied != 0 {
+            return -(bindings::EFAULT as isize);
+        }
+    }
+
+    // Write the actual length back into the header.
+    let out_header = BedrockIoActionHeader {
+        len: response_len as u32,
+        _reserved: 0,
+        // target_tsc is QUEUE-only; the DRAIN reply leaves it zero.
+        target_tsc: 0,
+    };
+    // SAFETY: `arg` points to a `BedrockIoActionPayload` whose first
+    // `size_of::<BedrockIoActionHeader>()` bytes are the header; we
+    // overwrite those bytes only.
+    let not_copied = unsafe {
+        bedrock_copy_to_user(
+            arg as *mut core::ffi::c_void,
+            core::ptr::from_ref(&out_header).cast::<core::ffi::c_void>(),
+            size_of::<BedrockIoActionHeader>() as core::ffi::c_ulong,
+        )
+    };
+    if not_copied != 0 {
+        return -(bindings::EFAULT as isize);
+    }
+
+    chan.response_len = 0;
+    0
+}

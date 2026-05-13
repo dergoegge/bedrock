@@ -59,6 +59,49 @@ pub(crate) const BEDROCK_VM_GET_VM_ID: u32 = _IOR::<u64>(BEDROCK_IOC_MAGIC, 11);
 pub(crate) const BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO: u32 =
     _IOR::<BedrockFeedbackBufferInfoRequest>(BEDROCK_IOC_MAGIC, 12);
 
+/// Ioctl number for QUEUE_IO_ACTION command - queue an I/O channel request.
+pub(crate) const BEDROCK_VM_QUEUE_IO_ACTION: u32 =
+    _IOW::<BedrockIoActionPayload>(BEDROCK_IOC_MAGIC, 13);
+
+/// Ioctl number for DRAIN_IO_RESPONSE command - drain the most recent I/O channel response.
+pub(crate) const BEDROCK_VM_DRAIN_IO_RESPONSE: u32 =
+    _IOR::<BedrockIoActionPayload>(BEDROCK_IOC_MAGIC, 14);
+
+/// Maximum I/O channel payload size (one 4KB page).
+pub(crate) const BEDROCK_IO_CHANNEL_BUF_SIZE: usize = 4096;
+
+/// Header fields of an I/O channel ioctl payload. The full payload is this
+/// header followed by `BEDROCK_IO_CHANNEL_BUF_SIZE` bytes of data;
+/// handlers stage the header through the stack (16 bytes) and copy the
+/// payload directly into / out of VmState to avoid a 4KB stack burst.
+#[repr(C)]
+pub(crate) struct BedrockIoActionHeader {
+    /// For QUEUE: number of valid bytes in the payload.
+    /// For DRAIN: on input, capacity available in the user buffer; on output,
+    /// the number of bytes the kernel wrote.
+    pub len: u32,
+    /// Reserved for alignment.
+    pub _reserved: u32,
+    /// Earliest emulated-TSC value at which the queued request may fire
+    /// (QUEUE only; ignored by DRAIN). Zero means "fire as soon as the
+    /// guest is interruptible". When non-zero, the hypervisor arms PEBS
+    /// so the IRQ lands at the precise instruction count corresponding to
+    /// this TSC.
+    pub target_tsc: u64,
+}
+
+/// I/O channel ioctl payload (header + data buffer).
+///
+/// Stored as a single contiguous struct so the userspace ABI is
+/// self-contained. Never instantiated on the kernel stack — the handlers
+/// only read/write the header eagerly and use partial copies for the data
+/// section.
+#[repr(C)]
+pub(crate) struct BedrockIoActionPayload {
+    pub header: BedrockIoActionHeader,
+    pub data: [u8; BEDROCK_IO_CHANNEL_BUF_SIZE],
+}
+
 /// Request structure for GET_FEEDBACK_BUFFER_INFO ioctl.
 ///
 /// Userspace passes this structure to specify which feedback buffer index to query.

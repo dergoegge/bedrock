@@ -221,6 +221,12 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> ForkedVm
         // This handles the case where feedback buffers were registered before fork.
         forked_vm.pre_cow_feedback_buffers(allocator);
 
+        // Pre-COW the I/O channel shared page if registered. Without this
+        // any HYPERCALL_IO_GET_REQUEST that fires on the fork would hit
+        // write_guest_memory's "page not COW'd yet" error path and the
+        // request would never reach the guest module.
+        forked_vm.pre_cow_io_channel_page(allocator);
+
         Ok(forked_vm)
     }
 
@@ -559,6 +565,77 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                 new_page_phys.as_u64()
             );
         }
+    }
+
+    fn pre_cow_io_channel_page<A: CowAllocator<Self::CowPage>>(&mut self, allocator: &mut A) {
+        let page_gpa_raw = self.state.io_channel.page_gpa;
+        if page_gpa_raw == 0 {
+            return;
+        }
+        let page_gpa = GuestPhysAddr::new(page_gpa_raw & !0xFFF);
+
+        // Already CoW'd — nothing to do.
+        if self.cow_pages.contains(page_gpa) {
+            return;
+        }
+
+        let new_page = match allocator.allocate_cow_page() {
+            Ok(page) => page,
+            Err(_) => {
+                log_err!(
+                    "pre_cow_io_channel_page: failed to allocate page for GPA {:#x}\n",
+                    page_gpa.as_u64()
+                );
+                return;
+            }
+        };
+        let new_page_virt = new_page.virtual_address().as_u64() as *mut u8;
+        let new_page_phys = new_page.physical_address();
+
+        // Copy current contents from parent so the guest module's view
+        // of the page is preserved (the kernel module may have initial
+        // bookkeeping on it).
+        let parent_page = match self.parent_read_page(page_gpa) {
+            Some(ptr) => ptr,
+            None => {
+                log_err!(
+                    "pre_cow_io_channel_page: GPA {:#x} out of parent memory range\n",
+                    page_gpa.as_u64()
+                );
+                return;
+            }
+        };
+        // SAFETY: parent_page points to a valid PAGE_SIZE parent page;
+        // new_page_virt points to a freshly-allocated PAGE_SIZE page. The
+        // regions do not overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(parent_page, new_page_virt, PAGE_SIZE);
+        }
+
+        if self.cow_pages.insert(page_gpa, new_page).is_err() {
+            log_err!("pre_cow_io_channel_page: failed to insert page into COW map\n");
+            return;
+        }
+
+        if let Err(_e) = self.state.ept.remap_4k(
+            allocator,
+            page_gpa,
+            new_page_phys,
+            EptPermissions::READ_WRITE_EXECUTE,
+            EptMemoryType::WriteBack,
+        ) {
+            log_err!(
+                "pre_cow_io_channel_page: failed to remap EPT for GPA {:#x}\n",
+                page_gpa.as_u64()
+            );
+            return;
+        }
+
+        log_debug!(
+            "pre_cow_io_channel_page: pre-COW'd I/O channel page at GPA {:#x} -> HPA {:#x}\n",
+            page_gpa.as_u64(),
+            new_page_phys.as_u64()
+        );
     }
 
     fn finalize_log_entry<K: Kernel>(&mut self, _kernel: &K) {

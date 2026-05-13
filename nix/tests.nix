@@ -60,10 +60,16 @@ let
         " >&2"
       )
 
-      # Boot podman guest (runs workload, shuts down via VMCALL)
+      # Boot podman guest (runs workload, shuts down via VMCALL).
+      # The --io-action exercises the deterministic I/O channel:
+      # at virtual-time 100s the host queues a "list running
+      # containers" request, the guest module receives the IRQ on
+      # pin 9, runs `podman ps`, and returns the container names
+      # to the host.
       machine.succeed(
         "bedrock-cli -m 3072"
         " -i ${podmanInitrd}"
+        " --io-action vt=100.0:list"
         " ${guestKernel}/vmlinux"
         " >&2"
       )

@@ -52,7 +52,7 @@ pub use cow::CowPageMap;
 // Exit handling types
 pub use exits::{
     handle_exit, CrAccessQualification, EptViolationQualification, ExitError, ExitHandlerResult,
-    ExitReason, IoQualification,
+    ExitReason, IoQualification, IO_CHANNEL_IRQ,
 };
 
 /// Test mocks for use in other crates' tests.

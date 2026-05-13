@@ -98,17 +98,19 @@ pub use bedrock_ept::{EptMemoryType, EptPageTable, EptPermissions, FrameAllocato
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::exits::{
-    arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, handle_exit,
+    arm_for_next_iteration, arm_precise_exit, check_io_channel, disarm_precise_exit, handle_exit,
     inject_pending_interrupt, pebs_post_vm_exit, pebs_pre_vm_entry, update_mtf_state, ArmResult,
     DsManagementArea, ExitError, ExitHandlerResult, ExitReason, PebsAction, PebsState, APIC_BASE,
-    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA, PERF_GLOBAL_CTRL_FIXED_CTR0,
+    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, IO_CHANNEL_IRQ, PEBS_MARGIN, PEBS_MIN_DELTA,
+    PERF_GLOBAL_CTRL_FIXED_CTR0,
 };
 #[cfg(feature = "cargo")]
 pub use crate::exits::{
-    arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, handle_exit,
+    arm_for_next_iteration, arm_precise_exit, check_io_channel, disarm_precise_exit, handle_exit,
     inject_pending_interrupt, pebs_post_vm_exit, pebs_pre_vm_entry, update_mtf_state, ArmResult,
     DsManagementArea, ExitError, ExitHandlerResult, ExitReason, PebsAction, PebsState, APIC_BASE,
-    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, PEBS_MARGIN, PEBS_MIN_DELTA, PERF_GLOBAL_CTRL_FIXED_CTR0,
+    APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE, IO_CHANNEL_IRQ, PEBS_MARGIN, PEBS_MIN_DELTA,
+    PERF_GLOBAL_CTRL_FIXED_CTR0,
 };
 
 // =============================================================================
@@ -140,11 +142,13 @@ pub use crate::decoder::decode_instruction;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::hypercalls::{
+    HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_PUT_RESPONSE, HYPERCALL_IO_REGISTER_PAGE,
     HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_REGISTER_PEBS_PAGE, HYPERCALL_SHUTDOWN,
     HYPERCALL_SNAPSHOT,
 };
 #[cfg(feature = "cargo")]
 pub use crate::hypercalls::{
+    HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_PUT_RESPONSE, HYPERCALL_IO_REGISTER_PAGE,
     HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_REGISTER_PEBS_PAGE, HYPERCALL_SHUTDOWN,
     HYPERCALL_SNAPSHOT,
 };
@@ -162,15 +166,17 @@ pub use crate::cow::CowPageMap;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::vm_state::{
-    box_vm_state, AllExitStats, ExitStats, FeedbackBufferInfo, LogMode, SyscallMsrs, VmState,
-    VmStateBox, VmStateError, DEFAULT_TSC_FREQUENCY, FEEDBACK_BUFFER_MAX_PAGES,
-    MAX_FEEDBACK_BUFFERS,
+    box_vm_state, AllExitStats, EnqueueResult, ExitStats, FeedbackBufferInfo, IoChannelState,
+    LogMode, PendingIoAction, SyscallMsrs, VmState, VmStateBox, VmStateError,
+    DEFAULT_TSC_FREQUENCY, FEEDBACK_BUFFER_MAX_PAGES, IO_CHANNEL_BUF_SIZE, MAX_FEEDBACK_BUFFERS,
+    PENDING_IO_QUEUE_CAP,
 };
 #[cfg(feature = "cargo")]
 pub use crate::vm_state::{
-    box_vm_state, AllExitStats, ExitStats, FeedbackBufferInfo, LogMode, SyscallMsrs, VmState,
-    VmStateBox, VmStateError, DEFAULT_TSC_FREQUENCY, FEEDBACK_BUFFER_MAX_PAGES,
-    MAX_FEEDBACK_BUFFERS,
+    box_vm_state, AllExitStats, EnqueueResult, ExitStats, FeedbackBufferInfo, IoChannelState,
+    LogMode, PendingIoAction, SyscallMsrs, VmState, VmStateBox, VmStateError,
+    DEFAULT_TSC_FREQUENCY, FEEDBACK_BUFFER_MAX_PAGES, IO_CHANNEL_BUF_SIZE, MAX_FEEDBACK_BUFFERS,
+    PENDING_IO_QUEUE_CAP,
 };
 
 // =============================================================================
@@ -186,9 +192,11 @@ pub use crate::timing::rdtsc;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::compat::{
-    heap_box, heap_vec_push, heap_vec_with_capacity, AllocError, HeapBox, HeapVec, VmallocBox,
+    heap_box, heap_vec_push, heap_vec_remove_front, heap_vec_with_capacity, AllocError, HeapBox,
+    HeapVec, VmallocBox,
 };
 #[cfg(feature = "cargo")]
 pub use crate::compat::{
-    heap_box, heap_vec_push, heap_vec_with_capacity, AllocError, HeapBox, HeapVec, VmallocBox,
+    heap_box, heap_vec_push, heap_vec_remove_front, heap_vec_with_capacity, AllocError, HeapBox,
+    HeapVec, VmallocBox,
 };

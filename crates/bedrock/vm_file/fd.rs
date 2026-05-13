@@ -47,12 +47,22 @@ pub(crate) fn create_vm_fd(
     )?;
     let vm_ptr = KBox::into_raw(vm_file);
 
-    // Register in global vm_list
+    // Register in global vm_list. Allocation failure here is fatal:
+    // running a VM that isn't in the tracking list breaks find_vm_by_id
+    // and fork-from-id paths, so we tear the VM back down and return
+    // -ENOMEM rather than press on.
     {
         let mut guard = HANDLER.lock();
         if let Some(handler) = guard.as_mut() {
             if let Some(nn) = NonNull::new(vm_ptr) {
-                handler.add_vm(nn, vm_id);
+                if handler.add_vm(nn, vm_id).is_err() {
+                    drop(guard);
+                    // SAFETY: vm_ptr was created by KBox::into_raw above
+                    // and ownership has not been transferred — fd hasn't
+                    // been created yet.
+                    let _ = unsafe { KBox::from_raw(vm_ptr) };
+                    return Err(kernel::error::code::ENOMEM);
+                }
             }
         }
     }
@@ -113,12 +123,21 @@ pub(crate) fn create_forked_vm_fd(
     )?;
     let vm_ptr = KBox::into_raw(vm_file);
 
-    // Register in global vm_list
+    // Register in global vm_list. Same fatal-on-failure handling as the
+    // root-VM path: a VM missing from the tracker can't be looked up
+    // for fork or shutdown, so unwind and return -ENOMEM.
     {
         let mut guard = HANDLER.lock();
         if let Some(handler) = guard.as_mut() {
             if let Some(nn) = NonNull::new(vm_ptr) {
-                handler.add_vm(nn, vm_id);
+                if handler.add_vm(nn, vm_id).is_err() {
+                    drop(guard);
+                    // SAFETY: vm_ptr was created by KBox::into_raw above
+                    // and ownership has not been transferred — fd hasn't
+                    // been created yet.
+                    let _ = unsafe { KBox::from_raw(vm_ptr) };
+                    return Err(kernel::error::code::ENOMEM);
+                }
             }
         }
     }

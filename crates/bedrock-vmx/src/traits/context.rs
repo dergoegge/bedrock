@@ -116,6 +116,21 @@ pub trait VmContext {
         // Default: no-op for root VMs
     }
 
+    /// Pre-COW the I/O channel shared page (if registered) so that
+    /// hypervisor-side writes from the VMCALL handlers don't trip the
+    /// "page not COW'd yet" error path in
+    /// [`VmContext::write_guest_memory`].
+    ///
+    /// Unlike the guest, the hypervisor writes into the shared page from
+    /// the VMCALL handler context — no EPT violation gets generated, so
+    /// the lazy CoW-on-write path doesn't fire. Forked VMs must
+    /// proactively allocate a writable CoW page for the registered GPA;
+    /// for root VMs (no parent, EPT already maps writable host memory)
+    /// this is a no-op.
+    fn pre_cow_io_channel_page<A: CowAllocator<Self::CowPage>>(&mut self, _allocator: &mut A) {
+        // Default: no-op for root VMs
+    }
+
     // ========== Register Methods ==========
 
     /// Set guest registers from the provided register struct.

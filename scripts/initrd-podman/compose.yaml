@@ -60,6 +60,10 @@ services:
     privileged: true  # Required for VMCALL instruction
     volumes:
       - /usr/local/bin/bedrock-miner:/bedrock-miner:ro
+      # Driver scripts the deterministic I/O channel enumerates via
+      # ACTION_GET_WORKLOAD_DETAILS. Anything user-executable here
+      # appears in the workload listing and becomes a fuzz target.
+      - /usr/local/share/bedrock-drivers:/opt/bedrock/drivers:ro
     entrypoint: ["/bedrock-miner"]
     command: ["600"]  # Sleep interval in seconds (10 minutes)
     depends_on:

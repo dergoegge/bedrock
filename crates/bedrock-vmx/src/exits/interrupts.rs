@@ -8,6 +8,21 @@ use super::helpers::{inject_exception, ExitError};
 use super::pebs::arm_for_next_iteration;
 use super::qualifications::InterruptionInfo;
 
+/// IOAPIC pin used for the deterministic hypervisor↔guest I/O channel.
+///
+/// The MP table advertises this pin as a routable ISA interrupt so the
+/// guest's `bedrock-io.ko` can `request_irq()` it through the normal Linux
+/// IRQ subsystem (the kernel then programs the IOAPIC redirection-table
+/// entry with a chosen vector). The hypervisor injects via
+/// [`ioapic_deliver_irq`], reusing the same path the emulated serial port
+/// uses for IRQ 4.
+///
+/// Pin 9 is not used by the emulated platform's other devices (PIT is on
+/// pin 0, serial COM1 on pin 4, RTC would be on pin 8) and corresponds to
+/// ISA IRQ 9, which is conventionally reserved for ACPI on real hardware —
+/// since bedrock guests are ACPI-less, it's free for us to claim.
+pub const IO_CHANNEL_IRQ: u8 = 9;
+
 #[cfg(not(feature = "cargo"))]
 use super::super::prelude::*;
 #[cfg(feature = "cargo")]
@@ -63,6 +78,53 @@ pub fn check_apic_timer<C: VmContext>(ctx: &mut C) {
         // One-shot: stop timer
         apic.timer_deadline = 0;
     }
+}
+
+/// Check whether an I/O channel request is queued and not yet delivered to
+/// the guest, and if so, raise the I/O channel IRQ via the emulated IOAPIC.
+///
+/// The guest module is responsible for two prerequisites before we can
+/// fire:
+///   1. It registered the shared page (sets `io_channel.page_gpa != 0`).
+///   2. It `request_irq`'d the channel IRQ, which causes Linux to write an
+///      unmasked, valid-vector entry into `ioapic.redtbl[IO_CHANNEL_IRQ]`.
+///
+/// Until both are true the request just sits in `VmState`; once they're
+/// both true `ioapic_deliver_irq` flips the APIC IRR bit and the normal
+/// `inject_pending_interrupt` path delivers it on the next interruptible
+/// VM-entry. We set `request_delivered = true` only after we've actually
+/// raised the IRR (i.e. the IOAPIC entry was unmasked) so a request that
+/// arrives before the guest module is ready isn't silently dropped.
+pub fn check_io_channel<C: VmContext>(ctx: &mut C) {
+    let chan = &ctx.state().io_channel;
+    if chan.page_gpa == 0 {
+        return;
+    }
+    if chan.request_len == 0 {
+        return;
+    }
+    if chan.request_delivered {
+        return;
+    }
+    // When the request was queued with a target TSC, defer until the
+    // emulated TSC has caught up. `arm_for_next_iteration` arms PEBS for
+    // this target so we exit precisely at the requested instruction
+    // count; `check_io_channel` then fires on the boundary MTF step
+    // where `emulated_tsc == request_target_tsc` (and on any later exit
+    // as a safety net for the AlreadyPast / BelowMinDelta cases).
+    if chan.request_target_tsc != 0 && ctx.state().emulated_tsc < chan.request_target_tsc {
+        return;
+    }
+
+    let entry = ctx.state().devices.ioapic.redtbl[IO_CHANNEL_IRQ as usize];
+    // Masked (bit 16) or vector < 16: the guest module hasn't wired up the
+    // IRQ yet. Leave the request pending and try again next iteration.
+    if (entry >> 16) & 1 != 0 || (entry & 0xFF) < 16 {
+        return;
+    }
+
+    ioapic_deliver_irq(ctx, IO_CHANNEL_IRQ);
+    ctx.state_mut().io_channel.request_delivered = true;
 }
 
 /// Calculate APIC timer divisor from the Divide Configuration Register (DCR).
@@ -234,6 +296,13 @@ pub fn inject_pending_interrupt<C: VmContext>(ctx: &mut C) -> Result<(), ExitErr
                 false
             } else {
                 check_apic_timer(ctx);
+                // Raise the I/O channel IRQ if a host-queued request is
+                // pending and the guest module has wired up its IRQ
+                // handler. Sequenced after `check_apic_timer` so that when
+                // both are eligible the timer (typically higher vector,
+                // higher priority) wins selection in `apic_pending_vector`
+                // and ours queues behind it via the sticky IRR bit.
+                check_io_channel(ctx);
                 true
             }
         };

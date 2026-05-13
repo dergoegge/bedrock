@@ -100,6 +100,60 @@ pub(crate) const BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO: u64 = ioctl_ior(
     size_of::<FeedbackBufferInfoRequest>(),
 );
 
+/// Maximum size of an I/O channel request or response payload (one 4KB page).
+pub const IO_CHANNEL_BUF_SIZE: usize = 4096;
+
+/// I/O channel action payload exchanged with the kernel via ioctl.
+///
+/// Both `BEDROCK_VM_QUEUE_IO_ACTION` and `BEDROCK_VM_DRAIN_IO_RESPONSE`
+/// use the same shape: a `u32 len` header (with reserved padding) followed
+/// by up to `IO_CHANNEL_BUF_SIZE` bytes of data. Storing the whole buffer
+/// inline keeps the userspace ABI self-contained — no extra pointer
+/// indirection or kernel-side `copy_from_user` of a guest-supplied pointer.
+///
+/// Kernel-side handling stages the header through the stack (8 bytes) and
+/// copies the data directly into / out of `VmState.io_channel.{request,response}_buf`,
+/// avoiding a 4KB stack burst.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IoActionPayload {
+    /// For QUEUE: number of valid bytes the user supplies in `data`.
+    /// For DRAIN: on input, the maximum capacity of `data`; on output, the
+    /// actual number of response bytes the kernel wrote (capped at the
+    /// input value).
+    pub len: u32,
+    /// Reserved for alignment.
+    pub _reserved: u32,
+    /// Earliest emulated-TSC value at which the queued request may fire
+    /// (QUEUE only; ignored by DRAIN). Zero means "fire as soon as the
+    /// guest is interruptible"; non-zero arms PEBS so the IRQ lands at
+    /// the precise instruction count corresponding to this TSC.
+    pub target_tsc: u64,
+    /// Payload bytes.
+    pub data: [u8; IO_CHANNEL_BUF_SIZE],
+}
+
+// SAFETY of the `Default` impl: `IoActionPayload` is plain old data with no
+// invariants; an all-zero state means "empty payload, no data, no target".
+impl Default for IoActionPayload {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            _reserved: 0,
+            target_tsc: 0,
+            data: [0; IO_CHANNEL_BUF_SIZE],
+        }
+    }
+}
+
+// _IOW('B', 13, IoActionPayload) - queue an I/O channel request for the guest
+pub(crate) const BEDROCK_VM_QUEUE_IO_ACTION: u64 =
+    ioctl_iow(BEDROCK_IOC_MAGIC, 13, size_of::<IoActionPayload>());
+
+// _IOR('B', 14, IoActionPayload) - drain the most recent I/O channel response
+pub(crate) const BEDROCK_VM_DRAIN_IO_RESPONSE: u64 =
+    ioctl_ior(BEDROCK_IOC_MAGIC, 14, size_of::<IoActionPayload>());
+
 /// Feedback buffer info returned from kernel.
 ///
 /// This structure describes a feedback buffer registered by the guest

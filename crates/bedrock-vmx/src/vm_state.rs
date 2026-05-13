@@ -143,6 +143,220 @@ fn box_feedback_buffers_from(parent: &FeedbackBuffersArray) -> FeedbackBuffersBo
     }
 }
 
+/// Size of the I/O channel shared page (one 4KB page).
+pub const IO_CHANNEL_BUF_SIZE: usize = 4096;
+
+/// Heap-allocated 4KB buffer used for the I/O channel's pending request /
+/// last-response slots. Vmalloc-backed because two 4KB arrays inline in
+/// `VmState` plus the rest of the struct would blow the kernel's 8KB stack
+/// budget during `VmState::new`.
+pub type IoPageBufBox = VmallocBox<[u8; IO_CHANNEL_BUF_SIZE]>;
+
+/// Allocate a zeroed I/O channel page buffer directly on the heap.
+#[cfg(feature = "cargo")]
+fn box_io_page_buf() -> IoPageBufBox {
+    extern crate alloc;
+    let v = alloc::vec![0u8; IO_CHANNEL_BUF_SIZE];
+    let boxed_slice = v.into_boxed_slice();
+    let ptr = alloc::boxed::Box::into_raw(boxed_slice) as *mut [u8; IO_CHANNEL_BUF_SIZE];
+    // SAFETY: `boxed_slice` has exactly `IO_CHANNEL_BUF_SIZE` elements, so its
+    // pointer can be reinterpreted as a pointer to a fixed-size array of the
+    // same length.
+    unsafe { alloc::boxed::Box::from_raw(ptr) }
+}
+
+#[cfg(not(feature = "cargo"))]
+fn box_io_page_buf() -> IoPageBufBox {
+    let mut boxed: kernel::alloc::KVBox<core::mem::MaybeUninit<[u8; IO_CHANNEL_BUF_SIZE]>> =
+        kernel::alloc::KVBox::new_uninit(kernel::alloc::flags::GFP_KERNEL)
+            .expect("Failed to allocate I/O channel page buffer");
+    // SAFETY: page is freshly allocated and we zero-fill the entire region
+    // before calling `assume_init`. After zeroing, every byte is initialized
+    // to a valid `u8` (0), so the resulting `[u8; IO_CHANNEL_BUF_SIZE]` is
+    // fully initialized.
+    unsafe {
+        let ptr = boxed.as_mut_ptr().cast::<u8>();
+        core::ptr::write_bytes(ptr, 0, IO_CHANNEL_BUF_SIZE);
+        boxed.assume_init()
+    }
+}
+
+/// Maximum number of I/O channel requests that can sit in the
+/// hypervisor-side pending queue waiting for the in-flight slot to free
+/// up. Higher than the depth users typically want today (a few bash
+/// commands), low enough that the queue's heap footprint stays bounded
+/// (worst case ~`PENDING_IO_QUEUE_CAP * IO_CHANNEL_BUF_SIZE` if every
+/// request fills its buffer).
+pub const PENDING_IO_QUEUE_CAP: usize = 256;
+
+/// One pending I/O action waiting for the in-flight slot.
+///
+/// Data is stored tightly (just `data.len()` bytes), not as a fixed 4KB
+/// box: callers typically send short shell commands and a fixed-size
+/// allocation per pending entry would dominate the queue's heap
+/// footprint at large queue depths.
+pub struct PendingIoAction {
+    /// Earliest emulated TSC at which this action should fire when
+    /// promoted to the in-flight slot.
+    pub target_tsc: u64,
+    /// Serialised request bytes, exactly as the guest module will see
+    /// them on its shared page.
+    pub data: HeapVec<u8>,
+}
+
+/// State for the deterministic hypervisor↔guest I/O channel.
+///
+/// Lives on `VmState` and is updated by:
+/// - `HYPERCALL_IO_REGISTER_PAGE` — sets `page_gpa`.
+/// - The new `BEDROCK_VM_QUEUE_IO_ACTION` ioctl — fills `request_buf` and
+///   `request_len`, leaves `request_delivered = false` so the run loop will
+///   inject the IRQ on the next eligible VM-entry.
+/// - `check_io_channel` in the injection path — sets `request_delivered` once
+///   the IRR bit has been set, so the IRQ is not re-issued every iteration.
+/// - `HYPERCALL_IO_GET_REQUEST` — copies `request_buf[..request_len]` into the
+///   registered shared page; on success the request stays in-flight until the
+///   guest delivers the response (so a guest that re-issues GET due to a retry
+///   sees the same data).
+/// - `HYPERCALL_IO_PUT_RESPONSE` — reads bytes out of the shared page into
+///   `response_buf`, clears the in-flight request, and exits to userspace.
+pub struct IoChannelState {
+    /// Guest physical address of the registered shared page. Zero means
+    /// "not registered yet" — the run loop must hold off IRQ injection
+    /// until the guest module has registered its page.
+    pub page_gpa: u64,
+    /// Length of the in-flight request in `request_buf`. Zero means the
+    /// in-flight slot is free; the next pending entry (if any) is
+    /// promoted into it by `promote_next_pending_io`.
+    pub request_len: usize,
+    /// True once the IRQ has been delivered to the guest for the current
+    /// in-flight request. Prevents the run loop from re-setting the IRR
+    /// bit on every iteration while the guest is consuming the request.
+    pub request_delivered: bool,
+    /// Earliest emulated-TSC value at which the in-flight request may be
+    /// delivered. Zero means "fire as soon as the guest is interruptible
+    /// and the IOAPIC pin is unmasked" (no PEBS-precise arming).
+    ///
+    /// When non-zero, `arm_for_next_iteration` arms PEBS so the next
+    /// precise exit lands at this target (taking the earlier of this and
+    /// any pending APIC timer deadline), and `check_io_channel` defers
+    /// setting the APIC IRR until `emulated_tsc >= request_target_tsc`.
+    pub request_target_tsc: u64,
+    /// Length of the response in `response_buf`, valid only after the
+    /// `VmcallIoResponse` exit and until userspace drains it.
+    pub response_len: usize,
+    /// Pending request bytes for the in-flight slot. Copied into the
+    /// shared page on `HYPERCALL_IO_GET_REQUEST`.
+    pub request_buf: IoPageBufBox,
+    /// Latest response bytes. Filled by `HYPERCALL_IO_PUT_RESPONSE` from the
+    /// shared page, drained by userspace via the `BEDROCK_VM_DRAIN_IO_RESPONSE`
+    /// ioctl.
+    pub response_buf: IoPageBufBox,
+    /// FIFO queue of pending requests waiting for the in-flight slot.
+    /// Userspace queues by calling `BEDROCK_VM_QUEUE_IO_ACTION`; each
+    /// `HYPERCALL_IO_GET_REQUEST` frees the slot and promotes the front
+    /// of this queue. The guest module is free to spawn parallel workers
+    /// per IRQ, so the hypervisor keeps firing IRQs as fast as the slot
+    /// turns over without waiting for `HYPERCALL_IO_PUT_RESPONSE`.
+    pub pending: HeapVec<PendingIoAction>,
+}
+
+impl Default for IoChannelState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IoChannelState {
+    /// Create a fresh I/O channel state with empty buffers and no
+    /// registration.
+    pub fn new() -> Self {
+        Self {
+            page_gpa: 0,
+            request_len: 0,
+            request_delivered: false,
+            request_target_tsc: 0,
+            response_len: 0,
+            request_buf: box_io_page_buf(),
+            response_buf: box_io_page_buf(),
+            pending: heap_vec_with_capacity(0).expect("Failed to allocate pending queue"),
+        }
+    }
+
+    /// Clone state for a forked child VM.
+    ///
+    /// The page registration is preserved — the child snapshots from the
+    /// parent's running state where `bedrock-io.ko` has already registered
+    /// its page, and the page itself lives in shared (CoW) guest memory
+    /// reachable via the same GPA. Transient request/response slots and
+    /// any pending queue entries are reset because no I/O is in flight
+    /// at the moment of fork.
+    pub fn clone_for_fork(parent: &Self) -> Self {
+        let _ = parent; // Only `page_gpa` is inherited; reset the rest.
+        Self {
+            page_gpa: parent.page_gpa,
+            request_len: 0,
+            request_delivered: false,
+            request_target_tsc: 0,
+            response_len: 0,
+            request_buf: box_io_page_buf(),
+            response_buf: box_io_page_buf(),
+            pending: heap_vec_with_capacity(0).expect("Failed to allocate pending queue"),
+        }
+    }
+
+    /// Promote the front of `pending` into the in-flight slot if and
+    /// only if the slot is currently free (`request_len == 0`). Called
+    /// at the end of `HYPERCALL_IO_GET_REQUEST` (to chase the next IRQ
+    /// without waiting for `PUT_RESPONSE`) and from the QUEUE ioctl
+    /// path (to fast-path the first request into the slot directly).
+    pub fn promote_next_pending(&mut self) {
+        if self.request_len != 0 {
+            return;
+        }
+        // Pop the front. HeapVec doesn't expose VecDeque-style O(1)
+        // pop_front, but at the queue depths we care about (single-digit
+        // to low hundreds) the O(n) shift is negligible compared to the
+        // per-request work.
+        let next = match heap_vec_remove_front(&mut self.pending) {
+            Some(n) => n,
+            None => return,
+        };
+        let len = next.data.len().min(IO_CHANNEL_BUF_SIZE);
+        self.request_buf[..len].copy_from_slice(&next.data[..len]);
+        self.request_len = len;
+        self.request_target_tsc = next.target_tsc;
+        self.request_delivered = false;
+        // A new in-flight request always starts a fresh response cycle.
+        self.response_len = 0;
+    }
+
+    /// Append a new request to the pending queue. Does not promote;
+    /// callers should invoke `promote_next_pending` afterwards (or rely
+    /// on the next `GET_REQUEST` doing so).
+    pub fn enqueue_pending(&mut self, action: PendingIoAction) -> EnqueueResult {
+        if self.pending.len() >= PENDING_IO_QUEUE_CAP {
+            return EnqueueResult::Full;
+        }
+        match heap_vec_push(&mut self.pending, action) {
+            Ok(()) => EnqueueResult::Queued,
+            Err(_) => EnqueueResult::OutOfMemory,
+        }
+    }
+}
+
+/// Outcome of `IoChannelState::enqueue_pending`. `Queued` is the happy
+/// path; `Full` means the queue is at `PENDING_IO_QUEUE_CAP` (caller
+/// should map to `-EBUSY`); `OutOfMemory` means the underlying push
+/// failed to allocate (`-ENOMEM`). Distinguishing the two lets the
+/// ioctl surface the right errno instead of silently dropping the
+/// action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueResult {
+    Queued,
+    Full,
+    OutOfMemory,
+}
+
 /// Boxed VmState type alias - used by RootVm and ForkedVm to reduce stack usage.
 pub type VmStateBox<V, I> = HeapBox<VmState<V, I>>;
 
@@ -745,6 +959,15 @@ pub struct VmState<V: VirtualMachineControlStructure, I: InstructionCounter> {
     /// hypercall without an extra MSR read (which would itself `#GP` on
     /// CPUs that don't implement `IA32_PERF_CAPABILITIES`).
     pub pebs_supported: bool,
+    /// State for the deterministic hypervisor↔guest I/O channel.
+    ///
+    /// The guest's `bedrock-io.ko` registers a shared 4KB page via
+    /// `HYPERCALL_IO_REGISTER_PAGE`, and the host queues actions via the
+    /// `BEDROCK_VM_QUEUE_IO_ACTION` ioctl. Pending request bytes and the
+    /// latest response are buffered here; the buffers themselves live on
+    /// the heap so this field stays small (a handful of words plus two box
+    /// pointers).
+    pub io_channel: IoChannelState,
     /// Logical CPU this VM most recently ran on, or `None` before the first
     /// run-loop entry. Used to detect cross-CPU migration between ioctls.
     ///
@@ -1015,6 +1238,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             intercept_pf: false,
             pebs_state: None,
             pebs_supported,
+            io_channel: IoChannelState::new(),
             last_cpu: None,
         })
     }
@@ -1583,6 +1807,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
             intercept_pf: false,
             pebs_state: None,
             pebs_supported: false,
+            io_channel: IoChannelState::new(),
             last_cpu: None,
         })
     }
@@ -1867,6 +2092,7 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
                 .as_deref()
                 .map(|p| heap_box(p.clone_for_fork())),
             pebs_supported: parent_state.pebs_supported,
+            io_channel: IoChannelState::clone_for_fork(&parent_state.io_channel),
             last_cpu: None,
         })
     }

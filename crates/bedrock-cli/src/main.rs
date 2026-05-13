@@ -19,7 +19,7 @@ use bedrock_vm::{
     LogEntry, RdrandConfig, Vm, VmBuilder, BEDROCK_DEVICE_PATH, DEFAULT_TSC_FREQUENCY,
 };
 
-use args::{Args, RdrandMode};
+use args::{Args, IoAction, RdrandMode, ScheduledIoAction};
 use elf::load_kernel;
 
 /// Line-buffered output that prefixes each line with a virtual time timestamp.
@@ -118,6 +118,76 @@ fn main() {
 fn log_vm_exit(vm: &Vm, msg: &str) {
     let rip = vm.get_regs().map(|r| r.rip).unwrap_or(0);
     warn!("VM exit: {} at RIP {:#018x}", msg, rip);
+}
+
+/// Request-side magic on the I/O channel shared page; must match the
+/// `IO_REQUEST_MAGIC` constant in `bedrock-io.c`.
+const IO_REQUEST_MAGIC: u32 = 0xB10C1010;
+/// Response-side magic.
+const IO_RESPONSE_MAGIC: u32 = 0x1010B10C;
+/// Action ID for "list running containers".
+const ACTION_GET_WORKLOAD_DETAILS: u32 = 0;
+/// Action ID for "exec bash command in a container".
+const ACTION_EXEC_BASH: u32 = 1;
+/// Action ID for "exec bash command on the guest itself (outside any container)".
+const ACTION_EXEC_HOST_BASH: u32 = 2;
+
+/// Serialize an `IoAction` into the wire format the guest module parses.
+///
+/// Header layout: `u32 magic | u32 action_id | u32 payload_len`, followed
+/// by `payload_len` bytes of action-specific payload. For `ExecBash` the
+/// payload is two NUL-terminated strings (`container\0cmd\0`) so the guest
+/// can use plain `strnlen` to find the boundary. For `ExecHostBash` the
+/// payload is a single NUL-terminated `cmd\0`.
+fn encode_io_action(action: &IoAction) -> Vec<u8> {
+    let (action_id, payload) = match action {
+        IoAction::GetWorkloadDetails => (ACTION_GET_WORKLOAD_DETAILS, Vec::new()),
+        IoAction::ExecBash { container, cmd } => {
+            let mut p = Vec::with_capacity(container.len() + cmd.len() + 2);
+            p.extend_from_slice(container.as_bytes());
+            p.push(0);
+            p.extend_from_slice(cmd.as_bytes());
+            p.push(0);
+            (ACTION_EXEC_BASH, p)
+        }
+        IoAction::ExecHostBash { cmd } => {
+            let mut p = Vec::with_capacity(cmd.len() + 1);
+            p.extend_from_slice(cmd.as_bytes());
+            p.push(0);
+            (ACTION_EXEC_HOST_BASH, p)
+        }
+    };
+    let mut bytes = Vec::with_capacity(12 + payload.len());
+    bytes.extend_from_slice(&IO_REQUEST_MAGIC.to_le_bytes());
+    bytes.extend_from_slice(&action_id.to_le_bytes());
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    bytes
+}
+
+/// Parse the response header out of the bytes drained from the I/O channel.
+/// Returns `(status, exit_code, data)` where `data` is a borrow into the
+/// caller's buffer covering only the payload region.
+fn decode_io_response(bytes: &[u8]) -> Result<(i32, i32, &[u8]), String> {
+    if bytes.len() < 16 {
+        return Err(format!("response too short: {} bytes", bytes.len()));
+    }
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if magic != IO_RESPONSE_MAGIC {
+        return Err(format!("bad response magic {:#x}", magic));
+    }
+    let status = i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let exit_code = i32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    let data_len = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+    let data_end = 16 + data_len;
+    if data_end > bytes.len() {
+        return Err(format!(
+            "response data overruns: {} > {}",
+            data_end,
+            bytes.len()
+        ));
+    }
+    Ok((status, exit_code, &bytes[16..data_end]))
 }
 
 /// Dump the feedback buffer to a file.
@@ -405,6 +475,30 @@ fn run() -> io::Result<()> {
         }
     }
 
+    // Queue all I/O actions upfront. The hypervisor owns the pending
+    // FIFO and the guest module spawns parallel workers, so the CLI's
+    // job is just to push every scheduled action into the queue before
+    // the VM starts running. Sorting by target_tsc keeps the FIFO order
+    // deterministic when target_tscs are identical or zero.
+    let mut io_schedule: Vec<ScheduledIoAction> = args.io_actions.clone();
+    io_schedule.sort_by_key(|a| a.target_tsc);
+    for (idx, sched) in io_schedule.iter().enumerate() {
+        let bytes = encode_io_action(&sched.action);
+        match vm.queue_io_action(&bytes, sched.target_tsc) {
+            Ok(()) => debug!(
+                "Queued I/O action {}/{} (target_tsc={}): {:?}",
+                idx + 1,
+                io_schedule.len(),
+                sched.target_tsc,
+                sched.action
+            ),
+            Err(e) => warn!("Failed to queue I/O action {}: {}", idx + 1, e),
+        }
+    }
+    if !io_schedule.is_empty() {
+        info!("Queued {} I/O actions", io_schedule.len());
+    }
+
     // Run VM
     info!("Starting VM...");
     let wall_clock_start = std::time::Instant::now();
@@ -503,6 +597,27 @@ fn run() -> io::Result<()> {
                             debug!(
                                 "Feedback buffer registered (not mapping, --dump-feedback not set)"
                             );
+                        }
+                        continue;
+                    }
+                    ExitKind::IoResponse => {
+                        match vm.drain_io_response() {
+                            Ok(bytes) => match decode_io_response(&bytes) {
+                                Ok((status, exit_code, data)) => {
+                                    info!(
+                                        "I/O response: status={} exit_code={} ({} bytes)",
+                                        status,
+                                        exit_code,
+                                        data.len()
+                                    );
+                                    if !data.is_empty() {
+                                        print!("{}", String::from_utf8_lossy(data));
+                                        let _ = io::stdout().flush();
+                                    }
+                                }
+                                Err(e) => warn!("Failed to decode I/O response: {}", e),
+                            },
+                            Err(e) => warn!("Failed to drain I/O response: {}", e),
                         }
                         continue;
                     }

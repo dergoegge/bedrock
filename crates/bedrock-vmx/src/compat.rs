@@ -34,9 +34,24 @@ mod cargo_impl {
         Ok(alloc::vec::Vec::with_capacity(cap))
     }
 
-    /// Push a value onto a vector.
-    pub fn heap_vec_push<T>(v: &mut HeapVec<T>, val: T) {
+    /// Push a value onto a vector. Returns `Err(AllocError)` if growth
+    /// fails — in cargo builds the standard allocator aborts on OOM, so
+    /// the `Result` is just for API parity with kernel builds.
+    pub fn heap_vec_push<T>(v: &mut HeapVec<T>, val: T) -> Result<(), super::AllocError> {
         v.push(val);
+        Ok(())
+    }
+
+    /// Remove and return the front element of a vector, or `None` if
+    /// empty. O(n) (shifts the rest down); used for FIFO queues whose
+    /// depth is small enough that the shift cost is negligible relative
+    /// to the per-element work.
+    pub fn heap_vec_remove_front<T>(v: &mut HeapVec<T>) -> Option<T> {
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.remove(0))
+        }
     }
 }
 
@@ -65,9 +80,19 @@ mod kernel_impl {
             .map_err(|_| super::AllocError)
     }
 
-    /// Push a value onto a vector.
-    pub fn heap_vec_push<T>(v: &mut HeapVec<T>, val: T) {
-        let _ = v.push(val, kernel::alloc::flags::GFP_KERNEL);
+    /// Push a value onto a vector. Returns `Err(AllocError)` on
+    /// allocation failure; callers must propagate ENOMEM rather than
+    /// silently dropping the value.
+    pub fn heap_vec_push<T>(v: &mut HeapVec<T>, val: T) -> Result<(), super::AllocError> {
+        v.push(val, kernel::alloc::flags::GFP_KERNEL)
+            .map_err(|_| super::AllocError)
+    }
+
+    /// Remove and return the front element of a vector, or `None` if
+    /// empty. Kernel `KVec::remove` returns `Result`; we collapse the
+    /// `Err` (OOB) and empty cases together into `None`.
+    pub fn heap_vec_remove_front<T>(v: &mut HeapVec<T>) -> Option<T> {
+        v.remove(0).ok()
     }
 }
 

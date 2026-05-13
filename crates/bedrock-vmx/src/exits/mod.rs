@@ -39,7 +39,9 @@ mod vmcall;
 // Re-export public types
 pub use apic::{APIC_BASE, APIC_SIZE, IOAPIC_BASE, IOAPIC_SIZE};
 pub use helpers::{ExitError, ExitHandlerResult};
-pub use interrupts::{inject_pending_interrupt, reinject_vectored_event};
+pub use interrupts::{
+    check_io_channel, inject_pending_interrupt, reinject_vectored_event, IO_CHANNEL_IRQ,
+};
 pub use pebs::{
     arm_for_next_iteration, arm_precise_exit, disarm_precise_exit, pebs_post_vm_exit,
     pebs_pre_vm_entry, ArmResult, DsManagementArea, PebsAction, PebsState, PEBS_MARGIN,
@@ -86,6 +88,46 @@ fn next_timer_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
         return None;
     }
     Some(apic.timer_deadline.saturating_sub(state.tsc_offset))
+}
+
+/// Target emulated TSC at which the pending I/O channel request should
+/// fire. Returns `None` if there's nothing armable:
+/// - no request queued, or already delivered;
+/// - no target TSC (`request_target_tsc == 0` means "fire ASAP", which
+///   doesn't need PEBS precision — the normal IRR-setting path covers
+///   it);
+/// - the guest module hasn't wired up its IRQ yet (IOAPIC entry masked
+///   or vector < 16);
+/// - the page isn't registered (the GET_REQUEST hypercall would fail
+///   so there's no point in firing).
+///
+/// Shared between `next_io_channel_exit_count` (MTF/margin logic, which
+/// works in instruction-count space) and `arm_for_next_iteration` (which
+/// works in TSC space) so the readiness predicate has exactly one
+/// definition.
+pub(super) fn next_io_channel_target_tsc<C: VmContext>(ctx: &C) -> Option<u64> {
+    let chan = &ctx.state().io_channel;
+    if chan.page_gpa == 0 {
+        return None;
+    }
+    if chan.request_len == 0 || chan.request_delivered {
+        return None;
+    }
+    if chan.request_target_tsc == 0 {
+        return None;
+    }
+    let entry = ctx.state().devices.ioapic.redtbl[interrupts::IO_CHANNEL_IRQ as usize];
+    if (entry >> 16) & 1 != 0 || (entry & 0xFF) < 16 {
+        return None;
+    }
+    Some(chan.request_target_tsc)
+}
+
+/// Compute the retired-instruction count at which the pending I/O
+/// channel request should fire, mirroring `next_timer_exit_count` for
+/// the deterministic I/O channel target.
+pub(super) fn next_io_channel_exit_count<C: VmContext>(ctx: &C) -> Option<u64> {
+    next_io_channel_target_tsc(ctx).map(|t| t.saturating_sub(ctx.state().tsc_offset))
 }
 
 /// Width of the MTF single-step window approaching an APIC timer deadline.
@@ -143,11 +185,17 @@ pub fn update_mtf_state<C: VmContext>(ctx: &mut C) -> Result<(), ExitError> {
         None => false,
     };
 
+    // The PEBS margin gate fires whenever we're inside the
+    // [target - MTF_MARGIN, target) window of *any* armed precise exit
+    // (currently the APIC timer or the deterministic I/O channel) so the
+    // final approach single-steps to the exact boundary instead of
+    // skidding past it.
+    let in_margin = |target_opt: Option<u64>| match target_opt {
+        Some(target) => count >= target.saturating_sub(MTF_MARGIN) && count < target,
+        None => false,
+    };
     let in_pebs_margin = pebs_registered
-        && match next_timer_exit_count(ctx) {
-            Some(target) => count >= target.saturating_sub(MTF_MARGIN) && count < target,
-            None => false,
-        };
+        && (in_margin(next_timer_exit_count(ctx)) || in_margin(next_io_channel_exit_count(ctx)));
 
     let should_enable = in_single_step || in_pebs_margin;
 
@@ -230,17 +278,17 @@ pub fn handle_exit<C: VmContext, K: Kernel, A: CowAllocator<C::CowPage>>(
             }
         }
         // MTF exits are deterministic only when they land on the next
-        // APIC-timer-deadline boundary (the precise-injection use case)
-        // or inside a configured single-step TSC range. Intermediate
-        // margin-window steps fire at instruction counts that depend on
-        // PEBS skid, so they're non-deterministic.
+        // APIC-timer-deadline boundary or the I/O channel target
+        // boundary (the precise-injection use cases) or inside a
+        // configured single-step TSC range. Intermediate margin-window
+        // steps fire at instruction counts that depend on PEBS skid, so
+        // they're non-deterministic.
         ExitReason::MonitorTrapFlag => {
             let count = ctx.state().last_instruction_count;
             let tsc = count + ctx.state().tsc_offset;
-            let on_boundary = matches!(
-                next_timer_exit_count(ctx),
-                Some(target) if count == target,
-            );
+            let on_target = |t: Option<u64>| matches!(t, Some(target) if count == target);
+            let on_boundary =
+                on_target(next_timer_exit_count(ctx)) || on_target(next_io_channel_exit_count(ctx));
             let in_single_step_range = match ctx.state().single_step_tsc_range {
                 Some((start, end)) => tsc >= start && tsc < end,
                 None => false,

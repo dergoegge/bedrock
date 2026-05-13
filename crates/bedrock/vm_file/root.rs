@@ -401,6 +401,8 @@ unsafe extern "C" fn bedrock_vm_ioctl(
         BEDROCK_VM_GET_FEEDBACK_BUFFER_INFO => {
             handlers::handle_get_feedback_buffer_info(vm_file, arg)
         }
+        BEDROCK_VM_QUEUE_IO_ACTION => handlers::handle_queue_io_action(vm_file, arg),
+        BEDROCK_VM_DRAIN_IO_RESPONSE => handlers::handle_drain_io_response(vm_file, arg),
         _ => -(bindings::ENOTTY as isize),
     }
 }

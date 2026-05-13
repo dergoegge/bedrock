@@ -5,6 +5,7 @@
 use clap::{Parser, ValueEnum};
 
 use bedrock_vm::boot::defaults;
+use bedrock_vm::DEFAULT_TSC_FREQUENCY;
 
 /// Bedrock CLI - Linux Kernel Loader for the bedrock hypervisor.
 #[derive(Parser, Debug)]
@@ -110,6 +111,68 @@ pub struct Args {
     /// Emulated TSC frequency in Hz (defaults to the kernel's built-in default)
     #[arg(long = "tsc-frequency", value_parser = parse_u64)]
     pub tsc_frequency: Option<u64>,
+
+    /// Queue a deterministic I/O channel action for the guest's bedrock-io
+    /// module. Repeatable; actions fire in `target_tsc` order at the first
+    /// VM exit where `emulated_tsc >= target_tsc` and no prior action is
+    /// still in flight.
+    ///
+    /// An optional scheduling prefix sets the earliest emulated TSC at
+    /// which the action may fire:
+    ///   `tsc=<N>:<action>`      — earliest fire-time as a raw TSC value.
+    ///   `vt=<seconds>:<action>` — earliest fire-time as virtual time
+    ///                             (converted via DEFAULT_TSC_FREQUENCY).
+    /// Without a prefix, `target_tsc` defaults to 0 (queue immediately).
+    ///
+    /// Action body formats:
+    ///   `list`                      — run `podman ps --format '{{.Names}}'`
+    ///   `exec:<container>:<cmd>`    — run `podman exec <container> /bin/sh -c <cmd>`
+    ///   `exec:host:<cmd>`           — run `/bin/sh -c <cmd>` on the guest itself
+    ///                                 (outside any container)
+    ///
+    /// Examples:
+    ///   --io-action 'list'
+    ///   --io-action 'tsc=300000000:list'
+    ///   --io-action 'vt=120.0:exec:bitcoind1:bitcoin-cli getblockchaininfo'
+    ///   --io-action 'exec:host:uname -a'
+    #[arg(long = "io-action", value_parser = parse_scheduled_io_action, verbatim_doc_comment)]
+    pub io_actions: Vec<ScheduledIoAction>,
+}
+
+/// One scheduled I/O channel action. Parsed from the CLI's repeated
+/// `--io-action` flag and serialised into the wire format the guest module
+/// expects. `target_tsc == 0` means "queue at startup".
+#[derive(Clone, Debug)]
+pub struct ScheduledIoAction {
+    /// Earliest emulated-TSC value at which this action may be queued
+    /// with the kernel. The CLI's run-loop checks `exit.emulated_tsc`
+    /// after each VM exit and queues the next eligible action.
+    pub target_tsc: u64,
+    /// The action body.
+    pub action: IoAction,
+}
+
+/// Action body: which thing the guest module should do.
+#[derive(Clone, Debug)]
+pub enum IoAction {
+    /// Enumerate running containers and the executables each one ships
+    /// under `/opt/bedrock/drivers/`. Response is line-based with one
+    /// record per line, each record having two tab-separated fields:
+    ///
+    /// - `<container>\t`           — header line, emitted once per
+    ///   container (driver field empty).
+    /// - `<container>\t<driver>`   — one such line per executable
+    ///   found in that container.
+    ///
+    /// Consumers can parse the response with a single `split('\t', 1)`
+    /// per line — no state machine. The fuzzer reads this list to
+    /// choose (container, driver) targets.
+    GetWorkloadDetails,
+    /// `podman exec <container> /bin/sh -c <cmd>` — returns stdout+stderr.
+    ExecBash { container: String, cmd: String },
+    /// `/bin/sh -c <cmd>` run directly on the guest, outside any container.
+    /// Returns stdout+stderr.
+    ExecHostBash { cmd: String },
 }
 
 impl Args {
@@ -180,4 +243,90 @@ fn parse_serial_input(s: &str) -> Result<String, String> {
         .replace("\\r", "\r")
         .replace("\\t", "\t")
         .replace("\\\\", "\\"))
+}
+
+/// Parse a `--io-action` spec into a `ScheduledIoAction`.
+///
+/// Accepts an optional `tsc=<N>:` or `vt=<seconds>:` scheduling prefix
+/// (the colon after the value separates the prefix from the action body),
+/// then dispatches on the body via [`parse_io_action_body`].
+fn parse_scheduled_io_action(s: &str) -> Result<ScheduledIoAction, String> {
+    let (target_tsc, body) = if let Some(rest) = s.strip_prefix("tsc=") {
+        let (value, body) = rest.split_once(':').ok_or_else(|| {
+            format!(
+                "Invalid scheduled action '{}'. Expected tsc=<N>:<action>",
+                s
+            )
+        })?;
+        (parse_u64(value)?, body)
+    } else if let Some(rest) = s.strip_prefix("vt=") {
+        let (value, body) = rest.split_once(':').ok_or_else(|| {
+            format!(
+                "Invalid scheduled action '{}'. Expected vt=<seconds>:<action>",
+                s
+            )
+        })?;
+        let secs: f64 = value
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid virtual time '{}' in '{}'", value, s))?;
+        if secs < 0.0 {
+            return Err(format!("Negative virtual time in '{}'", s));
+        }
+        // Conversion uses DEFAULT_TSC_FREQUENCY because the parser runs
+        // before `--tsc-frequency` is applied to the VM. Users who pass
+        // `--tsc-frequency` and want precise alignment should specify
+        // `tsc=...` directly.
+        let tsc = (secs * DEFAULT_TSC_FREQUENCY as f64) as u64;
+        (tsc, body)
+    } else {
+        (0u64, s)
+    };
+    let action = parse_io_action_body(body)?;
+    Ok(ScheduledIoAction { target_tsc, action })
+}
+
+/// Parse the body portion of an `--io-action` spec, after any scheduling
+/// prefix has been stripped.
+///
+/// Accepts:
+///   `list`                       → IoAction::GetWorkloadDetails
+///   `exec:host:<cmd>`            → IoAction::ExecHostBash { cmd }
+///   `exec:<container>:<cmd>`     → IoAction::ExecBash { container, cmd }
+///
+/// The split on the first `:` after `exec:` leaves the `<cmd>` part free
+/// to contain colons of its own (`exec:bitcoind1:bitcoin-cli getinfo`).
+/// `host` in the container slot is reserved for the guest-direct form, so
+/// a container literally named `host` cannot be targeted via `exec:`.
+fn parse_io_action_body(s: &str) -> Result<IoAction, String> {
+    if s == "list" {
+        return Ok(IoAction::GetWorkloadDetails);
+    }
+    if let Some(rest) = s.strip_prefix("exec:") {
+        let (container, cmd) = rest.split_once(':').ok_or_else(|| {
+            format!(
+                "Invalid exec action '{}'. Expected exec:<container>:<cmd>",
+                s
+            )
+        })?;
+        if container.is_empty() {
+            return Err(format!("Empty container name in '{}'", s));
+        }
+        if cmd.is_empty() {
+            return Err(format!("Empty command in '{}'", s));
+        }
+        if container == "host" {
+            return Ok(IoAction::ExecHostBash {
+                cmd: cmd.to_string(),
+            });
+        }
+        return Ok(IoAction::ExecBash {
+            container: container.to_string(),
+            cmd: cmd.to_string(),
+        });
+    }
+    Err(format!(
+        "Invalid I/O action '{}'. Expected `list`, `exec:host:<cmd>`, or `exec:<container>:<cmd>`",
+        s
+    ))
 }

@@ -3,7 +3,11 @@
 # Built entirely from Nix packages — no proot, no apt, no fixed-output hash.
 # The Nix store closure of all runtime dependencies is copied into the rootfs,
 # with FHS symlinks so that podman, init, and containers all find their tools.
-{ pkgs }:
+#
+# `guestKernel` is the configured patched-6.18 guest kernel (see
+# nix/guest-kernel.nix). We need its `dev` output to build the bedrock-io
+# kernel module out-of-tree against the same configuration the guest boots.
+{ pkgs, guestKernel }:
 
 let
   bedrockShutdown = pkgs.pkgsStatic.stdenv.mkDerivation {
@@ -27,6 +31,51 @@ let
     installPhase = "mkdir -p $out/bin && cp bedrock-pebs-register $out/bin/";
   };
 
+  # Guest kernel module that drives the deterministic I/O channel. Built
+  # against the patched 6.18 guest kernel's headers so its kbuild
+  # configuration (LLVM=1, no CONFIG_RUST, etc.) matches what the running
+  # guest expects. The module owns one 4KB shared page, registers it with
+  # the hypervisor via VMCALL, and request_irq's IO_CHANNEL_IRQ (pin 9)
+  # so it can receive host-queued actions.
+  #
+  # Mirrors `nix/module.nix`'s setup for the host module: use
+  # `llvmPackages.stdenv` (the kernel was built LLVM=1; OOT modules must
+  # match), suppress the cc-wrapper's
+  # -Werror=unused-command-line-argument (kbuild passes -nostdlibinc which
+  # is unused in some contexts), and skip strip / patchelf so the .ko
+  # stays valid.
+  bedrockIoModule = let
+    llvmPackages = pkgs.llvmPackages;
+  in llvmPackages.stdenv.mkDerivation {
+    name = "bedrock-io-module";
+    src = ../scripts/initrd-podman/bedrock-io;
+
+    nativeBuildInputs = [
+      llvmPackages.lld
+      pkgs.gnumake
+    ];
+
+    dontStrip = true;
+    dontPatchELF = true;
+
+    NIX_CFLAGS_COMPILE = "-Wno-unused-command-line-argument";
+
+    buildPhase = ''
+      runHook preBuild
+      make \
+        KDIR=${guestKernel.dev}/lib/modules/${guestKernel.modDirVersion}/build \
+        LLVM=1
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out
+      cp bedrock-io.ko $out/
+      runHook postInstall
+    '';
+  };
+
   bitcoinImage = pkgs.dockerTools.pullImage {
     imageName = "docker.io/bitcoin/bitcoin";
     imageDigest = "sha256:2d6c59f5a2209eaf560379eff2a566b6d61fc9bca7852d216bbd799067401091";
@@ -48,6 +97,7 @@ let
     pkgs.iptables
     pkgs.procps
     pkgs.util-linux    # switch_root, mount, setsid, nsenter
+    pkgs.kmod          # insmod (for loading bedrock-io.ko)
     pkgs.bashInteractive
     pkgs.coreutils
     pkgs.gnugrep
@@ -154,6 +204,14 @@ let
     # regardless.
     bedrock-pebs-register &
 
+    # Load the deterministic I/O channel module. Must come after the
+    # filesystem is in place (kernel_read_file_from_path needs /tmp on
+    # tmpfs) but before podman-compose, since the I/O actions exec into
+    # the containers that compose brings up. Failure is non-fatal in case
+    # the module ABI is mismatched against the running kernel.
+    insmod /lib/modules/bedrock-io.ko || \
+        echo "bedrock-io: insmod failed (continuing without I/O channel)"
+
     # Reset podman state
     podman system reset -f 2>/dev/null || true
 
@@ -226,6 +284,20 @@ pkgs.stdenv.mkDerivation {
     ln -sf ${bedrockShutdown}/bin/bedrock-shutdown rootfs/usr/local/bin/bedrock-shutdown
     ln -sf ${bedrockMiner}/bin/bedrock-miner rootfs/usr/local/bin/bedrock-miner
     ln -sf ${bedrockPebsRegister}/bin/bedrock-pebs-register rootfs/usr/local/bin/bedrock-pebs-register
+
+    # Driver scripts mounted into containers at /opt/bedrock/drivers/ so
+    # ACTION_GET_WORKLOAD_DETAILS can enumerate them. Copied (not
+    # symlinked) so the in-container path resolves to a real regular
+    # file rather than a dangling host symlink. `chmod +x` is preserved
+    # from the source tree.
+    mkdir -p rootfs/usr/local/share/bedrock-drivers
+    cp -a ${../scripts/initrd-podman/drivers}/. rootfs/usr/local/share/bedrock-drivers/
+
+    # Guest kernel module for the deterministic I/O channel. Placed at a
+    # stable path so the init script can insmod it without depending on
+    # modules.dep / depmod machinery (which we don't build in this initrd).
+    mkdir -p rootfs/lib/modules
+    cp ${bedrockIoModule}/bedrock-io.ko rootfs/lib/modules/bedrock-io.ko
 
     # SSL certificates
     mkdir -p rootfs/etc/ssl/certs

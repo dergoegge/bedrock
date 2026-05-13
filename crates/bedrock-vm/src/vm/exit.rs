@@ -40,6 +40,14 @@ pub enum ExitKind {
     StopTscReached,
     /// VMCALL feedback buffer registration hypercall.
     FeedbackBufferRegistered,
+    /// I/O channel response delivered by the guest.
+    ///
+    /// The guest's `bedrock-io.ko` workqueue has finished executing an
+    /// action and written the response into the registered shared page.
+    /// The hypervisor has copied the response bytes into VmState; userspace
+    /// should call `Vm::drain_io_response()` to consume them and optionally
+    /// queue the next request via `Vm::queue_io_action()`.
+    IoResponse,
     /// RDRAND instruction (ExitToUserspace mode).
     Rdrand,
     /// RDSEED instruction (ExitToUserspace mode).
@@ -115,6 +123,8 @@ impl VmExit {
             261 => "VMCALL_FEEDBACK_BUFFER",
             262 => "POOL_EXHAUSTED",
             263 => "VMCALL_PEBS_PAGE",
+            264 => "VMCALL_IO_REGISTER_PAGE",
+            265 => "VMCALL_IO_RESPONSE",
             _ => "UNKNOWN",
         }
     }
@@ -129,14 +139,16 @@ impl VmExit {
             },
             259 => ExitKind::StopTscReached,
             261 => ExitKind::FeedbackBufferRegistered,
+            265 => ExitKind::IoResponse,
             57 => ExitKind::Rdrand,
             61 => ExitKind::Rdseed,
             257 => ExitKind::LogBufferFull,
             // Continuable: preemption timer, need_resched, mwait, monitor,
-            // I/O instruction, pool exhausted, PEBS scratch-page registration
-            // (no userspace action needed — bookkeeping is entirely between
-            // the guest and the kernel module).
-            52 | 256 | 36 | 39 | 30 | 262 | 263 => ExitKind::Continue,
+            // I/O instruction, pool exhausted, PEBS scratch-page registration,
+            // I/O channel page registration (no userspace action needed —
+            // bookkeeping is entirely between the guest and the kernel
+            // module).
+            52 | 256 | 36 | 39 | 30 | 262 | 263 | 264 => ExitKind::Continue,
             reason => ExitKind::UnhandledExit { reason },
         }
     }

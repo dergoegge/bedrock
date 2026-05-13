@@ -713,3 +713,331 @@ fn test_vmcall_register_feedback_buffer_size_too_large() {
     // Feedback buffer should NOT be registered at index 0
     assert!(ctx.state().feedback_buffers[0].is_none());
 }
+
+// =============================================================================
+// I/O channel tests
+// =============================================================================
+
+/// Helper: install a 1GB identity-mapped page-table walk so any `GVA` in
+/// `[0, 1GB)` translates to the same `GPA`. Matches what the feedback-buffer
+/// tests above set up.
+fn install_identity_paging(ctx: &mut MockVmContext) {
+    ctx.vmcs_setup()
+        .set_field_natural(VmcsFieldNatural::GuestCr3, 0x1000);
+    let pml4_entry: u64 = 0x2003; // Present + Writable + address 0x2000
+    ctx.memory[0x1000..0x1008].copy_from_slice(&pml4_entry.to_le_bytes());
+    let pdpt_entry: u64 = 0x83; // Present + Writable + PS (1GB) + address 0
+    ctx.memory[0x2000..0x2008].copy_from_slice(&pdpt_entry.to_le_bytes());
+}
+
+#[test]
+fn test_vmcall_io_register_page_success() {
+    use crate::hypercalls::HYPERCALL_IO_REGISTER_PAGE;
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+
+    ctx.gprs_mut().rax = HYPERCALL_IO_REGISTER_PAGE;
+    // 4KB-aligned address inside the 1GB identity-mapped window.
+    ctx.gprs_mut().rbx = 0x5000;
+
+    let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(
+        result,
+        ExitHandlerResult::ExitToUserspace(ExitReason::VmcallIoRegisterPage)
+    );
+    assert_eq!(ctx.gprs().rax, 0, "registration should succeed");
+    assert_eq!(ctx.state().io_channel.page_gpa, 0x5000);
+    assert_eq!(ctx.get_guest_rip(), Some(0x1003));
+}
+
+#[test]
+fn test_vmcall_io_register_page_unaligned() {
+    use crate::hypercalls::HYPERCALL_IO_REGISTER_PAGE;
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+
+    ctx.gprs_mut().rax = HYPERCALL_IO_REGISTER_PAGE;
+    ctx.gprs_mut().rbx = 0x5001; // 1 byte misaligned
+
+    let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(
+        result,
+        ExitHandlerResult::ExitToUserspace(ExitReason::VmcallIoRegisterPage)
+    );
+    assert_eq!(ctx.gprs().rax, !0u64, "unaligned should return -1");
+    assert_eq!(
+        ctx.state().io_channel.page_gpa,
+        0,
+        "failed registration must not stash a GPA"
+    );
+}
+
+#[test]
+fn test_vmcall_io_get_request_no_pending() {
+    use crate::hypercalls::{HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_REGISTER_PAGE};
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+
+    // First register the page so page_gpa is set, otherwise GET would
+    // return -1 and we couldn't distinguish "registered + no request" from
+    // "not registered".
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_REGISTER_PAGE;
+    ctx.gprs_mut().rbx = 0x5000;
+    let _ = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x2000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_GET_REQUEST;
+    let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(result, ExitHandlerResult::Continue);
+    assert_eq!(
+        ctx.gprs().rax,
+        0,
+        "GET_REQUEST with no pending request returns 0"
+    );
+}
+
+#[test]
+fn test_vmcall_io_get_request_writes_payload_to_guest() {
+    use crate::hypercalls::{HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_REGISTER_PAGE};
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+
+    // Register page.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_REGISTER_PAGE;
+    ctx.gprs_mut().rbx = 0x5000;
+    let _ = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+
+    // Pre-load a fake request into VmState (mimics what the QUEUE ioctl
+    // does on the kernel side). Use a non-trivial pattern that exercises
+    // the chunked copy path past the first 256-byte boundary.
+    let request: Vec<u8> = (0..600).map(|i| (i % 256) as u8).collect();
+    {
+        let chan = &mut ctx.state_mut().io_channel;
+        chan.request_buf[..request.len()].copy_from_slice(&request);
+        chan.request_len = request.len();
+    }
+
+    // Issue GET_REQUEST.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x2000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_GET_REQUEST;
+    let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(result, ExitHandlerResult::Continue);
+    assert_eq!(ctx.gprs().rax, request.len() as u64);
+
+    // Guest memory at the registered GPA should match the request payload.
+    let written = &ctx.memory[0x5000..0x5000 + request.len()];
+    assert_eq!(written, request.as_slice());
+    // The in-flight slot is consumed by GET_REQUEST so the next IRQ can
+    // fire as soon as another pending request is promoted (parallel
+    // worker model). With no pending queue here, the slot is just empty.
+    assert_eq!(ctx.state().io_channel.request_len, 0);
+    assert!(!ctx.state().io_channel.request_delivered);
+}
+
+#[test]
+fn test_vmcall_io_get_request_promotes_next_pending() {
+    use crate::hypercalls::{HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_REGISTER_PAGE};
+    use crate::vm_state::PendingIoAction;
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+
+    // Register page.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_REGISTER_PAGE;
+    ctx.gprs_mut().rbx = 0x5000;
+    let _ = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+
+    // In-flight slot: request A. Pending queue: [B, C].
+    let req_a: Vec<u8> = (0..100).map(|_| 0xAAu8).collect();
+    let req_b: Vec<u8> = (0..50).map(|_| 0xBBu8).collect();
+    let req_c: Vec<u8> = (0..75).map(|_| 0xCCu8).collect();
+    {
+        let chan = &mut ctx.state_mut().io_channel;
+        chan.request_buf[..req_a.len()].copy_from_slice(&req_a);
+        chan.request_len = req_a.len();
+        chan.request_target_tsc = 0;
+        let _ = chan.enqueue_pending(PendingIoAction {
+            target_tsc: 100,
+            data: {
+                let mut v = Vec::with_capacity(req_b.len());
+                v.extend_from_slice(&req_b);
+                v
+            },
+        });
+        let _ = chan.enqueue_pending(PendingIoAction {
+            target_tsc: 200,
+            data: {
+                let mut v = Vec::with_capacity(req_c.len());
+                v.extend_from_slice(&req_c);
+                v
+            },
+        });
+    }
+
+    // GET_REQUEST should consume A and promote B.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x2000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_GET_REQUEST;
+    let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(result, ExitHandlerResult::Continue);
+    assert_eq!(ctx.gprs().rax, req_a.len() as u64);
+
+    let chan = &ctx.state().io_channel;
+    assert_eq!(chan.request_len, req_b.len(), "B promoted into slot");
+    assert_eq!(chan.request_target_tsc, 100);
+    assert_eq!(&chan.request_buf[..req_b.len()], req_b.as_slice());
+    assert_eq!(chan.pending.len(), 1, "C still in pending queue");
+}
+
+#[test]
+fn test_vmcall_io_put_response_captures_response() {
+    use crate::hypercalls::{HYPERCALL_IO_PUT_RESPONSE, HYPERCALL_IO_REGISTER_PAGE};
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+
+    // Register page.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_REGISTER_PAGE;
+    ctx.gprs_mut().rbx = 0x5000;
+    let _ = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+
+    // PUT_RESPONSE no longer needs to clear the in-flight slot — that
+    // happened in GET_REQUEST so the next pending could be promoted
+    // immediately. Here we just verify it captures the response bytes
+    // and exits to userspace.
+    let response: Vec<u8> = (0..500).map(|i| ((i * 7) % 256) as u8).collect();
+    ctx.memory[0x5000..0x5000 + response.len()].copy_from_slice(&response);
+
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x2000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_IO_PUT_RESPONSE;
+    ctx.gprs_mut().rbx = response.len() as u64;
+    let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(
+        result,
+        ExitHandlerResult::ExitToUserspace(ExitReason::VmcallIoResponse)
+    );
+    assert_eq!(ctx.gprs().rax, 0);
+
+    let chan = &ctx.state().io_channel;
+    assert_eq!(chan.response_len, response.len());
+    assert_eq!(&chan.response_buf[..response.len()], response.as_slice());
+}
+
+#[test]
+fn test_check_io_channel_skips_when_ioapic_masked() {
+    use crate::exits::{check_io_channel, IO_CHANNEL_IRQ};
+
+    let mut ctx = MockVmContext::new();
+
+    // Pretend a request was queued and the page is already registered.
+    ctx.state_mut().io_channel.page_gpa = 0x5000;
+    ctx.state_mut().io_channel.request_len = 32;
+    ctx.state_mut().io_channel.request_delivered = false;
+
+    // Default IoApicState initialises redtbl entries with the masked bit
+    // set (bit 16), so check_io_channel must hold off until the guest
+    // module has wired up the IRQ.
+    check_io_channel(&mut ctx);
+    assert!(
+        !ctx.state().io_channel.request_delivered,
+        "must not mark delivered while IOAPIC pin is masked"
+    );
+
+    // Unmask + valid vector → check_io_channel marks delivered and sets
+    // the APIC IRR bit for that vector.
+    let vector: u8 = 0x80;
+    let entry: u64 = vector as u64; // mask bit clear, vector valid
+    ctx.state_mut().devices.ioapic.redtbl[IO_CHANNEL_IRQ as usize] = entry;
+    check_io_channel(&mut ctx);
+    assert!(
+        ctx.state().io_channel.request_delivered,
+        "should mark delivered after asserting IRQ"
+    );
+    let irr_index = (vector / 32) as usize;
+    let irr_bit = 1u32 << (vector % 32);
+    assert!(
+        ctx.state().devices.apic.irr[irr_index] & irr_bit != 0,
+        "APIC IRR should reflect the queued I/O channel IRQ"
+    );
+}
+
+#[test]
+fn test_check_io_channel_defers_until_target_tsc() {
+    use crate::exits::{check_io_channel, IO_CHANNEL_IRQ};
+
+    let mut ctx = MockVmContext::new();
+
+    let vector: u8 = 0x90;
+    ctx.state_mut().io_channel.page_gpa = 0x5000;
+    ctx.state_mut().io_channel.request_len = 16;
+    ctx.state_mut().io_channel.request_delivered = false;
+    ctx.state_mut().io_channel.request_target_tsc = 1_000_000;
+    // Unmasked, valid vector — module has wired up the IRQ.
+    ctx.state_mut().devices.ioapic.redtbl[IO_CHANNEL_IRQ as usize] = vector as u64;
+
+    // emulated_tsc below target → must not fire yet (this is the
+    // PEBS-precise path: arm_for_next_iteration arms PEBS for the
+    // target, and check_io_channel only flips the IRR on the boundary
+    // step or later).
+    ctx.state_mut().emulated_tsc = 999_999;
+    check_io_channel(&mut ctx);
+    assert!(
+        !ctx.state().io_channel.request_delivered,
+        "must defer firing while emulated_tsc < request_target_tsc"
+    );
+
+    // At-or-past target → fire.
+    ctx.state_mut().emulated_tsc = 1_000_000;
+    check_io_channel(&mut ctx);
+    assert!(
+        ctx.state().io_channel.request_delivered,
+        "should fire once emulated_tsc reaches target"
+    );
+    let irr_index = (vector / 32) as usize;
+    let irr_bit = 1u32 << (vector % 32);
+    assert!(
+        ctx.state().devices.apic.irr[irr_index] & irr_bit != 0,
+        "APIC IRR should be set on the boundary step"
+    );
+}

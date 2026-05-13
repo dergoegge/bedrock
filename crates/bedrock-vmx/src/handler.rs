@@ -131,14 +131,21 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
     /// * `vm` - Pointer to the VM file structure
     /// * `vm_id` - Unique identifier for this VM
     ///
+    /// # Errors
+    ///
+    /// Returns `AllocError` if the underlying tracking vector cannot
+    /// grow (kernel `kmalloc` failure). The caller must treat this as a
+    /// fatal registration failure — otherwise the VM would run without
+    /// being reachable via `find_vm_by_id`.
+    ///
     /// # Safety
     ///
     /// The caller must ensure that `vm` points to a valid VM that will
     /// remain valid until `remove_vm` is called.
-    pub fn add_vm<T>(&mut self, vm: NonNull<T>, vm_id: u64) {
+    pub fn add_vm<T>(&mut self, vm: NonNull<T>, vm_id: u64) -> Result<(), AllocError> {
         let vm_ref = VmRef::new(vm);
         let entry = VmEntry::new(vm_id, vm_ref);
-        heap_vec_push(&mut self.vm_list, entry);
+        heap_vec_push(&mut self.vm_list, entry)
     }
 
     /// Remove a VM from the tracking list.

@@ -57,7 +57,7 @@
       guestInitrd = import ./nix/trivial-initrd.nix { inherit pkgs; };
 
       # Full podman initramfs (Bitcoin Core nodes + miner workload)
-      podmanInitrd = import ./nix/podman-initrd.nix { inherit pkgs; };
+      podmanInitrd = import ./nix/podman-initrd.nix { inherit pkgs guestKernel; };
 
       userland = import ./nix/userland.nix { inherit pkgs; };
 

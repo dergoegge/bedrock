@@ -197,6 +197,16 @@ pub enum ExitReason {
     /// VMCALL hypercall: PEBS scratch page registered.
     /// Guest registered a PEBS scratch page via VMCALL with RAX=3.
     VmcallPebsPage = 263,
+    /// VMCALL hypercall: I/O channel shared page registered.
+    /// Guest registered the shared I/O page via VMCALL with RAX=4.
+    /// Handled entirely between the guest and the kernel module — userspace
+    /// continues without action.
+    VmcallIoRegisterPage = 264,
+    /// VMCALL hypercall: I/O channel response delivered.
+    /// Guest delivered a response via VMCALL with RAX=6. Hypervisor has
+    /// captured the response bytes into VmState; userspace drains them and
+    /// optionally queues the next request.
+    VmcallIoResponse = 265,
 }
 
 /// Error when converting from raw exit reason value.

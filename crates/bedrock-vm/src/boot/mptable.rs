@@ -5,6 +5,8 @@
 //! Creates Intel MultiProcessor Specification tables so Linux
 //! can discover the Local APIC and I/O APIC.
 
+use bedrock_vmx::IO_CHANNEL_IRQ;
+
 use super::constants::mptable::{
     BASE_ADDR, IOAPIC_ID, IOAPIC_PADDR, IOAPIC_VERSION, LAPIC_PADDR, LAPIC_VERSION, SPEC_REV,
 };
@@ -168,9 +170,12 @@ pub fn setup_mptable(memory: &mut [u8]) {
     entry_count += 1;
 
     // === I/O Interrupt Source Entries (8 bytes each) - Entry type 3 ===
-    // Route ISA IRQs to I/O APIC - IRQ4 for COM1 serial port
-    {
-        let irq = 4u8;
+    // Route ISA IRQs to I/O APIC. The bedrock-emulated platform only needs
+    // two pins: COM1 serial (IRQ 4) and the bedrock-io channel (IRQ
+    // IO_CHANNEL_IRQ — the guest's `bedrock-io.ko` `request_irq()`s this
+    // pin so the kernel programs the IOAPIC redtbl entry; the hypervisor
+    // then calls `ioapic_deliver_irq` on the same pin to inject).
+    for irq in [4u8, IO_CHANNEL_IRQ] {
         memory[offset] = 3; // Entry type: I/O interrupt source
         offset += 1;
         memory[offset] = 0; // Interrupt type: mp_INT (normal interrupt)

@@ -839,8 +839,8 @@ fn test_handler_vm_tracking() {
     let vm2_ptr = Box::into_raw(vm2);
 
     // Add VMs to tracking
-    handler.add_vm(NonNull::new(vm1_ptr).unwrap(), 1);
-    handler.add_vm(NonNull::new(vm2_ptr).unwrap(), 2);
+    handler.add_vm(NonNull::new(vm1_ptr).unwrap(), 1).unwrap();
+    handler.add_vm(NonNull::new(vm2_ptr).unwrap(), 2).unwrap();
 
     // Remove VMs (verifies remove_vm doesn't panic)
     handler.remove_vm(vm1_ptr);
@@ -864,7 +864,7 @@ fn test_handler_vm_limit() {
     // Simulate adding a VM
     let vm1 = Box::new(MockVm);
     let vm1_ptr = Box::into_raw(vm1);
-    handler.add_vm(NonNull::new(vm1_ptr).unwrap(), 1);
+    handler.add_vm(NonNull::new(vm1_ptr).unwrap(), 1).unwrap();
 
     assert!(handler.can_create_vm());
     assert!(handler.alloc_vm_id().is_some());
@@ -872,7 +872,7 @@ fn test_handler_vm_limit() {
     // Add second VM
     let vm2 = Box::new(MockVm);
     let vm2_ptr = Box::into_raw(vm2);
-    handler.add_vm(NonNull::new(vm2_ptr).unwrap(), 2);
+    handler.add_vm(NonNull::new(vm2_ptr).unwrap(), 2).unwrap();
 
     // Should not be able to create more
     assert!(!handler.can_create_vm());

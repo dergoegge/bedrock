@@ -10,7 +10,10 @@ mod stats;
 
 pub use config::{LogConfig, LogMode, SingleStepConfig, EXIT_REASON_CHECKPOINT};
 pub use exit::{ExitKind, VmExit};
-pub use ioctl::{FeedbackBufferInfo, FeedbackBufferInfoRequest, MAX_FEEDBACK_BUFFERS};
+pub use ioctl::{
+    FeedbackBufferInfo, FeedbackBufferInfoRequest, IoActionPayload, IO_CHANNEL_BUF_SIZE,
+    MAX_FEEDBACK_BUFFERS,
+};
 pub use serial::{
     parse_line_tsc_entries, LineTscEntry, SerialInput, LOG_BUFFER_SIZE, SERIAL_BUFFER_SIZE,
     SERIAL_INPUT_MAX_SIZE, SERIAL_TSC_PAGE_SIZE,
@@ -431,11 +434,83 @@ impl Vm {
         unsafe { slice::from_raw_parts(self.serial_tsc_ptr.as_ptr(), SERIAL_TSC_PAGE_SIZE) }
     }
 
-    /// Set serial input buffer for the guest.
+    // --- Deterministic I/O channel ---
+
+    /// Queue an I/O channel request the guest will pick up on its next IRQ.
     ///
-    /// # Errors
+    /// `target_tsc` controls when the hypervisor injects the IRQ:
+    /// - `0`: fire as soon as the guest is interruptible after the QUEUE.
+    /// - non-zero: arm PEBS so the IRQ lands at the precise instruction
+    ///   count corresponding to this emulated-TSC value.
     ///
-    /// Returns an error if this is a forked VM or if the ioctl fails.
+    /// The guest must have loaded `bedrock-io.ko` and registered its shared
+    /// page (`HYPERCALL_IO_REGISTER_PAGE`); until then the hypervisor will
+    /// hold the IRQ. Errors:
+    /// - `InvalidInput` if `data.len() > IO_CHANNEL_BUF_SIZE`.
+    /// - `EBUSY` (mapped to `io::Error::from_raw_os_error`) if a request is
+    ///   already in flight — the caller must `drain_io_response()` first.
+    pub fn queue_io_action(&self, data: &[u8], target_tsc: u64) -> io::Result<()> {
+        if data.len() > IO_CHANNEL_BUF_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "I/O action too large: {} > {}",
+                    data.len(),
+                    IO_CHANNEL_BUF_SIZE
+                ),
+            ));
+        }
+
+        // Boxed so we don't put 4KB on the local stack — harmless in
+        // userspace, but matches kernel-side discipline and keeps the
+        // method usable from constrained contexts.
+        let mut payload = Box::new(IoActionPayload::default());
+        payload.len = data.len() as u32;
+        payload.target_tsc = target_tsc;
+        payload.data[..data.len()].copy_from_slice(data);
+
+        let ret = unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                BEDROCK_VM_QUEUE_IO_ACTION as libc::c_ulong,
+                payload.as_ref() as *const IoActionPayload,
+            )
+        };
+
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Drain the most recent I/O channel response, returning the captured
+    /// bytes.
+    ///
+    /// Should be called immediately after `ExitKind::IoResponse`. Returns
+    /// an empty vector if there is no pending response (e.g. drained
+    /// twice). The kernel resets its internal response slot after the
+    /// drain, so a subsequent QUEUE will succeed.
+    pub fn drain_io_response(&self) -> io::Result<Vec<u8>> {
+        let mut payload = Box::new(IoActionPayload::default());
+        // On input, `len` is the user buffer's capacity — set it to the
+        // maximum so the kernel can return up to a full page.
+        payload.len = IO_CHANNEL_BUF_SIZE as u32;
+
+        let ret = unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                BEDROCK_VM_DRAIN_IO_RESPONSE as libc::c_ulong,
+                payload.as_mut() as *mut IoActionPayload,
+            )
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let n = (payload.len as usize).min(IO_CHANNEL_BUF_SIZE);
+        Ok(payload.data[..n].to_vec())
+    }
+
     pub fn set_input(&self, input: &[u8]) -> io::Result<()> {
         if self.forked {
             return Err(io::Error::new(

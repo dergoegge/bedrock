@@ -363,6 +363,29 @@ pub fn arm_for_next_iteration<C: VmContext>(ctx: &mut C) {
     let apic_deadline = ctx.state().devices.apic.timer_deadline;
     let apic_vector = (ctx.state().devices.apic.lvt_timer & 0xFF) as u8;
 
+    // The I/O channel piggy-backs on the same precise-arming machinery as
+    // the APIC timer. When a request is queued with a non-zero target TSC
+    // we compute its deadline and let PEBS arm for whichever event fires
+    // earlier — same `target - PEBS_MARGIN` precision, same MTF margin
+    // approach, same `check_io_channel` IRR set on the boundary step.
+    // Shares the readiness predicate with the MTF/margin path via
+    // `next_io_channel_target_tsc`.
+    let io_channel_deadline = super::next_io_channel_target_tsc(ctx);
+
+    // Pick the earlier of the two pending deadlines. Zero means "no APIC
+    // timer arming" (Option-style absence encoded as 0 in the existing
+    // code). The chosen target plus `apic_vector` are passed into
+    // `arm_precise_exit`; the vector field of `PebsAction::InjectInterrupt`
+    // is informational (the actual injection on PEBS fire is done by the
+    // normal pre-entry path's `check_apic_timer` / `check_io_channel`),
+    // so it's fine to reuse the APIC vector for both event types.
+    let chosen_target = match (apic_deadline, io_channel_deadline) {
+        (0, None) => 0,
+        (0, Some(t)) => t,
+        (t, None) => t,
+        (a, Some(i)) => a.min(i),
+    };
+
     let arm_result = {
         let pebs = match ctx.state_mut().pebs_state.as_deref_mut() {
             Some(p) => p,
@@ -380,11 +403,11 @@ pub fn arm_for_next_iteration<C: VmContext>(ctx: &mut C) {
             pebs.iters_since_arm = pebs.iters_since_arm.saturating_add(1);
         }
 
-        let result = if apic_deadline != 0 {
+        let result = if chosen_target != 0 {
             let r = arm_precise_exit(
                 pebs,
                 current,
-                apic_deadline,
+                chosen_target,
                 PebsAction::InjectInterrupt(apic_vector),
                 inst_count,
                 tsc_offset,
