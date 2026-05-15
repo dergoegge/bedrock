@@ -6,6 +6,7 @@ license.workspace = true
 description = "Command-line interface for the bedrock hypervisor"
 
 [dependencies]
+arbitrary = { version = "1", features = ["derive"] }
 bedrock-vm = { path = "../bedrock-vm" }
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3.4"

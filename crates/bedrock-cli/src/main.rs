@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::process;
 
+use arbitrary::Arbitrary;
 use clap::Parser;
 use log::{debug, info, trace, warn};
 
@@ -165,21 +166,112 @@ fn encode_io_action(action: &IoAction) -> Vec<u8> {
     bytes
 }
 
+/// State for `--fuzz-input` driven dumb fuzzing. The byte stream is
+/// parsed via `arbitrary` into a sequence of [`FuzzCall`]s after the
+/// workload listing arrives; the resulting driver invocations get
+/// queued upfront with cumulative TSC offsets, then the hypervisor's
+/// I/O channel runs them in order.
+struct FuzzState {
+    input: Vec<u8>,
+    drivers: Vec<(String, String)>,
+    /// Set once the fuzz schedule has been materialised so we don't
+    /// double-schedule if multiple `list` responses come back (e.g.,
+    /// the user kept their own `list` action and we also auto-queued
+    /// one — both still complete).
+    scheduled: bool,
+}
+
+/// One parsed fuzz step: pick a driver and wait `delay_ms` of virtual
+/// time relative to the previous call before firing.
+///
+/// `driver_idx` is modulo'd by the discovered driver count at apply
+/// time, so any byte value maps to a valid target. `delay_ms` is a
+/// `u16` (≤65s) — coarse enough to explore the workload at human
+/// timescales but fine enough to stress short reaction windows.
+/// `arbitrary::Arbitrary` consumes exactly 3 bytes per call from the
+/// input stream (1 + 2), so a 1 KiB fuzz file yields ~341 calls.
+#[derive(Debug, arbitrary::Arbitrary)]
+struct FuzzCall {
+    driver_idx: u8,
+    delay_ms: u16,
+}
+
+/// Parse the line-based workload listing emitted by
+/// `ACTION_GET_WORKLOAD_DETAILS` into `(container, driver_path)`
+/// pairs. Header lines (`<container>\t` with empty driver field) are
+/// dropped — only executable drivers become fuzz targets.
+fn parse_workload(data: &[u8]) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    let text = String::from_utf8_lossy(data);
+    for line in text.lines() {
+        if let Some((container, driver)) = line.split_once('\t') {
+            if !driver.is_empty() {
+                result.push((container.to_string(), driver.to_string()));
+            }
+        }
+    }
+    result
+}
+
+/// Parse the fuzz input via `arbitrary` and queue one driver
+/// invocation per `FuzzCall`, with cumulative `target_tsc` derived
+/// from `base_tsc` plus the running sum of per-call `delay_ms`
+/// converted into TSC ticks at `tsc_freq`. Returns the number of
+/// actions actually queued.
+fn schedule_fuzz(
+    input: &[u8],
+    drivers: &[(String, String)],
+    base_tsc: u64,
+    tsc_freq: u64,
+    vm: &mut Vm,
+) -> usize {
+    if drivers.is_empty() {
+        warn!("Fuzz input ignored — no drivers discovered");
+        return 0;
+    }
+    let mut u = arbitrary::Unstructured::new(input);
+    let mut cumulative_tsc = base_tsc;
+    let mut count = 0;
+    while !u.is_empty() {
+        let call = match FuzzCall::arbitrary(&mut u) {
+            Ok(c) => c,
+            // Final partial record (input ran out mid-struct) — stop.
+            Err(_) => break,
+        };
+        cumulative_tsc = cumulative_tsc.saturating_add((call.delay_ms as u64 * tsc_freq) / 1000);
+        let idx = (call.driver_idx as usize) % drivers.len();
+        let (container, driver) = &drivers[idx];
+        let action = IoAction::ExecBash {
+            container: container.clone(),
+            cmd: driver.clone(),
+        };
+        let encoded = encode_io_action(&action);
+        if let Err(e) = vm.queue_io_action(&encoded, cumulative_tsc) {
+            warn!("Failed to queue fuzz action {}: {}", count, e);
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
 /// Parse the response header out of the bytes drained from the I/O channel.
-/// Returns `(status, exit_code, data)` where `data` is a borrow into the
-/// caller's buffer covering only the payload region.
-fn decode_io_response(bytes: &[u8]) -> Result<(i32, i32, &[u8]), String> {
-    if bytes.len() < 16 {
+/// Returns `(action_id, status, exit_code, data)` where `action_id`
+/// mirrors the request's so callers can dispatch on it, and `data`
+/// borrows into the caller's buffer covering only the payload region.
+fn decode_io_response(bytes: &[u8]) -> Result<(u32, i32, i32, &[u8]), String> {
+    if bytes.len() < 20 {
         return Err(format!("response too short: {} bytes", bytes.len()));
     }
     let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if magic != IO_RESPONSE_MAGIC {
         return Err(format!("bad response magic {:#x}", magic));
     }
-    let status = i32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    let exit_code = i32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    let data_len = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-    let data_end = 16 + data_len;
+    let action_id = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let status = i32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    let exit_code = i32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let data_len = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
+    let data_end = 20 + data_len;
     if data_end > bytes.len() {
         return Err(format!(
             "response data overruns: {} > {}",
@@ -187,7 +279,7 @@ fn decode_io_response(bytes: &[u8]) -> Result<(i32, i32, &[u8]), String> {
             bytes.len()
         ));
     }
-    Ok((status, exit_code, &bytes[16..data_end]))
+    Ok((action_id, status, exit_code, &bytes[20..data_end]))
 }
 
 /// Dump the feedback buffer to a file.
@@ -475,12 +567,39 @@ fn run() -> io::Result<()> {
         }
     }
 
+    // Load the fuzz input if --fuzz-input was given, and ensure a
+    // `list` action is scheduled so the workload listing is available
+    // before any fuzz byte is consumed.
+    let mut fuzz_state: Option<FuzzState> = if let Some(ref path) = args.fuzz_input {
+        let input = read_file(path)?;
+        info!("Loaded {} bytes of fuzz input from {}", input.len(), path);
+        Some(FuzzState {
+            input,
+            drivers: Vec::new(),
+            scheduled: false,
+        })
+    } else {
+        None
+    };
+
     // Queue all I/O actions upfront. The hypervisor owns the pending
     // FIFO and the guest module spawns parallel workers, so the CLI's
     // job is just to push every scheduled action into the queue before
     // the VM starts running. Sorting by target_tsc keeps the FIFO order
     // deterministic when target_tscs are identical or zero.
     let mut io_schedule: Vec<ScheduledIoAction> = args.io_actions.clone();
+    // Fuzz mode requires a workload listing; auto-queue one at
+    // target_tsc=0 if the user didn't schedule one themselves.
+    if fuzz_state.is_some()
+        && !io_schedule
+            .iter()
+            .any(|s| matches!(s.action, IoAction::GetWorkloadDetails))
+    {
+        io_schedule.push(ScheduledIoAction {
+            target_tsc: 0,
+            action: IoAction::GetWorkloadDetails,
+        });
+    }
     io_schedule.sort_by_key(|a| a.target_tsc);
     for (idx, sched) in io_schedule.iter().enumerate() {
         let bytes = encode_io_action(&sched.action);
@@ -603,9 +722,10 @@ fn run() -> io::Result<()> {
                     ExitKind::IoResponse => {
                         match vm.drain_io_response() {
                             Ok(bytes) => match decode_io_response(&bytes) {
-                                Ok((status, exit_code, data)) => {
+                                Ok((action_id, status, exit_code, data)) => {
                                     info!(
-                                        "I/O response: status={} exit_code={} ({} bytes)",
+                                        "I/O response: action={} status={} exit_code={} ({} bytes)",
+                                        action_id,
                                         status,
                                         exit_code,
                                         data.len()
@@ -613,6 +733,31 @@ fn run() -> io::Result<()> {
                                     if !data.is_empty() {
                                         print!("{}", String::from_utf8_lossy(data));
                                         let _ = io::stdout().flush();
+                                    }
+
+                                    // Cache the workload listing and, the
+                                    // first time we see one, materialise
+                                    // the entire fuzz schedule. The
+                                    // hypervisor's pending FIFO sorts by
+                                    // target_tsc, so all the calls just
+                                    // get queued upfront and run in vt
+                                    // order from there.
+                                    if action_id == ACTION_GET_WORKLOAD_DETAILS {
+                                        if let Some(ref mut fs) = fuzz_state {
+                                            fs.drivers = parse_workload(data);
+                                            info!("Discovered {} fuzz targets", fs.drivers.len());
+                                            if !fs.scheduled {
+                                                fs.scheduled = true;
+                                                let queued = schedule_fuzz(
+                                                    &fs.input,
+                                                    &fs.drivers,
+                                                    exit.emulated_tsc,
+                                                    exit.tsc_frequency,
+                                                    &mut vm,
+                                                );
+                                                info!("Scheduled {} fuzz actions", queued);
+                                            }
+                                        }
                                     }
                                 }
                                 Err(e) => warn!("Failed to decode I/O response: {}", e),

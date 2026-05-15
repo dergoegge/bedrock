@@ -40,7 +40,10 @@
  * Wire format on the shared page (both directions reuse the same 4KB):
  *
  *   request:  u32 magic | u32 action_id | u32 payload_len | u8 payload[]
- *   response: u32 magic | i32 status    | i32 exit_code   | u32 data_len | u8 data[]
+ *   response: u32 magic | u32 action_id | i32 status | i32 exit_code | u32 data_len | u8 data[]
+ *
+ * The response's `action_id` mirrors the request's so the host CLI
+ * can dispatch on it without tracking expected response order.
  *
  * For ACTION_EXEC_BASH the payload is two NUL-terminated strings back to
  * back: "<container>\0<cmd>\0". For ACTION_EXEC_HOST_BASH the payload is a
@@ -97,6 +100,7 @@ struct io_request_header {
 
 struct io_response_header {
 	__u32 magic;
+	__u32 action_id;
 	__s32 status;
 	__s32 exit_code;
 	__u32 data_len;
@@ -651,6 +655,7 @@ static void bedrock_io_work_fn(struct work_struct *work)
 	}
 
 	resp_hdr.magic = IO_RESPONSE_MAGIC;
+	resp_hdr.action_id = req_hdr.action_id;
 	resp_hdr.status = read_status;
 	resp_hdr.exit_code = (__s32)exit_code;
 	resp_hdr.data_len = (__u32)data_read;

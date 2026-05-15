@@ -137,6 +137,21 @@ pub struct Args {
     ///   --io-action 'exec:host:uname -a'
     #[arg(long = "io-action", value_parser = parse_scheduled_io_action, verbatim_doc_comment)]
     pub io_actions: Vec<ScheduledIoAction>,
+
+    /// Path to a byte stream that drives a sequence of driver-invocation
+    /// I/O actions ("dumb fuzzing"). Each byte selects one
+    /// (container, driver) pair from the latest `list` response
+    /// (`drivers[byte % drivers.len()]`) and queues an
+    /// `exec:<container>:<driver>` action. The fuzz state machine
+    /// advances by one byte after every I/O response, so driver calls
+    /// run serially through the channel until the input is exhausted.
+    ///
+    /// A `list` action is auto-queued at `target_tsc = 0` if neither
+    /// `--io-action 'list'` nor any other scheduled list invocation is
+    /// present, so the workload listing is available before the first
+    /// fuzz byte is consumed.
+    #[arg(long = "fuzz-input")]
+    pub fuzz_input: Option<String>,
 }
 
 /// One scheduled I/O channel action. Parsed from the CLI's repeated
