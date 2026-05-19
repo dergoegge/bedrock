@@ -35,14 +35,11 @@ use c_helpers::bedrock_copy_from_user;
 use factory::{create_vm, KernelFrameAllocator};
 use instruction_counter::LinuxInstructionCounter;
 use machine::MACHINE;
-use vm_file::{
-    create_forked_vm_fd, create_vm_fd, read_vm_file_type, BedrockForkedVmFile, BedrockVmFile,
-    VmFileType,
-};
+use vm_file::{create_forked_vm_fd, create_vm_fd, ParentVmArc};
 use vmx::traits::{Kernel, Machine, Vmx, VmxCpu};
 use vmx::BedrockHandler;
 use vmx::VmxoffError;
-use vmx::{ForkableVm, ForkedVm};
+use vmx::{ForkableVm, ForkedVm, ParentVm};
 use vmx_asm::VmxContextExt;
 use vmxon::RealVmx;
 
@@ -188,8 +185,8 @@ fn handle_create_root_vm(arg: usize) -> Result<isize> {
 /// only held briefly to:
 /// 1. Allocate a VM ID
 /// 2. Find and validate the parent VM
-/// 3. Increment the parent's children_count (atomic)
-/// 4. Get a raw pointer to the parent
+/// 3. Retain the parent and increment its children_count
+/// 4. Get a raw pointer to the retained parent
 ///
 /// The expensive work (EPT cloning, VMCS copying, etc.) happens outside the lock,
 /// allowing multiple forks from the same parent to proceed in parallel.
@@ -198,14 +195,14 @@ fn handle_create_root_vm(arg: usize) -> Result<isize> {
 ///
 /// - Once children_count > 0, the parent cannot be run (can_run() returns false)
 /// - Concurrent forks only READ parent state, which is safe
-/// - The caller must not close the parent FD while forks are in progress
+/// - The retained parent reference keeps parent memory alive if the FD closes
 #[inline(never)]
 fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     log_info!("FORK: Starting fork from parent {}\n", parent_vm_id);
 
-    // Phase 1: Under lock - allocate ID, find parent, increment children_count, get pointer
+    // Phase 1: Under lock - allocate ID, find parent, clone parent Arc
     // This is the only serialized part of fork creation.
-    let (vm_id, parent_ptr, parent_type) = {
+    let (vm_id, parent) = {
         let mut guard = HANDLER.lock();
         let handler = guard.as_mut().ok_or(ENODEV)?;
 
@@ -218,26 +215,17 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
             ENOENT
         })?;
 
-        // Determine parent type
-        // SAFETY: parent_ref points to a valid BedrockVmFile or BedrockForkedVmFile
-        // that was registered via add_vm. Both structs have vm_file_type as their
-        // first field (guaranteed by #[repr(C)]). We hold the handler lock.
-        let parent_type = unsafe { read_vm_file_type(parent_ref.as_ptr()) };
+        let parent_type = parent_ref.file_type();
 
-        // Increment parent's children_count BEFORE releasing lock.
-        // This prevents the parent from being run while we fork from it.
-        // The atomic increment is the key synchronization point.
-        match parent_type {
-            VmFileType::Root => {
-                // SAFETY: parent_ref points to a valid BedrockVmFile registered via add_vm.
-                // BedrockVmFile has vm_file_type as its first field (#[repr(C)]). We hold the handler lock.
-                let parent_file = unsafe { &*(parent_ref.as_ptr() as *const BedrockVmFile) };
+        // Clone the parent Arc and increment children_count BEFORE releasing
+        // the handler lock. The cloned reference keeps parent memory alive even
+        // if userspace closes the parent FD while fork creation continues.
+        let parent = parent_ref;
+        match &parent {
+            ParentVmArc::Root(parent_file) => {
                 parent_file.vm.add_child();
             }
-            VmFileType::Forked => {
-                // SAFETY: parent_ref points to a valid BedrockForkedVmFile registered via add_vm.
-                // BedrockForkedVmFile has vm_file_type as its first field (#[repr(C)]). We hold the handler lock.
-                let parent_file = unsafe { &*(parent_ref.as_ptr() as *const BedrockForkedVmFile) };
+            ParentVmArc::Forked(parent_file) => {
                 parent_file.vm.add_child();
             }
         }
@@ -249,7 +237,7 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
             parent_type as u8
         );
 
-        (vm_id, parent_ref.as_ptr(), parent_type)
+        (vm_id, parent)
     }; // Lock released here - expensive work can now proceed in parallel
 
     // Phase 2: Without lock - do the expensive fork work
@@ -259,35 +247,25 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
         let exit_handler_rip = vmx::VmxContext::exit_handler_addr();
         let instruction_counter = LinuxInstructionCounter::new();
 
-        match parent_type {
-            VmFileType::Root => {
-                // SAFETY: parent_ptr is valid because:
-                // 1. We found it in the handler's vm_list while holding the lock
-                // 2. children_count > 0 prevents it from being run
-                // 3. User contract: parent FD must not be closed during fork
-                let parent_file = unsafe { &*(parent_ptr as *const BedrockVmFile) };
+        match &parent {
+            ParentVmArc::Root(parent_file) => {
                 // Use new_with_incremented_parent since we already incremented
                 // children_count in phase 1 while holding the lock.
                 ForkedVm::new_with_incremented_parent(
-                    &parent_file.vm,
+                    parent_file.as_ref(),
                     &MACHINE,
                     &mut allocator,
                     exit_handler_rip,
                     instruction_counter,
                 )
             }
-            VmFileType::Forked => {
-                // SAFETY: parent_ptr is valid because we found it in the handler's vm_list while
-                // holding the lock and children_count > 0 prevents it from being run or freed.
-                let parent_file = unsafe { &*(parent_ptr as *const BedrockForkedVmFile) };
-                ForkedVm::new_with_incremented_parent(
-                    &parent_file.vm,
-                    &MACHINE,
-                    &mut allocator,
-                    exit_handler_rip,
-                    instruction_counter,
-                )
-            }
+            ParentVmArc::Forked(parent_file) => ForkedVm::new_with_incremented_parent(
+                parent_file.as_ref(),
+                &MACHINE,
+                &mut allocator,
+                exit_handler_rip,
+                instruction_counter,
+            ),
         }
     };
 
@@ -302,20 +280,12 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
             );
             // Decrement children_count since ForkedVm wasn't created
             // (normally ForkedVm::drop does this, but creation failed)
-            match parent_type {
-                VmFileType::Root => {
-                    // SAFETY: parent_ptr is valid - it was found in the handler's vm_list and
-                    // children_count > 0 prevents it from being freed. We need to decrement
-                    // because ForkedVm creation failed.
-                    let parent_file = unsafe { &*(parent_ptr as *const BedrockVmFile) };
-                    parent_file.vm.remove_child();
+            match &parent {
+                ParentVmArc::Root(parent_file) => {
+                    ParentVm::remove_child(parent_file.as_ref());
                 }
-                VmFileType::Forked => {
-                    // SAFETY: parent_ptr is valid - it was found in the handler's vm_list and
-                    // children_count > 0 prevents it from being freed. We need to decrement
-                    // because ForkedVm creation failed.
-                    let parent_file = unsafe { &*(parent_ptr as *const BedrockForkedVmFile) };
-                    parent_file.vm.remove_child();
+                ParentVmArc::Forked(parent_file) => {
+                    ParentVm::remove_child(parent_file.as_ref());
                 }
             }
             return Err(ENOMEM);
@@ -324,7 +294,7 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
 
     // Phase 3: Create FD (re-acquires lock briefly to register VM)
     log_info!("FORK: Creating FD for forked VM {}\n", vm_id);
-    let fd = create_forked_vm_fd(forked_vm, vm_id).inspect_err(|e| {
+    let fd = create_forked_vm_fd(forked_vm, parent, vm_id).inspect_err(|e| {
         log_err!("Failed to create forked VM FD: {:?}\n", e);
     })?;
 

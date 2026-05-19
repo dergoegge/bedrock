@@ -9,8 +9,8 @@ use core::ffi::c_int;
 use core::mem::{size_of, MaybeUninit};
 use core::sync::atomic::AtomicBool;
 
-use kernel::alloc::KBox;
 use kernel::bindings;
+use kernel::sync::Arc;
 
 use super::super::c_helpers::{
     bedrock_copy_from_user, bedrock_remap_page, bedrock_remap_pages, bedrock_remap_vmalloc_range,
@@ -18,7 +18,7 @@ use super::super::c_helpers::{
 };
 use super::super::page::{LogBuffer, PagePool, LOG_BUFFER_SIZE};
 use super::super::vmx::traits::GuestMemory;
-use super::super::vmx::ForkableVm;
+use super::super::vmx::{ForkableVm, ParentVm, VmState};
 use super::super::HANDLER;
 use super::core::BedrockVmFile;
 use super::handlers::{self, VmFileOps};
@@ -81,6 +81,59 @@ pub(crate) static BEDROCK_VM_FOPS: SyncFileOps = {
     SyncFileOps(fops)
 };
 
+impl ParentVm for BedrockVmFile {
+    fn read_page(&self, gpa: super::super::memory::GuestPhysAddr) -> Option<*const u8> {
+        self.vm.read_page(gpa)
+    }
+
+    fn memory_size(&self) -> usize {
+        self.vm.memory_size()
+    }
+
+    fn remove_child(&self) {
+        ForkableVm::remove_child(&self.vm);
+    }
+}
+
+impl
+    ForkableVm<
+        super::super::vmcs::RealVmcs,
+        super::super::instruction_counter::LinuxInstructionCounter,
+    > for BedrockVmFile
+{
+    type Page = super::super::page::KernelPage;
+
+    fn vm_state(
+        &self,
+    ) -> &VmState<
+        super::super::vmcs::RealVmcs,
+        super::super::instruction_counter::LinuxInstructionCounter,
+    > {
+        self.vm.vm_state()
+    }
+
+    fn vm_state_mut(
+        &mut self,
+    ) -> &mut VmState<
+        super::super::vmcs::RealVmcs,
+        super::super::instruction_counter::LinuxInstructionCounter,
+    > {
+        self.vm.vm_state_mut()
+    }
+
+    fn add_child(&self) {
+        self.vm.add_child();
+    }
+
+    fn remove_child(&self) {
+        ForkableVm::remove_child(&self.vm);
+    }
+
+    fn children_count(&self) -> usize {
+        self.vm.children_count()
+    }
+}
+
 /// Release callback for bedrock-vm files.
 ///
 /// # Safety
@@ -114,10 +167,12 @@ unsafe extern "C" fn bedrock_vm_release(
         }
     }
 
-    // Drop the VM, freeing all resources
-    // SAFETY: vm_ptr was created by KBox::into_raw in create_vm_fd. This is the
-    // release callback, so this is the unique point where ownership is reclaimed.
-    let _ = unsafe { KBox::from_raw(vm_ptr) };
+    // Drop the file descriptor's Arc reference. Forked children may still hold
+    // cloned parent Arcs; in that case the allocation is reclaimed when the
+    // last child drops.
+    // SAFETY: vm_ptr was created by Arc::into_raw in create_vm_fd. This release
+    // callback consumes the fd-owned reference exactly once.
+    let _ = unsafe { Arc::from_raw(vm_ptr) };
 
     log_info!("VM {} released successfully\n", vm_id);
     0

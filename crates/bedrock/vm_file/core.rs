@@ -6,6 +6,8 @@
 
 use core::sync::atomic::AtomicBool;
 
+use kernel::sync::Arc;
+
 use super::super::instruction_counter::LinuxInstructionCounter;
 use super::super::page::{KernelGuestMemory, KernelPage, LogBuffer, PagePool};
 use super::super::vmcs::RealVmcs;
@@ -65,6 +67,54 @@ impl BedrockVmFile {
     }
 }
 
+/// Strong reference to any VM file that can be used as a fork parent.
+#[derive(Clone)]
+pub(crate) enum ParentVmArc {
+    /// Root VM parent.
+    Root(Arc<BedrockVmFile>),
+    /// Forked VM parent for nested forks.
+    Forked(Arc<BedrockForkedVmFile>),
+}
+
+impl ParentVmArc {
+    /// Return the VM's unique identifier.
+    pub(crate) fn vm_id(&self) -> u64 {
+        match self {
+            Self::Root(vm_file) => vm_file.vm_id,
+            Self::Forked(vm_file) => vm_file.vm_id,
+        }
+    }
+
+    /// Return a stable data pointer for removing this VM from the handler.
+    pub(crate) fn as_ptr(&self) -> *const () {
+        match self {
+            Self::Root(vm_file) => core::ptr::from_ref::<BedrockVmFile>(vm_file.as_ref()).cast(),
+            Self::Forked(vm_file) => {
+                core::ptr::from_ref::<BedrockForkedVmFile>(vm_file.as_ref()).cast()
+            }
+        }
+    }
+
+    /// Return the VM file type.
+    pub(crate) fn file_type(&self) -> VmFileType {
+        match self {
+            Self::Root(_) => VmFileType::Root,
+            Self::Forked(_) => VmFileType::Forked,
+        }
+    }
+}
+
+// SAFETY: VM file handles are shared across file operations and fork creation.
+// Interior concurrency is controlled by the existing VM state atomics, per-file
+// operation serialization, and the global handler mutex. The Arc is used here
+// only to keep the allocation alive across those externally synchronized paths.
+unsafe impl Send for ParentVmArc {}
+
+// SAFETY: Shared access through ParentVmArc is used for parent reads during fork
+// and for lifetime management. Mutable VM operations still go through the file
+// callbacks' existing synchronization and run-state checks.
+unsafe impl Sync for ParentVmArc {}
+
 /// Per-forked-VM state owned by the file descriptor.
 ///
 /// This struct is stored in `file->private_data` for bedrock forked-vm anonymous inodes.
@@ -76,6 +126,8 @@ pub(crate) struct BedrockForkedVmFile {
     pub vm_file_type: VmFileType,
     /// The forked VM with COW memory.
     pub vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
+    /// Strong parent reference that keeps inherited memory alive.
+    _parent: ParentVmArc,
     /// Unique identifier for this VM.
     pub vm_id: u64,
     /// Flag to detect concurrent access to RUN ioctl.
@@ -94,28 +146,17 @@ impl BedrockForkedVmFile {
     /// Create a new BedrockForkedVmFile wrapping a ForkedVm.
     pub(crate) fn new(
         vm: ForkedVm<RealVmcs, KernelPage, LinuxInstructionCounter>,
+        parent: ParentVmArc,
         vm_id: u64,
     ) -> Self {
         Self {
             vm_file_type: VmFileType::Forked,
             vm,
+            _parent: parent,
             vm_id,
             running: AtomicBool::new(false),
             log_buffer: None,
             page_pool: PagePool::new(COW_POOL_SIZE),
         }
     }
-}
-
-/// Read the VM file type from a raw pointer.
-///
-/// # Safety
-///
-/// The pointer must point to either a valid `BedrockVmFile` or `BedrockForkedVmFile`.
-/// Both structs must have `vm_file_type` as their first field.
-pub(crate) unsafe fn read_vm_file_type(ptr: *const ()) -> VmFileType {
-    // SAFETY: Both BedrockVmFile and BedrockForkedVmFile have vm_file_type as their
-    // first field (enforced by #[repr(C)] and struct layout), so we can safely read
-    // the first byte to determine the type.
-    unsafe { *(ptr.cast::<VmFileType>()) }
 }

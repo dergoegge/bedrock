@@ -11,21 +11,14 @@ use super::prelude::*;
 #[cfg(feature = "cargo")]
 use crate::prelude::*;
 
+#[cfg(feature = "cargo")]
 use core::ptr::NonNull;
-
-/// Opaque VM reference for tracking in the handler.
-///
-/// This is a type-erased pointer to a VM. In kernel mode, this points to
-/// a `BedrockVmFile`. The handler doesn't own these pointers - ownership
-/// is with the file descriptors.
-///
-/// We wrap `NonNull<()>` to implement `Send`, which is safe because:
-/// - These are weak references only used for tracking (pointer comparison)
-/// - The actual VM data is protected by proper synchronization when accessed
-/// - We never dereference these pointers across thread boundaries
+#[cfg(feature = "cargo")]
+/// Opaque VM reference used by cargo tests and userland crates.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VmRef(NonNull<()>);
 
+#[cfg(feature = "cargo")]
 impl VmRef {
     /// Create a new VmRef from a NonNull pointer.
     pub fn new<T>(ptr: NonNull<T>) -> Self {
@@ -33,27 +26,32 @@ impl VmRef {
     }
 
     /// Get the raw pointer.
-    pub fn as_ptr(&self) -> *mut () {
+    pub fn as_ptr(&self) -> *const () {
         self.0.as_ptr()
     }
 }
 
-// SAFETY: VmRef is only used for pointer comparison and tracking.
-// The actual VM data access is properly synchronized elsewhere.
+#[cfg(feature = "cargo")]
+// SAFETY: VmRef is only used for pointer comparison and tracking in cargo
+// builds. The actual VM data access is synchronized elsewhere.
 unsafe impl Send for VmRef {}
 
+#[cfg(feature = "cargo")]
+type VmHandle = VmRef;
+#[cfg(not(feature = "cargo"))]
+type VmHandle = ParentVmArc;
+
 /// VM entry in the tracking list, containing both the ID and reference.
-#[derive(Clone, Copy)]
 pub struct VmEntry {
     /// Unique VM identifier.
     pub vm_id: u64,
-    /// Opaque reference to the VM.
-    pub vm_ref: VmRef,
+    /// Strong reference to the VM while it is open and visible by ID.
+    pub vm_ref: VmHandle,
 }
 
 impl VmEntry {
     /// Create a new VmEntry.
-    pub fn new(vm_id: u64, vm_ref: VmRef) -> Self {
+    pub fn new(vm_id: u64, vm_ref: VmHandle) -> Self {
         Self { vm_id, vm_ref }
     }
 }
@@ -62,19 +60,19 @@ impl VmEntry {
 ///
 /// This handler manages:
 /// - VMX state (VMXON/VMXOFF on all CPUs)
-/// - A list of all active VMs (weak references for tracking)
+/// - A list of all active VMs
 /// - VM ID allocation
 ///
-/// VMs are NOT owned by the handler. They are owned by file descriptors
-/// and the handler only keeps weak references for administrative purposes.
+/// VMs are owned by file descriptors and by the handler while they are visible
+/// for lookup by VM ID. Removing a VM from the handler drops the handler's
+/// strong reference; forked children may hold additional parent references.
 ///
 /// # Type Parameters
 ///
 /// * `X` - The VMX implementation for hardware virtualization
 /// * `MAX_VMS` - Maximum number of VMs that can be tracked
 pub struct BedrockHandler<'a, X: Vmx, const MAX_VMS: usize = 64> {
-    /// Weak references to all active VMs (not owned).
-    /// These are raw pointers to VM file structures with their IDs.
+    /// Strong references to all active VMs while they are visible by ID.
     vm_list: HeapVec<VmEntry>,
     /// Next VM ID to assign (monotonically increasing).
     next_vm_id: u64,
@@ -120,39 +118,45 @@ impl<'a, X: Vmx, const MAX_VMS: usize> BedrockHandler<'a, X, MAX_VMS> {
         Some(id)
     }
 
-    /// Register a VM in the tracking list.
-    ///
-    /// This adds a weak reference to the VM for administrative tracking.
-    /// The VM is NOT owned by the handler - ownership remains with the
-    /// file descriptor.
+    /// Register a VM in the tracking list, taking a strong reference.
     ///
     /// # Arguments
     ///
-    /// * `vm` - Pointer to the VM file structure
+    /// * `vm` - Strong VM file reference
     /// * `vm_id` - Unique identifier for this VM
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `vm` points to a valid VM that will
-    /// remain valid until `remove_vm` is called.
+    #[cfg(not(feature = "cargo"))]
+    pub fn add_vm(&mut self, vm: ParentVmArc) {
+        let entry = VmEntry::new(vm.vm_id(), vm);
+        heap_vec_push(&mut self.vm_list, entry);
+    }
+
+    #[cfg(feature = "cargo")]
     pub fn add_vm<T>(&mut self, vm: NonNull<T>, vm_id: u64) {
-        let vm_ref = VmRef::new(vm);
-        let entry = VmEntry::new(vm_id, vm_ref);
+        let entry = VmEntry::new(vm_id, VmRef::new(vm));
         heap_vec_push(&mut self.vm_list, entry);
     }
 
     /// Remove a VM from the tracking list.
     ///
-    /// This removes the weak reference to the VM. Should be called when
-    /// the VM's file descriptor is being closed.
-    pub fn remove_vm<T>(&mut self, vm: *mut T) {
+    /// This drops the handler's strong reference. It should be called when the
+    /// VM's file descriptor is being closed.
+    pub fn remove_vm<T>(&mut self, vm: *const T) {
         let vm_ptr = vm.cast::<()>();
         self.vm_list.retain(|e| e.vm_ref.as_ptr() != vm_ptr);
     }
 
     /// Find a VM by its ID.
     ///
-    /// Returns the VmRef if found, None otherwise.
+    /// Returns a cloned strong reference if found, None otherwise.
+    #[cfg(not(feature = "cargo"))]
+    pub fn find_vm_by_id(&self, vm_id: u64) -> Option<ParentVmArc> {
+        self.vm_list
+            .iter()
+            .find(|e| e.vm_id == vm_id)
+            .map(|e| e.vm_ref.clone())
+    }
+
+    #[cfg(feature = "cargo")]
     pub fn find_vm_by_id(&self, vm_id: u64) -> Option<VmRef> {
         self.vm_list
             .iter()

@@ -44,7 +44,9 @@ pub use vm_state::{
 };
 
 // Handler
-pub use handler::{BedrockHandler, VmEntry, VmRef};
+#[cfg(feature = "cargo")]
+pub use handler::VmRef;
+pub use handler::{BedrockHandler, VmEntry};
 
 // COW support
 pub use cow::CowPageMap;

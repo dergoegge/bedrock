@@ -25,7 +25,9 @@ pub mod vm;
 pub mod vm_state;
 
 pub use fields::{VmcsField16, VmcsField32, VmcsField64, VmcsFieldNatural};
-pub use handler::{BedrockHandler, VmEntry, VmRef};
+#[cfg(feature = "cargo")]
+pub use handler::VmRef;
+pub use handler::{BedrockHandler, VmEntry};
 pub use traits::{
     InveptError, InvvpidError, VirtualMachineControlStructure, VmEntryError, VmRunner,
     VmcsReadError, VmcsReadResult, VmcsWriteError, VmcsWriteResult, Vmx, VmxCapabilities,
