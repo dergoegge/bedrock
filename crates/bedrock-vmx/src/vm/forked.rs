@@ -460,6 +460,15 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
             return None;
         }
 
+        // SDM Vol 3C §30.4.3.4 requires single-context INVEPT after changing
+        // the HPA in an EPT leaf. The EPT-violation auto-invalidation only
+        // covers the faulting linear address; combined mappings cached for
+        // other GVAs that target this GPA (e.g. the kernel just faulted via
+        // its tmpfs mapping, but a user-space mmap of the same file has its
+        // own combined mapping in the TLB) would otherwise keep the old
+        // HPA and read pre-COW data.
+        let _ = <<V::M as Machine>::V as Vmx>::invept_single_context(self.state.ept.eptp());
+
         log_debug!(
             "COW: Copied page at GPA {:#x} -> HPA {:#x}\n",
             page_gpa.as_u64(),
@@ -558,6 +567,10 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
                 continue;
             }
 
+            // SDM Vol 3C §30.4.3.4: single-context INVEPT after changing a
+            // leaf's HPA. See the matching comment in handle_cow_fault.
+            let _ = <<V::M as Machine>::V as Vmx>::invept_single_context(self.state.ept.eptp());
+
             log_debug!(
                 "pre_cow_feedback_buffer_at: pre-COW'd buffer {} page at GPA {:#x} -> HPA {:#x}\n",
                 index,
@@ -630,6 +643,10 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> VmContex
             );
             return;
         }
+
+        // SDM Vol 3C §30.4.3.4: single-context INVEPT after changing a leaf's
+        // HPA. See the matching comment in handle_cow_fault.
+        let _ = <<V::M as Machine>::V as Vmx>::invept_single_context(self.state.ept.eptp());
 
         log_debug!(
             "pre_cow_io_channel_page: pre-COW'd I/O channel page at GPA {:#x} -> HPA {:#x}\n",
