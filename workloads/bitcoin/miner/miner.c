@@ -20,23 +20,35 @@
 // Hypercall numbers
 #define HYPERCALL_REGISTER_FEEDBACK_BUFFER 2
 
+// String identifier this miner registers its feedback buffer under. Multiple
+// miner instances sharing this id let the host union their per-process
+// coverage maps into a single domain.
+#define FEEDBACK_BUFFER_ID "bedrock-bitcoin-miner"
+
 static uint8_t *feedback_buffer = NULL;
 
-// Register the feedback buffer with the hypervisor
-static int register_feedback_buffer(void *buffer, size_t size, uint64_t index) {
+// Register the feedback buffer with the hypervisor.
+//
+// ABI (registers): RAX = hypercall number, RBX = buffer GVA, RCX = buffer
+// size, RDX = id GVA, RSI = id length. Returns the assigned slot index in
+// RAX on success (0..15) or u64::MAX on failure.
+static int register_feedback_buffer(void *buffer, size_t size,
+                                    const void *id, size_t id_len) {
     uint64_t result;
     __asm__ volatile(
         "mov $2, %%rax\n\t"          // HYPERCALL_REGISTER_FEEDBACK_BUFFER = 2
         "mov %1, %%rbx\n\t"          // RBX = buffer address
         "mov %2, %%rcx\n\t"          // RCX = size
-        "mov %3, %%rdx\n\t"          // RDX = buffer index (0-15)
+        "mov %3, %%rdx\n\t"          // RDX = id pointer
+        "mov %4, %%rsi\n\t"          // RSI = id length
         "vmcall\n\t"
-        "mov %%rax, %0\n\t"          // result = RAX
+        "mov %%rax, %0\n\t"          // result = RAX (slot index or -1)
         : "=r"(result)
-        : "r"((uint64_t)buffer), "r"((uint64_t)size), "r"(index)
-        : "rax", "rbx", "rcx", "rdx"
+        : "r"((uint64_t)buffer), "r"((uint64_t)size),
+          "r"((uint64_t)id), "r"((uint64_t)id_len)
+        : "rax", "rbx", "rcx", "rdx", "rsi"
     );
-    return (result == 0) ? 0 : -1;
+    return (result == (uint64_t)-1) ? -1 : 0;
 }
 
 // Get the current block count from the feedback buffer
@@ -180,9 +192,12 @@ int main(int argc, char **argv) {
     // Initialize buffer
     memset(feedback_buffer, 0, FEEDBACK_BUFFER_SIZE);
 
-    // Register with hypervisor (index 0 for the miner's single buffer)
-    printf("Registering feedback buffer (%d bytes)...\n", FEEDBACK_BUFFER_SIZE);
-    if (register_feedback_buffer(feedback_buffer, FEEDBACK_BUFFER_SIZE, 0) != 0) {
+    // Register with hypervisor under our domain id.
+    printf("Registering feedback buffer (%d bytes, id=\"%s\")...\n",
+           FEEDBACK_BUFFER_SIZE, FEEDBACK_BUFFER_ID);
+    if (register_feedback_buffer(feedback_buffer, FEEDBACK_BUFFER_SIZE,
+                                 FEEDBACK_BUFFER_ID,
+                                 sizeof(FEEDBACK_BUFFER_ID) - 1) != 0) {
         fprintf(stderr, "Failed to register feedback buffer (not running in bedrock VM?)\n");
         // Continue anyway - we can still mine, just won't have feedback
     } else {

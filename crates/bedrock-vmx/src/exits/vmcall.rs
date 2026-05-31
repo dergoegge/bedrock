@@ -49,6 +49,24 @@ fn copy_request_to_guest<C: VmContext>(
     Ok(())
 }
 
+/// Read up to `len` bytes from guest memory at `gva` into `dst`. Walks the
+/// range one page at a time so the read may straddle a page boundary.
+/// `len` must be `<= dst.len()`.
+fn read_guest_id<C: VmContext>(ctx: &C, gva: u64, len: usize, dst: &mut [u8]) -> Result<(), ()> {
+    debug_assert!(len <= dst.len());
+    let mut offset = 0usize;
+    while offset < len {
+        let cur_gva = gva.wrapping_add(offset as u64);
+        let page_off = (cur_gva & 0xFFF) as usize;
+        let in_page = (4096 - page_off).min(len - offset);
+        let gpa = translate_gva_to_gpa(ctx, cur_gva)?;
+        ctx.read_guest_memory(gpa, &mut dst[offset..offset + in_page])
+            .map_err(|_| ())?;
+        offset += in_page;
+    }
+    Ok(())
+}
+
 /// Copy a slice out of guest memory into `VmState.io_channel.response_buf`.
 /// Chunked for the same reason as `copy_request_to_guest`.
 fn copy_response_from_guest<C: VmContext>(
@@ -101,48 +119,75 @@ pub fn handle_vmcall<C: VmContext, A: CowAllocator<C::CowPage>>(
             ExitHandlerResult::ExitToUserspace(ExitReason::VmcallReady)
         }
         HYPERCALL_REGISTER_FEEDBACK_BUFFER => {
-            // Read arguments: GVA in RBX, size in RCX, buffer index in RDX
+            // ABI (registers):
+            //   RBX = buffer GVA
+            //   RCX = buffer size (bytes)
+            //   RDX = id GVA (pointer to identifier bytes in guest memory)
+            //   RSI = id length (1..=FEEDBACK_BUFFER_ID_MAX_LEN)
+            //
+            // Return (RAX):
+            //   on success — slot index that was assigned (0..MAX_FEEDBACK_BUFFERS)
+            //   on failure — u64::MAX
+            //
+            // IDs are not required to be unique: two registrations with the
+            // same id represent two instances of the same domain (typically
+            // two processes running the same binary) and are merged by the
+            // host at read time. A fresh slot is allocated for each call.
             let gva = ctx.state().gprs.rbx;
             let size = ctx.state().gprs.rcx;
-            let buffer_idx = ctx.state().gprs.rdx as usize;
+            let id_gva = ctx.state().gprs.rdx;
+            let id_len = ctx.state().gprs.rsi as usize;
 
-            // Validate buffer index
-            if buffer_idx >= MAX_FEEDBACK_BUFFERS {
-                log_err!(
-                    "HYPERCALL_REGISTER_FEEDBACK_BUFFER: invalid buffer index {} (max {})\n",
-                    buffer_idx,
-                    MAX_FEEDBACK_BUFFERS - 1
-                );
-                ctx.state_mut().gprs.rax = !0u64; // Return -1
-                if let Err(e) = advance_rip(ctx) {
-                    return ExitHandlerResult::Error(e);
-                }
-                return ExitHandlerResult::Continue;
-            }
-
-            // Validate size: must be > 0 and <= 1MB
             if size == 0 || size > MAX_FEEDBACK_BUFFER_SIZE {
                 log_err!(
                     "HYPERCALL_REGISTER_FEEDBACK_BUFFER: invalid size {}\n",
                     size
                 );
-                ctx.state_mut().gprs.rax = !0u64; // Return -1
+                ctx.state_mut().gprs.rax = !0u64;
                 if let Err(e) = advance_rip(ctx) {
                     return ExitHandlerResult::Error(e);
                 }
                 return ExitHandlerResult::Continue;
             }
 
-            // Translate GVA range to GPAs
+            if id_len == 0 || id_len > FEEDBACK_BUFFER_ID_MAX_LEN {
+                log_err!(
+                    "HYPERCALL_REGISTER_FEEDBACK_BUFFER: invalid id length {} (max {})\n",
+                    id_len,
+                    FEEDBACK_BUFFER_ID_MAX_LEN
+                );
+                ctx.state_mut().gprs.rax = !0u64;
+                if let Err(e) = advance_rip(ctx) {
+                    return ExitHandlerResult::Error(e);
+                }
+                return ExitHandlerResult::Continue;
+            }
+
+            // Read the identifier bytes out of guest memory. May straddle a
+            // page boundary; the loop walks one page at a time.
+            let mut id_bytes = [0u8; FEEDBACK_BUFFER_ID_MAX_LEN];
+            if let Err(()) = read_guest_id(ctx, id_gva, id_len, &mut id_bytes) {
+                log_err!(
+                    "HYPERCALL_REGISTER_FEEDBACK_BUFFER: id GVA translation failed id_gva={:#x} id_len={}\n",
+                    id_gva,
+                    id_len
+                );
+                ctx.state_mut().gprs.rax = !0u64;
+                if let Err(e) = advance_rip(ctx) {
+                    return ExitHandlerResult::Error(e);
+                }
+                return ExitHandlerResult::Continue;
+            }
+
             let mut gpas = [0u64; FEEDBACK_BUFFER_MAX_PAGES];
             let num_pages = match translate_gva_range_to_gpas(ctx, gva, size, &mut gpas) {
                 Ok(n) => n,
                 Err(()) => {
                     log_err!(
-                        "HYPERCALL_REGISTER_FEEDBACK_BUFFER: GVA translation failed gva={:#x} size={}\n",
+                        "HYPERCALL_REGISTER_FEEDBACK_BUFFER: buffer GVA translation failed gva={:#x} size={}\n",
                         gva, size
                     );
-                    ctx.state_mut().gprs.rax = !0u64; // Return -1
+                    ctx.state_mut().gprs.rax = !0u64;
                     if let Err(e) = advance_rip(ctx) {
                         return ExitHandlerResult::Error(e);
                     }
@@ -150,31 +195,50 @@ pub fn handle_vmcall<C: VmContext, A: CowAllocator<C::CowPage>>(
                 }
             };
 
-            // Store feedback buffer info in VmState at the specified index
+            // Pick the first free slot. Duplicate ids are intentionally allowed.
+            let Some(buffer_idx) = ctx
+                .state()
+                .feedback_buffers
+                .iter()
+                .position(|slot| slot.is_none())
+            else {
+                log_err!(
+                    "HYPERCALL_REGISTER_FEEDBACK_BUFFER: all {} slots in use\n",
+                    MAX_FEEDBACK_BUFFERS
+                );
+                ctx.state_mut().gprs.rax = !0u64;
+                if let Err(e) = advance_rip(ctx) {
+                    return ExitHandlerResult::Error(e);
+                }
+                return ExitHandlerResult::Continue;
+            };
+
             ctx.state_mut().feedback_buffers[buffer_idx] = Some(FeedbackBufferInfo {
                 gva,
                 size,
                 num_pages,
                 gpas,
+                id: id_bytes,
+                id_len: id_len as u32,
             });
 
-            // Pre-COW feedback buffer pages for stable userspace mapping.
-            // This handles the case where the feedback buffer is registered after fork.
+            // Pre-COW feedback buffer pages for stable userspace mapping
+            // even when the registration happens after fork.
             ctx.pre_cow_feedback_buffer_at(buffer_idx, allocator);
 
             log_info!(
-                "HYPERCALL_REGISTER_FEEDBACK_BUFFER: registered idx={} gva={:#x} size={} pages={}\n",
+                "HYPERCALL_REGISTER_FEEDBACK_BUFFER: registered slot={} gva={:#x} size={} pages={} id_len={}\n",
                 buffer_idx,
                 gva,
                 size,
-                num_pages
+                num_pages,
+                id_len
             );
 
-            ctx.state_mut().gprs.rax = 0; // Return success
+            ctx.state_mut().gprs.rax = buffer_idx as u64;
             if let Err(e) = advance_rip(ctx) {
                 return ExitHandlerResult::Error(e);
             }
-            // Exit to userspace so it can map the feedback buffer
             ExitHandlerResult::ExitToUserspace(ExitReason::VmcallFeedbackBuffer)
         }
         HYPERCALL_REGISTER_PEBS_PAGE => {

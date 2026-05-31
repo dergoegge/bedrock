@@ -37,7 +37,10 @@ pub use traits::{
 // VM implementation
 pub use cow::CowPageMap;
 pub use vm::{ForkableVm, ForkedVm, ParentVm, RootVm};
-pub use vm_state::{EnqueueResult, LogMode, PendingIoAction, VmState, MAX_FEEDBACK_BUFFERS};
+pub use vm_state::{
+    EnqueueResult, FeedbackBufferInfo, LogMode, PendingIoAction, VmState,
+    FEEDBACK_BUFFER_ID_MAX_LEN, MAX_FEEDBACK_BUFFERS,
+};
 
 // Heap helpers used by the kernel module ioctl handlers.
 pub use compat::{heap_vec_push, heap_vec_with_capacity};

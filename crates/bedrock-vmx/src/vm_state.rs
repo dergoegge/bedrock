@@ -375,10 +375,21 @@ pub const FEEDBACK_BUFFER_MAX_PAGES: usize = 256;
 /// Maximum number of feedback buffers per VM.
 pub const MAX_FEEDBACK_BUFFERS: usize = 16;
 
+/// Maximum length, in bytes, of a feedback-buffer identifier. Sized to fit a
+/// SHA-256 hex digest with room for a colon-separated suffix.
+pub const FEEDBACK_BUFFER_ID_MAX_LEN: usize = 128;
+
 /// Information about a registered feedback buffer.
 ///
-/// This is used by guests to register a feedback buffer (e.g., coverage bitmap)
-/// via hypercall that the host can then read directly without copying.
+/// Guests register a feedback buffer (e.g., a coverage bitmap) via the
+/// `HYPERCALL_REGISTER_FEEDBACK_BUFFER` hypercall so the host can read it
+/// directly without copying.
+///
+/// Each buffer carries a byte-string identifier (e.g. a binary's
+/// `--build-id`). IDs are *not* required to be unique: two registrations
+/// with the same ID mean two instances of the same domain (typically two
+/// processes running the same binary) and are expected to be merged at
+/// read time by the host.
 #[derive(Clone, Copy)]
 pub struct FeedbackBufferInfo {
     /// Original guest virtual address.
@@ -389,6 +400,12 @@ pub struct FeedbackBufferInfo {
     pub num_pages: usize,
     /// Page-aligned GPAs that make up the buffer.
     pub gpas: [u64; FEEDBACK_BUFFER_MAX_PAGES],
+    /// Identifier bytes; only the first `id_len` are meaningful. Trailing
+    /// bytes are zero so a slot can be plain-copied without leaking
+    /// previous occupants.
+    pub id: [u8; FEEDBACK_BUFFER_ID_MAX_LEN],
+    /// Length of the identifier in bytes. Always `<= FEEDBACK_BUFFER_ID_MAX_LEN`.
+    pub id_len: u32,
 }
 
 impl Default for FeedbackBufferInfo {
@@ -398,7 +415,16 @@ impl Default for FeedbackBufferInfo {
             size: 0,
             num_pages: 0,
             gpas: [0u64; FEEDBACK_BUFFER_MAX_PAGES],
+            id: [0u8; FEEDBACK_BUFFER_ID_MAX_LEN],
+            id_len: 0,
         }
+    }
+}
+
+impl FeedbackBufferInfo {
+    /// The identifier as a byte slice.
+    pub fn id_bytes(&self) -> &[u8] {
+        &self.id[..self.id_len as usize]
     }
 }
 
