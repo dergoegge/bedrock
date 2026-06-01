@@ -222,11 +222,12 @@ fn print_action_response(branch: BranchId, at: VirtTime, response: ActionRespons
                 out.exit_code,
             );
         }
-        ActionResponse::WorkloadDetails(drivers) => {
+        ActionResponse::WorkloadDetails(details) => {
             println!(
-                "[br {branch:?} vt {:>8.3}] workload details: {} drivers",
+                "[br {branch:?} vt {:>8.3}] workload details: {} containers, {} drivers",
                 at.as_secs_f64(),
-                drivers.len()
+                details.containers.len(),
+                details.drivers.len()
             );
         }
     }

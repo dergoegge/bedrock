@@ -10,3 +10,6 @@ bedrock-vm = { path = "../bedrock-vm" }
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+rand = "0.9"
+rand_chacha = "0.9"

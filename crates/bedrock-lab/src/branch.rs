@@ -2,11 +2,12 @@
 
 //! Branches — live lines of execution.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bedrock_vm::{ExitKind, LogConfig, LogEntry, Vm, VmError};
 
-use crate::bash::{self, ActionResponse, BashOutput, BashTarget, WorkloadDriver};
+use crate::bash::{self, ActionResponse, BashOutput, BashTarget, WorkloadDetails};
 use crate::checkpoint::{Checkpoint, CheckpointId, CheckpointInner};
 use crate::error::{LabError, Result};
 use crate::event::{drain_serial_into_sink, emit_feedback_buffer_registered, Event, PartialLine};
@@ -18,6 +19,13 @@ use crate::tree::Tree;
 /// A stable identifier for a branch within its tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BranchId(pub(crate) u64);
+
+impl BranchId {
+    /// The raw numeric id, for serialization or display by external tools.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
 
 /// The outcome of a [`Branch::run_until`] call.
 ///
@@ -78,6 +86,18 @@ pub struct Branch {
     /// current stop_at_tsc setting is unknown (post-fork, or never set on
     /// this branch); the next `set_stop_at` call always sends an ioctl.
     last_stop_at: Option<Option<u64>>,
+    /// Monotonically incrementing tag attached to every I/O request the
+    /// branch submits. The kernel module echoes this tag back in the
+    /// response so synchronous calls can pick their specific reply out
+    /// of the I/O channel even when other workers complete out of order.
+    next_request_id: u32,
+    /// Responses that arrived while a synchronous `run_io_action` was
+    /// waiting for a different `request_id`. Drained FIFO from
+    /// `run_until` before the VM is run again, so external observers
+    /// still see every response — just delivered through `run_until`
+    /// rather than through the synchronous call that "skipped past"
+    /// them.
+    pending_responses: VecDeque<(VirtTime, ActionResponse)>,
 }
 
 impl Branch {
@@ -115,6 +135,8 @@ impl Branch {
             input_io_exhausted,
             input_recording,
             last_stop_at: None,
+            next_request_id: 1,
+            pending_responses: VecDeque::new(),
         };
         lab.sink.on_event(Event::BranchCreated {
             branch: id,
@@ -401,6 +423,13 @@ impl Branch {
                 target,
             });
         }
+        // Deliver any responses that arrived while a synchronous call
+        // was waiting for a different `request_id`. Order is preserved
+        // — these are the responses the VM produced before the caller
+        // started this `run_until`.
+        if let Some((at, response)) = self.pending_responses.pop_front() {
+            return Ok((at, RunOutcome::ActionResponse { response }));
+        }
         if target == self.current_time {
             return Ok((target, RunOutcome::ReachedTime));
         }
@@ -433,7 +462,8 @@ impl Branch {
                             source,
                         })
                     })?;
-                    let response = bash::decode_response(&bytes).map_err(LabError::BadResponse)?;
+                    let (_request_id, response) =
+                        bash::decode_response(&bytes).map_err(LabError::BadResponse)?;
                     return Ok((at, RunOutcome::ActionResponse { response }));
                 }
                 ExitKind::FeedbackBufferRegistered => {
@@ -453,9 +483,22 @@ impl Branch {
         }
     }
 
-    /// Queue an I/O action and pump the VM until the response arrives.
-    /// Returns the raw response bytes for the caller to decode.
-    fn run_io_action(&mut self, request: &[u8]) -> Result<Vec<u8>> {
+    /// Allocate the next request tag and advance the counter. Wraps at
+    /// 2^32; in practice we never queue 4 billion outstanding actions.
+    fn next_request_id(&mut self) -> u32 {
+        let id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        id
+    }
+
+    /// Queue an I/O action tagged with `expected_id` and pump the VM
+    /// until the matching response arrives. Returns the raw response
+    /// bytes for the caller to decode. Responses for other in-flight
+    /// requests that arrive in the meantime are stashed in
+    /// `pending_responses` and delivered through subsequent
+    /// `run_until` calls — no response is dropped, just routed past
+    /// this synchronous wait.
+    fn run_io_action(&mut self, request: &[u8], expected_id: u32) -> Result<Vec<u8>> {
         // Run unbounded — any leftover stop_at_tsc from a previous run_until
         // could otherwise fire before the I/O response lands.
         self.set_stop_at(None)?;
@@ -480,12 +523,23 @@ impl Branch {
             self.drain_log_entries(exit.log_entry_count as usize);
             match exit.kind() {
                 ExitKind::IoResponse => {
-                    return self.vm_mut().drain_io_response().map_err(|source| {
+                    let bytes = self.vm_mut().drain_io_response().map_err(|source| {
                         LabError::Vm(VmError::Ioctl {
                             operation: "DRAIN_IO_RESPONSE",
                             source,
                         })
-                    })
+                    })?;
+                    let (rid, response) =
+                        bash::decode_response(&bytes).map_err(LabError::BadResponse)?;
+                    if rid == expected_id {
+                        return Ok(bytes);
+                    }
+                    // A response for a different in-flight request
+                    // landed first (workers complete out of order on
+                    // the I/O channel). Stash it for later delivery
+                    // through `run_until` and keep pumping.
+                    self.pending_responses.push_back((at, response));
+                    continue;
                 }
                 ExitKind::FeedbackBufferRegistered => {
                     self.on_feedback_buffer_registered(at)?;
@@ -572,7 +626,14 @@ impl Branch {
             .pending_input_io
             .take()
             .expect("pending_input_io was checked above");
-        let request = bash::encode_bash_request(input.target.clone(), &input.command);
+        // Scheduled actions get a fresh request_id like any other
+        // submission; nothing on the lab side correlates against it
+        // here (responses flow through `run_until` as `ActionResponse`
+        // regardless), but it has to be unique so a coincident
+        // synchronous `bash`/`workload_details` doesn't claim this
+        // response as its own.
+        let request_id = self.next_request_id();
+        let request = bash::encode_bash_request(input.target.clone(), request_id, &input.command);
         match self.vm().queue_io_action(&request, 0) {
             Ok(()) => {
                 self.input_recording.push_io(input);
@@ -629,7 +690,7 @@ impl Branch {
         crate::RecordedInputSource::new(self.input_recording.clone())
     }
 
-    /// Inject a bash command and block until the response arrives.
+    /// Inject a bash command and block until *its* response arrives.
     ///
     /// The `target` selects whether the command runs on the guest host
     /// (outside any container) or inside a named container.
@@ -640,15 +701,17 @@ impl Branch {
     ///
     /// Requires the guest to have `bedrock-io.ko` loaded and registered.
     ///
-    /// Note: if there are previously [`sched_bash`](Self::sched_bash)'d
-    /// actions still pending, the next response may be for one of *those*
-    /// and not this blocking call. In that case this method returns
-    /// [`LabError::BadResponse`]. Avoid mixing blocking and scheduled bash
-    /// calls without first draining all pending responses via `run_until`.
+    /// Each request carries a unique `request_id` the kernel module echoes
+    /// in the matching response, so this call returns specifically its own
+    /// reply even when other in-flight I/O actions complete first. Any
+    /// such interleaved responses are queued internally and delivered
+    /// in order through subsequent [`Branch::run_until`] calls.
     pub fn bash(&mut self, target: BashTarget, cmd: &str) -> Result<BashOutput> {
-        let request = bash::encode_bash_request(target, cmd);
-        let bytes = self.run_io_action(&request)?;
-        match bash::decode_response(&bytes).map_err(LabError::BadResponse)? {
+        let id = self.next_request_id();
+        let request = bash::encode_bash_request(target, id, cmd);
+        let bytes = self.run_io_action(&request, id)?;
+        let (_rid, response) = bash::decode_response(&bytes).map_err(LabError::BadResponse)?;
+        match response {
             ActionResponse::Bash(out) => Ok(out),
             other => Err(LabError::BadResponse(format!(
                 "expected bash response, got {other:?}"
@@ -667,7 +730,8 @@ impl Branch {
     /// values the action lands at exactly that emulated-TSC.
     pub fn sched_bash(&mut self, at: VirtTime, target: BashTarget, cmd: &str) -> Result<()> {
         self.check_freq(at.frequency())?;
-        let request = bash::encode_bash_request(target, cmd);
+        let request_id = self.next_request_id();
+        let request = bash::encode_bash_request(target, request_id, cmd);
         self.vm_mut().queue_io_action(&request, at.instructions())?;
         Ok(())
     }
@@ -676,13 +740,15 @@ impl Branch {
     /// invocable drivers — and block until the response arrives.
     ///
     /// Requires the guest to have `bedrock-io.ko` loaded and registered.
-    /// See [`Branch::bash`] for the same caveat about mixing with scheduled
-    /// actions.
-    pub fn workload_details(&mut self) -> Result<Vec<WorkloadDriver>> {
-        let request = bash::encode_workload_details_request();
-        let bytes = self.run_io_action(&request)?;
-        match bash::decode_response(&bytes).map_err(LabError::BadResponse)? {
-            ActionResponse::WorkloadDetails(drivers) => Ok(drivers),
+    /// See [`Branch::bash`] for the request-tagging guarantee — this call
+    /// also returns specifically its own reply.
+    pub fn workload_details(&mut self) -> Result<WorkloadDetails> {
+        let id = self.next_request_id();
+        let request = bash::encode_workload_details_request(id);
+        let bytes = self.run_io_action(&request, id)?;
+        let (_rid, response) = bash::decode_response(&bytes).map_err(LabError::BadResponse)?;
+        match response {
+            ActionResponse::WorkloadDetails(details) => Ok(details),
             other => Err(LabError::BadResponse(format!(
                 "expected workload-details response, got {other:?}"
             ))),

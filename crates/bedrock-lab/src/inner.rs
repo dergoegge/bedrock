@@ -116,6 +116,21 @@ impl LabGraph {
             .and_then(|parent| self.checkpoint(*parent))
     }
 
+    /// Walk the recorded parent chain (which persists even for dropped
+    /// checkpoints) until an ancestor whose `Weak` still upgrades is found.
+    /// Lets tree renderers skip past transient rewind intermediates that
+    /// were reparented over but never retained.
+    pub(crate) fn closest_live_ancestor(&self, id: CheckpointId) -> Option<Arc<CheckpointInner>> {
+        let mut current = id;
+        loop {
+            let parent_id = *self.parent.get(&current)?;
+            if let Some(parent) = self.checkpoint(parent_id) {
+                return Some(parent);
+            }
+            current = parent_id;
+        }
+    }
+
     pub(crate) fn checkpoints(&self) -> Vec<Checkpoint> {
         let mut checkpoints: Vec<_> = self
             .checkpoints

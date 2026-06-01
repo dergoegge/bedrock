@@ -53,6 +53,13 @@ impl Default for LabOpts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CheckpointId(pub(crate) u64);
 
+impl CheckpointId {
+    /// The raw numeric id, for serialization or display by external tools.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// An immutable moment in virtual time — a halted VM that can be forked into
 /// one or more [`Branch`]es.
 ///
@@ -308,7 +315,10 @@ impl Checkpoint {
     ///
     /// This is the user-facing ancestry used by [`Tree`](crate::Tree). It may
     /// differ from the underlying VM replay parent for checkpoints created by
-    /// [`Checkpoint::rewind`].
+    /// [`Checkpoint::rewind`]. Returns `None` if the immediate parent's
+    /// `Arc<CheckpointInner>` has been dropped (e.g. a transient rewind
+    /// intermediate that nobody retained) — use
+    /// [`Checkpoint::closest_live_ancestor`] to skip over such gaps.
     pub fn parent(&self) -> Option<Checkpoint> {
         self.inner
             .lab
@@ -316,6 +326,28 @@ impl Checkpoint {
             .lock()
             .unwrap()
             .parent(self.inner.id)
+            .map(|inner| Checkpoint { inner })
+    }
+
+    /// Closest ancestor whose VM state is still live, walking past any
+    /// dropped intermediates in the logical tree. `None` for the root (or
+    /// when every ancestor has been dropped).
+    ///
+    /// `Checkpoint::rewind` reparents an existing checkpoint under a new
+    /// intermediate. If that intermediate is later dropped — common when
+    /// the rewinding caller didn't keep its handle — the reparented node's
+    /// immediate parent points at a freed checkpoint, and [`Checkpoint::parent`]
+    /// returns `None`. This method instead follows the recorded parent
+    /// chain (which the graph keeps even for dropped nodes) until it finds
+    /// an ancestor that still has at least one outstanding handle, so tree
+    /// renderers can keep the corpus connected.
+    pub fn closest_live_ancestor(&self) -> Option<Checkpoint> {
+        self.inner
+            .lab
+            .graph
+            .lock()
+            .unwrap()
+            .closest_live_ancestor(self.inner.id)
             .map(|inner| Checkpoint { inner })
     }
 
