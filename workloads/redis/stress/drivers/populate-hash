@@ -1,0 +1,6 @@
+#!/bin/sh
+# Set multiple fields on a hash in one HSET, then dump the whole thing.
+redis-cli -h redis -p 6379 <<'EOF'
+HSET shared:hash name redis type kv ver 7 lang c persistence rdb
+HGETALL shared:hash
+EOF

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Same snapshot pattern as read-replica-1 but against the second replica.
+# Comparing outputs across the two drivers exposes replication divergence.
+redis-cli -h redis-replica-2 -p 6381 <<'EOF'
+DBSIZE
+MGET account:a account:b account:c
+ZRANGE shared:zset 0 -1 WITHSCORES
+HGETALL shared:hash
+EOF

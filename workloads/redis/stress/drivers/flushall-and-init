@@ -1,0 +1,10 @@
+#!/bin/sh
+# Wipe the whole keyspace on the primary and immediately reseed it with
+# the three account balances. Replicas pick up the changes via the
+# replication stream.
+redis-cli -h redis -p 6379 <<'EOF'
+FLUSHALL
+SET account:a 100
+SET account:b 100
+SET account:c 100
+EOF

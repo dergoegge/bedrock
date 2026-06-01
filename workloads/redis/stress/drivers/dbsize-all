@@ -1,0 +1,7 @@
+#!/bin/sh
+# Report DBSIZE from the primary and both replicas in one shot. A
+# deterministic run pins the three numbers together once replication has
+# caught up.
+printf 'primary:   '; redis-cli -h redis -p 6379 DBSIZE
+printf 'replica-1: '; redis-cli -h redis-replica-1 -p 6380 DBSIZE
+printf 'replica-2: '; redis-cli -h redis-replica-2 -p 6381 DBSIZE

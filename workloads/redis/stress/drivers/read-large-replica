@@ -1,0 +1,8 @@
+#!/bin/sh
+# Read large:value through replica 1. Only the length and a 32-byte
+# prefix are printed back — enough to pin the replicated bytes without
+# flooding the serial log with a megabyte of 'A's.
+redis-cli -h redis-replica-1 -p 6380 <<'EOF'
+STRLEN large:value
+GETRANGE large:value 0 31
+EOF

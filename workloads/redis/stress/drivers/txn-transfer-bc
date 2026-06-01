@@ -1,0 +1,8 @@
+#!/bin/sh
+# Atomic transfer of 5 units from account:b to account:c.
+redis-cli -h redis -p 6379 <<'EOF'
+MULTI
+DECRBY account:b 5
+INCRBY account:c 5
+EXEC
+EOF

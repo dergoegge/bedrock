@@ -1,0 +1,9 @@
+#!/bin/sh
+# Snapshot of the primary's state as seen through replica 1. Each command
+# exercises a different read path.
+redis-cli -h redis-replica-1 -p 6380 <<'EOF'
+DBSIZE
+MGET account:a account:b account:c
+ZRANGE shared:zset 0 -1 WITHSCORES
+HGETALL shared:hash
+EOF

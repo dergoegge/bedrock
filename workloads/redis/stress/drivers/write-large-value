@@ -1,0 +1,8 @@
+#!/bin/sh
+# Write a 1 MiB string to the primary so replicas have to ship a bulk
+# value over the replication stream. The value is deterministic — a run
+# of 'A's piped in via `redis-cli -x`. STRLEN at the end confirms the
+# write reached the server intact.
+yes A | tr -d '\n' | head -c 1048576 | \
+    redis-cli -h redis -p 6379 -x SET large:value
+redis-cli -h redis -p 6379 STRLEN large:value

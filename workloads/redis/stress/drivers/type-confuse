@@ -1,0 +1,9 @@
+#!/bin/sh
+# Deliberately wrong-type INCR: stage a list-typed key, then try to INCR
+# it. Expected output ends with:
+#   (error) WRONGTYPE Operation against a key holding the wrong kind of value
+redis-cli -h redis -p 6379 <<'EOF'
+DEL wrongtype:list
+LPUSH wrongtype:list element
+INCR wrongtype:list
+EOF

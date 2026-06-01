@@ -1,0 +1,9 @@
+#!/bin/sh
+# Atomically initialize three account balances inside a MULTI/EXEC block.
+redis-cli -h redis -p 6379 <<'EOF'
+MULTI
+SET account:a 100
+SET account:b 100
+SET account:c 100
+EXEC
+EOF

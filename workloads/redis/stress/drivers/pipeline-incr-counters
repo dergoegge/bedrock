@@ -1,0 +1,10 @@
+#!/bin/sh
+# Pipeline five INCRs in a single connection. Each one bumps a distinct
+# counter so the post-state is deterministic regardless of ordering.
+redis-cli -h redis -p 6379 <<'EOF'
+INCR counter:1
+INCR counter:2
+INCR counter:3
+INCR counter:4
+INCR counter:5
+EOF

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Replicas reject writes with READONLY by default. Exercises the error
+# response path and confirms the replica is still attached as a replica
+# (not promoted).
+redis-cli -h redis-replica-1 -p 6380 SET should:fail value

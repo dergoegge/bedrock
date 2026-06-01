@@ -1,0 +1,6 @@
+#!/bin/sh
+# Replication topology and offsets from the primary's point of view.
+# `INFO replication` is filtered to the deterministic fields — connected
+# slave count and per-slave offsets pin down replication progress.
+redis-cli -h redis -p 6379 INFO replication \
+    | grep -E '^(role|connected_slaves|slave[0-9]+|master_repl_offset):'

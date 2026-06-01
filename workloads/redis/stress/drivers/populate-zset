@@ -1,0 +1,6 @@
+#!/bin/sh
+# Add five scored members to a sorted set, then read them back ordered.
+redis-cli -h redis -p 6379 <<'EOF'
+ZADD shared:zset 1 alpha 2 bravo 3 charlie 4 delta 5 echo
+ZRANGE shared:zset 0 -1 WITHSCORES
+EOF
