@@ -1,0 +1,6 @@
+#!/bin/sh
+# Best-block hash from both nodes. Once peering has caught up the two
+# values are equal; a divergence reveals a fork or a lagging peer.
+BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+printf 'btcd1: '; $BCTL --rpcserver=btcd1:18334 getbestblockhash
+printf 'btcd2: '; $BCTL --rpcserver=btcd2:18334 getbestblockhash

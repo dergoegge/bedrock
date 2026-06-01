@@ -1,0 +1,33 @@
+#!/bin/sh
+# Route a Lightning payment between two randomly-chosen lnd nodes: the receiver
+# mints an invoice for a random amount (1,000-50,000 sat) and the sender pays
+# it. With three nodes wired as a chain (lnd1<->lnd2<->lnd3), an lnd1<->lnd3
+# pair forces a multi-hop route through lnd2 — exercising HTLC forwarding and
+# route finding on top of the single-hop add/settle path. --force skips
+# lncli's interactive confirm; --timeout caps a stuck attempt at 10s so a
+# payment with no usable route (expected when the fuzzer closes channels)
+# fails fast instead of holding the branch. Random bytes from /dev/urandom —
+# deterministic across replays under bedrock.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+rand_bytes=$(od -An -N3 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
+b1=$(echo "$rand_bytes" | sed -n 1p)
+b2=$(echo "$rand_bytes" | sed -n 2p)
+b3=$(echo "$rand_bytes" | sed -n 3p)
+
+i=$(( b1 % 3 ))
+j=$(( (i + b2 % 2 + 1) % 3 ))            # distinct from i (offset 1 or 2)
+src=$(echo "$NODES" | cut -d' ' -f$(( i + 1 )))
+dst=$(echo "$NODES" | cut -d' ' -f$(( j + 1 )))
+amt=$(( b3 * 192 + 1000 ))               # 1,000 .. ~50,000 sat
+
+echo "paying $amt sat from $src to $dst"
+pay_req=$($LNCLI --rpcserver="$dst:10009" addinvoice --amt "$amt" \
+    | sed -n 's/.*"payment_request":[[:space:]]*"\([a-zA-Z0-9]*\)".*/\1/p' | head -n1)
+if [ -z "$pay_req" ]; then
+    echo "failed to create invoice on $dst"
+    exit 0
+fi
+$LNCLI --rpcserver="$src:10009" payinvoice --force --timeout 10s "$pay_req"

@@ -1,0 +1,40 @@
+#!/bin/sh
+# Send a random number (1-5) of transactions to freshly-generated wallet
+# addresses, each carrying a random amount (1-10 BTC). Exercises tx
+# construction, signing, mempool insertion, and p2p relay across a
+# burst rather than a single tx; does NOT mine to confirm — leaving
+# txs in the mempool is the point (mine-blocks is a separate driver,
+# and the fuzzer can interleave them to test mempool drain / batched
+# confirmation paths).
+#
+# Random bytes from /dev/urandom rather than $RANDOM or awk's rand()
+# so the values are rooted in the guest kernel's RNG pool, which is
+# itself seeded from bedrock's deterministic RDRAND traps — the
+# choices end up deterministic across replay runs of the same input
+# sequence.
+set -eu
+
+BCTL_W="btcctl --regtest --wallet -u user -P password --rpccert=/etc/bedrock/rpc.cert --rpcserver=btcwallet:18332"
+
+$BCTL_W walletpassphrase password 86400 >/dev/null
+
+# Pull two bytes up front: first decides the tx count, second seeds the
+# per-tx amounts via simple modular arithmetic on a sliding base.
+rand_bytes=$(od -An -N2 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
+count_byte=$(echo "$rand_bytes" | sed -n 1p)
+seed_byte=$(echo "$rand_bytes"  | sed -n 2p)
+
+count=$((count_byte % 5 + 1))
+echo "sending $count tx(s)"
+
+i=0
+while [ $i -lt $count ]; do
+    # Re-draw a byte per tx so amounts vary independently. od on
+    # /dev/urandom is cheap enough not to matter.
+    amt_byte=$(od -An -N1 -tu1 /dev/urandom | tr -d ' \n')
+    amount=$(( (amt_byte + seed_byte + i) % 10 + 1 ))
+    addr=$($BCTL_W getnewaddress)
+    txid=$($BCTL_W sendtoaddress "$addr" "${amount}.0")
+    echo "  [$((i+1))/$count] ${amount}.0 -> $addr  ($txid)"
+    i=$((i + 1))
+done

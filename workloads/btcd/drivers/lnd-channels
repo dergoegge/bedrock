@@ -1,0 +1,16 @@
+#!/bin/sh
+# Channel + wallet state on both lnd nodes: confirmed on-chain balance plus
+# each channel's point and local/remote balances, and any pending channels.
+# The two ends of a channel should mirror each other (local on one side ==
+# remote on the other) once an HTLC settles; a mismatch, or a channel
+# present on only one side, flags a commitment-state bug.
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+for node in lnd1 lnd2 lnd3; do
+    echo "=== $node ==="
+    printf 'wallet: '
+    $LNCLI --rpcserver="$node:10009" walletbalance | grep '"confirmed_balance"'
+    $LNCLI --rpcserver="$node:10009" listchannels \
+        | grep -E '"(channel_point|local_balance|remote_balance|active)"'
+    $LNCLI --rpcserver="$node:10009" pendingchannels \
+        | grep -E '"(channel_point|limbo_balance)"' || true
+done

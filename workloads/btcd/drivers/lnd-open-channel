@@ -1,0 +1,30 @@
+#!/bin/sh
+# Open a Lightning channel between two randomly-chosen lnd nodes with a random
+# local amount (~0.005-0.02 BTC). With three nodes this can add a direct
+# lnd1<->lnd3 channel (a shortcut across the lnd1<->lnd2<->lnd3 chain) or
+# thicken an existing leg. Only initiated here: the funding tx is broadcast to
+# the mempool and the channel stays pending until the mine-blocks driver mines
+# it in (defaultchanconfs=1). Re-connects first since the peer link may have
+# dropped. Random bytes from /dev/urandom — deterministic across replays under
+# bedrock.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+rand_bytes=$(od -An -N3 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
+b1=$(echo "$rand_bytes" | sed -n 1p)
+b2=$(echo "$rand_bytes" | sed -n 2p)
+amt_byte=$(echo "$rand_bytes" | sed -n 3p)
+
+i=$(( b1 % 3 ))
+j=$(( (i + b2 % 2 + 1) % 3 ))            # distinct from i
+src=$(echo "$NODES" | cut -d' ' -f$(( i + 1 )))
+dst=$(echo "$NODES" | cut -d' ' -f$(( j + 1 )))
+local_amt=$(( amt_byte * 6000 + 500000 ))  # 500,000 .. ~2,030,000 sat
+
+dst_pk=$($LNCLI --rpcserver="$dst:10009" getinfo \
+    | sed -n 's/.*"identity_pubkey":[[:space:]]*"\([0-9a-f]*\)".*/\1/p' | head -n1)
+
+echo "opening channel $src -> $dst for $local_amt sat"
+$LNCLI --rpcserver="$src:10009" connect "$dst_pk@$dst:9735" 2>/dev/null || true
+$LNCLI --rpcserver="$src:10009" openchannel --node_key "$dst_pk" --local_amt "$local_amt"

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mature + total balances on the wallet. The two numbers differ until
+# the latest 100 coinbases pass maturity.
+BCTL="btcctl --regtest --wallet -u user -P password --rpccert=/etc/bedrock/rpc.cert --rpcserver=btcwallet:18332"
+printf 'mature: '; $BCTL getbalance "*" 100
+printf 'total:  '; $BCTL getbalance "*" 0

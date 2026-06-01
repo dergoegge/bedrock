@@ -1,0 +1,27 @@
+#!/bin/sh
+# Mine a random number (1-3) of regtest blocks on a randomly-chosen
+# peer (btcd1 or btcd2). Both peers share the same --miningaddr (the
+# btcd-launcher injects it on every node), so the coinbase always pays
+# to the wallet's default-account address regardless of which side
+# mines. Exercising both nodes as the producer also tests the relay
+# path in both directions.
+#
+# Random bytes from /dev/urandom for the same reason as send-self —
+# kernel RNG → deterministic across replays under bedrock.
+set -eu
+
+rand_bytes=$(od -An -N2 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
+host_byte=$(echo "$rand_bytes" | sed -n 1p)
+count_byte=$(echo "$rand_bytes" | sed -n 2p)
+
+if [ $((host_byte % 2)) -eq 0 ]; then
+    host=btcd1
+else
+    host=btcd2
+fi
+n=$((count_byte % 3 + 1))
+
+echo "mining $n block(s) on $host"
+btcctl --regtest -u user -P password \
+    --rpccert=/etc/bedrock/rpc.cert \
+    --rpcserver="$host:18334" generate "$n"

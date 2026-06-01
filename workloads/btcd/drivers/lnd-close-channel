@@ -1,0 +1,26 @@
+#!/bin/sh
+# Cooperatively close one open channel on a randomly-chosen node. Picks the
+# first channel_point listchannels reports and issues a coop close; the
+# closing tx lands in the mempool and confirms when mine-blocks next runs
+# (closechannel returns once the close is pending, it doesn't wait for a
+# block). A no-op notice when the chosen node has no open channels, which is
+# expected whenever the fuzzer schedules a close before any open. Random
+# byte from /dev/urandom — deterministic across replays under bedrock.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+node_byte=$(od -An -N1 -tu1 /dev/urandom | tr -d ' \n')
+node=$(echo "$NODES" | cut -d' ' -f$(( node_byte % 3 + 1 )))
+
+cp=$($LNCLI --rpcserver="$node:10009" listchannels \
+    | sed -n 's/.*"channel_point":[[:space:]]*"\([0-9a-f]*:[0-9]*\)".*/\1/p' \
+    | head -n1)
+if [ -z "$cp" ]; then
+    echo "$node has no open channels to close"
+    exit 0
+fi
+txid=${cp%%:*}
+idx=${cp##*:}
+echo "closing channel $cp on $node"
+$LNCLI --rpcserver="$node:10009" closechannel --funding_txid "$txid" --output_index "$idx"

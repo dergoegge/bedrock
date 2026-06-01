@@ -1,0 +1,93 @@
+# Two btcd regtest peers, a btcwallet sidecar, and a workload container
+# that imports the fixed mining privkey, mines 200 blocks (>100 = first
+# batch of coinbase outputs past maturity), and signals HYPERCALL_READY.
+# After that the workload sleeps; ongoing mining and tx generation are
+# driver-invoked under /opt/bedrock/drivers/ inside the workload
+# container.
+#
+# Each service uses its own per-role image (built by ./build.sh, packed
+# into images.tar). The split keeps each container's surface minimal:
+# only the workload image carries drivers, btcctl, the VMCALL helper,
+# and the WIF; only btcwallet carries `expect`; only btcd carries the
+# RPC private key.
+#
+# Each container runs in its own netns and joins podman's default
+# bridge network; aardvark-dns resolves container_name as a hostname so
+# btcd2 reaches btcd1's p2p port via --addpeer=btcd1:18444 and the
+# workload script reaches each node's RPC by service name. Determinism
+# of IP/MAC assignment is provided by the bedrock hypervisor.
+
+services:
+  btcd1:
+    image: bedrock/btcd:latest
+    pull_policy: never
+    container_name: btcd1
+
+  btcd2:
+    # No --addpeer here on purpose. btcd's netsync drops inv messages from
+    # non-syncPeer peers when the local chain isn't "current"
+    # (manager.go:1127-1131 + chain.go:1304-1318); on regtest the genesis
+    # block's timestamp (2011-02-02) leaves both nodes stuck "not current"
+    # forever if they peer with empty chains, because neither side ever
+    # selects the other as a sync peer (both report height 0 at handshake).
+    # The workload script primes btcd1 with one block, then issues
+    # `addnode btcd1:18444 add` on btcd2 so the version handshake learns
+    # height>0 and btcd2 picks btcd1 as its sync peer.
+    image: bedrock/btcd:latest
+    pull_policy: never
+    container_name: btcd2
+    depends_on:
+      - btcd1
+
+  btcwallet:
+    image: bedrock/btcwallet:latest
+    pull_policy: never
+    container_name: btcwallet
+    depends_on:
+      - btcd1
+
+  # Three lnd nodes spread across the two btcd peers so the Lightning layer
+  # rides on top of the existing btcd network. All run the one bedrock/lnd
+  # image; the launcher reads $BTCD_HOST to pick its backend. They use lnd's
+  # embedded wallet (no btcwallet dependency) and are funded on-chain by the
+  # workload script, which then wires them into a chain lnd1<->lnd2<->lnd3 so
+  # lnd1<->lnd3 traffic is forced to route multi-hop through lnd2.
+  lnd1:
+    image: bedrock/lnd:latest
+    pull_policy: never
+    container_name: lnd1
+    environment:
+      - BTCD_HOST=btcd1
+    depends_on:
+      - btcd1
+
+  lnd2:
+    image: bedrock/lnd:latest
+    pull_policy: never
+    container_name: lnd2
+    environment:
+      - BTCD_HOST=btcd2
+    depends_on:
+      - btcd2
+
+  lnd3:
+    image: bedrock/lnd:latest
+    pull_policy: never
+    container_name: lnd3
+    environment:
+      - BTCD_HOST=btcd1
+    depends_on:
+      - btcd1
+
+  workload:
+    image: bedrock/btcd-workload:latest
+    pull_policy: never
+    container_name: workload
+    privileged: true  # Required for VMCALL
+    depends_on:
+      - btcd1
+      - btcd2
+      - btcwallet
+      - lnd1
+      - lnd2
+      - lnd3

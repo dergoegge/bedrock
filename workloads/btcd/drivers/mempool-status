@@ -1,0 +1,8 @@
+#!/bin/sh
+# Mempool summary on both nodes — count + total fee.
+for host in btcd1 btcd2; do
+    printf '%s: ' "$host"
+    btcctl --regtest -u user -P password \
+        --rpccert=/etc/bedrock/rpc.cert \
+        --rpcserver="$host:18334" getrawmempool false
+done

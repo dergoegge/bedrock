@@ -1,0 +1,11 @@
+#!/bin/sh
+# Per-node summary from both lnd nodes: chain sync, peer count, and channel
+# counts. A deterministic run pins these together once the graph has
+# settled; a gap (a node stuck syncing, or a channel that opened on one side
+# only) shows up as divergence between the two nodes.
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+for node in lnd1 lnd2 lnd3; do
+    echo "=== $node ==="
+    $LNCLI --rpcserver="$node:10009" getinfo \
+        | grep -E '"(identity_pubkey|num_active_channels|num_pending_channels|num_peers|block_height|synced_to_chain)"'
+done

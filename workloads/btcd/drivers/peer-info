@@ -1,0 +1,9 @@
+#!/bin/sh
+# Per-peer connection summary from both nodes' point of view. Drops the
+# version/services blobs that drift across builds — just the link facts.
+for host in btcd1 btcd2; do
+    echo "=== $host ==="
+    btcctl --regtest -u user -P password \
+        --rpccert=/etc/bedrock/rpc.cert \
+        --rpcserver="$host:18334" getpeerinfo
+done

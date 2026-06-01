@@ -1,0 +1,29 @@
+#!/bin/sh
+# Force-close (unilateral) one channel on a randomly-chosen node: broadcasts
+# the latest commitment tx, which then has to mature through CSV timelocks and
+# be swept — exercising the force-close / sweeper / breach-resolution state
+# machines, distinct from the cooperative lnd-close-channel. The commitment and
+# sweep txs confirm as the mine-blocks driver advances the chain. Returns once
+# the close is broadcast (no --block, so it doesn't wait for confirmation). A
+# no-op notice when the node has no open channels, expected whenever the fuzzer
+# schedules this before an open. Random byte from /dev/urandom — deterministic
+# across replays under bedrock.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+node_byte=$(od -An -N1 -tu1 /dev/urandom | tr -d ' \n')
+node=$(echo "$NODES" | cut -d' ' -f$(( node_byte % 3 + 1 )))
+
+cp=$($LNCLI --rpcserver="$node:10009" listchannels \
+    | sed -n 's/.*"channel_point":[[:space:]]*"\([0-9a-f]*:[0-9]*\)".*/\1/p' \
+    | head -n1)
+if [ -z "$cp" ]; then
+    echo "$node has no open channels to force-close"
+    exit 0
+fi
+txid=${cp%%:*}
+idx=${cp##*:}
+echo "force-closing channel $cp on $node"
+$LNCLI --rpcserver="$node:10009" closechannel --force \
+    --funding_txid "$txid" --output_index "$idx"

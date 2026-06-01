@@ -1,0 +1,9 @@
+#!/bin/sh
+# Report block height from both btcd peers and the wallet's chain view.
+# A deterministic run pins the three numbers together once peering has
+# settled; divergence shows up as a height gap.
+BCTL_N="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+BCTL_W="btcctl --regtest --wallet -u user -P password --rpccert=/etc/bedrock/rpc.cert --rpcserver=btcwallet:18332"
+printf 'btcd1:    '; $BCTL_N --rpcserver=btcd1:18334 getblockcount
+printf 'btcd2:    '; $BCTL_N --rpcserver=btcd2:18334 getblockcount
+printf 'wallet:   '; $BCTL_W getblockcount

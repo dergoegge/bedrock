@@ -1,0 +1,31 @@
+#!/bin/sh
+# Drop one peer link on a randomly-chosen lnd node: read the node's current
+# peers and disconnect a random one. Because peers that share a channel are
+# persistent, lnd immediately re-dials and runs the channel_reestablish resync
+# — exercising commitment-state recovery after a link drop (a notoriously
+# bug-prone path, and a natural companion to the fault-injector partition).
+# Picking from the node's actual peers keeps it meaningful under the
+# lnd1<->lnd2<->lnd3 chain, where not every pair is directly connected.
+# Prints a notice if the node has no peers. Random bytes from /dev/urandom —
+# deterministic across replays under bedrock.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+rand_bytes=$(od -An -N2 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
+b1=$(echo "$rand_bytes" | sed -n 1p)
+b2=$(echo "$rand_bytes" | sed -n 2p)
+self=$(echo "$NODES" | cut -d' ' -f$(( b1 % 3 + 1 )))
+
+peers=$($LNCLI --rpcserver="$self:10009" listpeers \
+    | sed -n 's/.*"pub_key":[[:space:]]*"\([0-9a-f]*\)".*/\1/p')
+count=$(printf '%s\n' "$peers" | grep -c .)
+if [ "$count" -eq 0 ]; then
+    echo "$self has no peers to disconnect"
+    exit 0
+fi
+peer_pk=$(printf '%s\n' "$peers" | sed -n "$(( b2 % count + 1 ))p")
+
+echo "disconnecting $self from $peer_pk; lnd will re-dial and reestablish"
+$LNCLI --rpcserver="$self:10009" disconnect "$peer_pk" \
+    || echo "$self was not connected to $peer_pk"

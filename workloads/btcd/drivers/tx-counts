@@ -1,0 +1,15 @@
+#!/bin/sh
+# Mempool tx count per peer. Once relay has caught up, both nodes
+# should report the same number; divergence means the peers are seeing
+# different mempool state (relay lag, a fault-injector partition still
+# in effect, a tx that one peer rejected but the other accepted, etc.).
+#
+# Parses `getmempoolinfo` (which returns {"size": N, "bytes": M}) with
+# sed rather than pulling in jq just for this — the field name and
+# format are stable enough that a regex is fine.
+BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+for host in btcd1 btcd2; do
+    n=$($BCTL --rpcserver="$host:18334" getmempoolinfo \
+            | sed -n 's/.*"size":[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+    printf '%s: %s\n' "$host" "${n:-?}"
+done
