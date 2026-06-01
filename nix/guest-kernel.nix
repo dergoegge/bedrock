@@ -113,7 +113,8 @@ let
     ./scripts/config --enable IP_NF_FILTER
     ./scripts/config --enable IP_NF_NAT
     # nftables backend — needed by modern iptables-nft (the default in
-    # current nixpkgs) for netavark's NAT rules.
+    # current nixpkgs) for netavark's NAT rules, and by the fault-injector
+    # binary which installs per-netns `nft` rules in container netns.
     ./scripts/config --enable NF_TABLES
     ./scripts/config --enable NF_TABLES_INET
     ./scripts/config --enable NF_TABLES_IPV4
@@ -129,6 +130,10 @@ let
     ./scripts/config --enable NFT_REJECT
     ./scripts/config --enable NF_NAT_MASQUERADE
     ./scripts/config --enable NF_REJECT_IPV4
+    # tc netem and tbf for the fault-injector's throttle/loss qdiscs.
+    ./scripts/config --enable NET_SCHED
+    ./scripts/config --enable NET_SCH_TBF
+    ./scripts/config --enable NET_SCH_NETEM
     ./scripts/config --enable BPF
     ./scripts/config --enable BPF_SYSCALL
     ./scripts/config --enable CGROUP_BPF

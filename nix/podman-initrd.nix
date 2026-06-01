@@ -88,6 +88,7 @@ let
     pkgs.slirp4netns
     pkgs.iproute2
     pkgs.iptables
+    pkgs.nftables     # bedrock-fault-inject installs/removes per-netns rules
     pkgs.procps
     pkgs.util-linux    # switch_root, mount, setsid, nsenter
     pkgs.kmod          # insmod (for loading bedrock-io.ko)
@@ -212,6 +213,15 @@ let
     mount -t tmpfs -o mode=1777 tmpfs /dev/shm
     mount -t devpts devpts /dev/pts
     mount -t cgroup2 cgroup2 /sys/fs/cgroup
+
+    # Standard /dev symlinks. devtmpfs creates device nodes but not these
+    # userland conventions, and bash process substitution `<(cmd)` opens
+    # the pipe via /dev/fd/N — without the symlink it fails with
+    # "/dev/fd/N: No such file or directory".
+    ln -sfn /proc/self/fd   /dev/fd
+    ln -sfn /proc/self/fd/0 /dev/stdin
+    ln -sfn /proc/self/fd/1 /dev/stdout
+    ln -sfn /proc/self/fd/2 /dev/stderr
 
     # Create directories needed for containers and networking
     mkdir -p /run/netns /var/run/netns /run/containers/storage /var/lib/cni /var/tmp
