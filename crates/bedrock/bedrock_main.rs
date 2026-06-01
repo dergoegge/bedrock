@@ -102,10 +102,10 @@ fn register_miscdev_with_mode(
 }
 
 /// Maximum number of VMs (root + all live forks/checkpoints) the handler
-/// tracks at once. A fork past this fails with `ENOSPC`. Sized for a fuzzer
-/// that retains many live checkpoints, each backed by its own VM; the only
-/// cost is heap memory (the `vm_list` capacity plus per-VM EPT/VMCS/COW
-/// state for VMs that actually go live), so tune to host RAM.
+/// tracks at once. A fork past this fails with `ENOSPC`. Sized for the
+/// tree-of-checkpoints fuzzer, which keeps every retained checkpoint's VM
+/// live; the only cost is heap memory (the `vm_list` capacity plus per-VM
+/// EPT/VMCS/COW state for VMs that actually go live), so tune to host RAM.
 const MAX_TRACKED_VMS: usize = 1024;
 
 // Define a global mutex for the handler using the kernel's global_lock! macro.
