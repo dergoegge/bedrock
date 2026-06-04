@@ -98,15 +98,6 @@ impl Action {
         actions
     }
 
-    /// Human-readable label, for adaptive-weighting diagnostics.
-    pub fn label(&self) -> String {
-        match self {
-            Action::Driver(d) => format!("{}:{}", d.container, d.driver),
-            Action::FaultPartition(c) => format!("partition {c}"),
-            Action::FaultClear => "clear".to_string(),
-        }
-    }
-
     /// Whether this action takes a fuzzer-controlled byte argument. Drivers do:
     /// the argument is appended to the command as hex and the driver decodes it
     /// as its entropy source, so the fuzzer steers the driver's parameters
@@ -235,35 +226,28 @@ impl Mutators {
         }
     }
 
-    pub fn action_count(&self) -> usize {
-        self.actions.len()
-    }
-
     /// Apply a random stack of `2^(1 + below(max_stack_pow))` structured
     /// mutations. `lineage` is the picked entry's swarm subset (used by
     /// `io_insert` in [`SwarmMode::Lineage`]); `None`/empty means unrestricted.
-    /// `weights`, when present, biases driver/fault choice in `io_insert`
-    /// toward historically productive actions (one weight per vocabulary
-    /// index). Returns `Mutated` if any sub-mutation applied.
+    /// Returns `Mutated` if any sub-mutation applied.
     pub fn havoc(
         &self,
         rng: &mut Rng,
         input: &mut Input,
         lineage: Option<&[usize]>,
-        weights: Option<&[f64]>,
     ) -> MutationResult {
         let iters = 1u32 << (1 + rng.below(self.max_stack_pow as usize));
         let mut result = MutationResult::Skipped;
         for _ in 0..iters {
-            // io_arg_havoc (the direct parameter knob) gets two of five slots —
+            // io_arg_havoc (the direct parameter knob) gets two of six slots —
             // it's the highest-signal mutation now that drivers read their
             // entropy from the fuzzer-controlled argument.
             let pick = rng.below(6);
             let r = match pick {
                 0 => self.rng_byte_havoc(rng, input),
-                1 => self.io_insert(rng, input, lineage, weights),
+                1 => self.io_insert(rng, input, lineage),
                 2 => self.io_time_shift(rng, input),
-                3 => self.io_driver_swap(rng, input, weights),
+                3 => self.io_driver_swap(rng, input),
                 _ => self.io_arg_havoc(rng, input),
             };
             result = result.or(r);
@@ -286,7 +270,7 @@ impl Mutators {
         input: &mut Input,
         lineage: Option<&[usize]>,
     ) -> MutationResult {
-        self.io_insert(rng, input, lineage, None)
+        self.io_insert(rng, input, lineage)
     }
 
     /// Splice another corpus entry's action sequence (`donor`) onto this input:
@@ -366,7 +350,6 @@ impl Mutators {
         rng: &mut Rng,
         input: &mut Input,
         lineage: Option<&[usize]>,
-        weights: Option<&[f64]>,
     ) -> MutationResult {
         if self.actions.is_empty() {
             return MutationResult::Skipped;
@@ -397,7 +380,7 @@ impl Mutators {
         };
         let mut earliest: Option<u64> = None;
         for _ in 0..burst {
-            let idx = pick_action(rng, &subset, weights);
+            let idx = pick_action(rng, &subset);
             let (target, mut command) = self.actions[idx].to_io();
             if self.actions[idx].wants_arg() {
                 command = with_arg(&command, &rand_arg(rng));
@@ -447,18 +430,12 @@ impl Mutators {
 
     /// Re-target one existing action to a different vocabulary entry, keeping
     /// its firing time. Divergence is at that action's time.
-    fn io_driver_swap(
-        &self,
-        rng: &mut Rng,
-        input: &mut Input,
-        weights: Option<&[f64]>,
-    ) -> MutationResult {
+    fn io_driver_swap(&self, rng: &mut Rng, input: &mut Input) -> MutationResult {
         if input.io.is_empty() || self.actions.is_empty() {
             return MutationResult::Skipped;
         }
         let idx = rng.below(input.io.len());
-        let all: Vec<usize> = (0..self.actions.len()).collect();
-        let a = pick_action(rng, &all, weights);
+        let a = rng.below(self.actions.len());
         let (target, mut command) = self.actions[a].to_io();
         if self.actions[a].wants_arg() {
             command = with_arg(&command, &rand_arg(rng));
@@ -510,26 +487,9 @@ fn rand_arg(rng: &mut Rng) -> Vec<u8> {
     (0..ARG_BYTES).map(|_| rng.below(256) as u8).collect()
 }
 
-/// Pick an index from `subset`, optionally weighted by `weights[idx]` (a
-/// per-vocabulary-index productivity score). Falls back to uniform when no
-/// weights are supplied or they sum to zero.
-fn pick_action(rng: &mut Rng, subset: &[usize], weights: Option<&[f64]>) -> usize {
+/// Pick a uniformly-random index from `subset`.
+fn pick_action(rng: &mut Rng, subset: &[usize]) -> usize {
     debug_assert!(!subset.is_empty());
-    if let Some(w) = weights {
-        let total: f64 = subset
-            .iter()
-            .map(|&i| w.get(i).copied().unwrap_or(1.0))
-            .sum();
-        if total > 0.0 {
-            let mut r = rng.next_f64() * total;
-            for &i in subset {
-                r -= w.get(i).copied().unwrap_or(1.0);
-                if r < 0.0 {
-                    return i;
-                }
-            }
-        }
-    }
     subset[rng.below(subset.len())]
 }
 
@@ -581,7 +541,7 @@ mod tests {
         let m = Mutators::new(drivers(4), 1000, 40, SwarmMode::Off);
         let mut input = Input::new(500);
         assert_eq!(
-            m.io_insert(&mut rng, &mut input, None, None),
+            m.io_insert(&mut rng, &mut input, None),
             MutationResult::Mutated
         );
         assert!(!input.io.is_empty());
@@ -619,10 +579,21 @@ mod tests {
         let m = Mutators::new(drivers(4), 1000, 40, SwarmMode::Off);
         let mut input = Input::new(500); // checkpoint anchor at 500
         let donor = vec![
-            IoAction { at: 100, target: Target::Host, command: "a".into() },
-            IoAction { at: 160, target: Target::Host, command: "b".into() },
+            IoAction {
+                at: 100,
+                target: Target::Host,
+                command: "a".into(),
+            },
+            IoAction {
+                at: 160,
+                target: Target::Host,
+                command: "b".into(),
+            },
         ];
-        assert_eq!(m.splice(&mut rng, &mut input, &donor), MutationResult::Mutated);
+        assert_eq!(
+            m.splice(&mut rng, &mut input, &donor),
+            MutationResult::Mutated
+        );
         assert_eq!(input.io.len(), 2);
         // Grafted forward (at/after the anchor) and sorted.
         assert!(input.io.iter().all(|e| e.at >= 500), "{:?}", input.io);
@@ -646,7 +617,7 @@ mod tests {
         let mut saw_outside = false;
         for _ in 0..100 {
             let mut input = Input::new(0);
-            m.io_insert(&mut rng, &mut input, Some(&lineage), None);
+            m.io_insert(&mut rng, &mut input, Some(&lineage));
             if input
                 .io
                 .iter()
@@ -656,7 +627,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_outside, "lineage re-roll should escape the inherited subset");
+        assert!(
+            saw_outside,
+            "lineage re-roll should escape the inherited subset"
+        );
     }
 
     #[test]
@@ -668,14 +642,18 @@ mod tests {
         let mut input = Input::new(0);
         // Insert many so we very likely hit both a driver and the fault action.
         for _ in 0..40 {
-            m.io_insert(&mut rng, &mut input, None, None);
+            m.io_insert(&mut rng, &mut input, None);
         }
         let mut saw_driver_arg = false;
         for e in &input.io {
             if e.command.starts_with("fault-injector") {
                 assert!(split_arg(&e.command).is_none(), "fault has no arg");
             } else {
-                assert!(split_arg(&e.command).is_some(), "driver has hex arg: {}", e.command);
+                assert!(
+                    split_arg(&e.command).is_some(),
+                    "driver has hex arg: {}",
+                    e.command
+                );
                 saw_driver_arg = true;
             }
         }
@@ -687,7 +665,7 @@ mod tests {
         let mut rng = Rng::new(4);
         let m = Mutators::new(drivers(1), 1000, 8, SwarmMode::Off);
         let mut input = Input::new(0);
-        m.io_insert(&mut rng, &mut input, None, None);
+        m.io_insert(&mut rng, &mut input, None);
         let before = input.io[0].command.clone();
         let mut changed = false;
         for _ in 0..50 {

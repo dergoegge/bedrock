@@ -13,7 +13,7 @@
 //! Locking is fine-grained: the only thing serialized is quick bookkeeping;
 //! `branch.run_until` runs with no campaign lock held.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
@@ -105,6 +105,12 @@ pub struct Campaign {
     intermediates: Mutex<HashMap<CheckpointId, Checkpoint>>,
     coverage: Mutex<Coverage>,
     solutions: Mutex<Vec<Solution>>,
+    /// Coarse signatures (volatile fields stripped) of crashes already reported
+    /// as findings. A recurrence with a seen signature is counted but not
+    /// re-saved, so the same bug doesn't flood the repro dir. Replaces the old
+    /// coverage-novelty dedup, which a crashing run's restart-polluted feedback
+    /// buffer made unreliable (every recurrence looked "novel").
+    seen_crashes: Mutex<HashSet<String>>,
     active: Mutex<HashMap<u64, ActiveBranch>>,
     stats: Mutex<Stats>,
     subscribers: Mutex<Vec<SyncSender<Vec<u8>>>>,
@@ -160,6 +166,7 @@ impl Campaign {
             intermediates: Mutex::new(HashMap::new()),
             coverage: Mutex::new(Coverage::default()),
             solutions: Mutex::new(Vec::new()),
+            seen_crashes: Mutex::new(HashSet::new()),
             active: Mutex::new(HashMap::new()),
             stats: Mutex::new(Stats::default()),
             subscribers: Mutex::new(Vec::new()),
@@ -322,7 +329,7 @@ impl Campaign {
                             k if k < SPLICE_PCT + EXTEND_PCT => {
                                 mutators.extend_forward(&mut rng, &mut input, lineage.as_deref())
                             }
-                            _ => mutators.havoc(&mut rng, &mut input, lineage.as_deref(), None),
+                            _ => mutators.havoc(&mut rng, &mut input, lineage.as_deref()),
                         }
                     };
                     if r == MutationResult::Mutated {
@@ -353,23 +360,30 @@ impl Campaign {
                 }
                 self.branches_since_add.fetch_add(1, Ordering::Relaxed);
 
-                // 5. Global novelty (edge coverage).
-                let new_edges = self.coverage.lock().unwrap().merge_bitmap(&res.coverage);
-                let novel = new_edges > 0;
-
-                // 6. Objective check → solution. `novel` (new coverage) marks a
-                //    distinct finding: when not quitting on the first, only
-                //    novel solutions are reported/saved, so the same recurring
-                //    crash doesn't flood the repro dir with duplicates.
-                let solution_reason = self.detect_solution(&res);
-                if let Some(reason) = solution_reason {
-                    self.report_solution(parent_idx, &res, reason, novel);
+                // 5. Objective check first — a bug run is terminal. When a
+                //    workload container crashes it restarts, and the restarted
+                //    instrumented process re-registers its feedback buffer in a
+                //    fresh slot under the same build-id (ids are non-unique by
+                //    design); reading it folds a slab of bogus "new" edges into
+                //    the cumulative map, permanently inflating coverage (a
+                //    monotonic OR never takes them back) and making every
+                //    recurrence look novel. The node is also a dead end. So a
+                //    bug run is neither merged into coverage nor bred from: we
+                //    report it and move on.
+                if let Some(reason) = self.detect_solution(&res) {
+                    self.report_solution(parent_idx, &res, reason);
                     if self.quit_on_solution {
                         crate::ui::info("quitting on first solution; pass --no-quit-on-solution to keep fuzzing");
                         self.stop.store(true, Ordering::Relaxed);
                         break;
                     }
+                    continue;
                 }
+
+                // 6. Global novelty (edge coverage) — trusted only now that the
+                //    run is known crash-free.
+                let new_edges = self.coverage.lock().unwrap().merge_bitmap(&res.coverage);
+                let novel = new_edges > 0;
 
                 // 7. Append to the shared corpus when the branch is novel OR it
                 //    pushed the virtual-time frontier deeper — the latter grows
@@ -379,7 +393,14 @@ impl Campaign {
                 let depth_frontier = self.try_advance_depth(depth);
                 if novel || depth_frontier {
                     dry = 0;
-                    self.add_node(parent_idx, &parent_swarm, res, &mut rng, n_actions, new_edges);
+                    self.add_node(
+                        parent_idx,
+                        &parent_swarm,
+                        res,
+                        &mut rng,
+                        n_actions,
+                        new_edges,
+                    );
                 }
             }
 
@@ -437,30 +458,39 @@ impl Campaign {
         serial_crash_reason(&res.serial)
     }
 
-    /// Record a solution. `novel` is whether this branch added new coverage; a
-    /// solution is treated as a distinct **finding** when it's novel (or the
-    /// very first). Only findings get the full treatment — serial retained,
-    /// printed, and a reproducer written; recurrences of an already-seen crash
-    /// (no new coverage) are just counted, so keep-fuzzing runs don't flood the
-    /// repro dir or memory with duplicates of the same bug.
-    fn report_solution(&self, parent_idx: usize, res: &RunResult, reason: String, novel: bool) {
+    /// Record a solution. A solution is a distinct **finding** the first time
+    /// its [`crash_signature`] is seen; later recurrences of the same signature
+    /// are just counted. Only findings get the full treatment — serial retained,
+    /// printed, and a reproducer written — so keep-fuzzing runs don't flood the
+    /// repro dir or memory with duplicates of the same bug. Signature dedup
+    /// replaces the old coverage-novelty test, which a crash's restart-polluted
+    /// feedback buffer defeated (every recurrence looked novel).
+    fn report_solution(&self, parent_idx: usize, res: &RunResult, reason: String) {
         let serial_lines = res.serial.len();
-        let (id, is_finding) = {
+        let is_finding = self
+            .seen_crashes
+            .lock()
+            .unwrap()
+            .insert(crash_signature(&reason));
+        let id = {
             let mut sols = self.solutions.lock().unwrap();
             let id = sols.len();
-            let is_finding = novel || id == 0;
             sols.push(Solution {
                 parent: Some(parent_idx),
                 checkpoint: res.new_cp.clone(),
-                serial: if is_finding { res.serial.clone() } else { Vec::new() },
+                serial: if is_finding {
+                    res.serial.clone()
+                } else {
+                    Vec::new()
+                },
                 reason: reason.clone(),
             });
             self.stats.lock().unwrap().solutions += 1;
-            (id, is_finding)
+            id
         };
         if !is_finding {
             crate::ui::info(&format!(
-                "solution #{id} — recurring crash, no new coverage; reproducer not saved"
+                "solution #{id} — recurring crash (known signature); reproducer not saved"
             ));
             return;
         }
@@ -612,7 +642,8 @@ impl Campaign {
             new_id
         };
         // Concise progress signal: one line per novel find, with what made it
-        // novel (new edges and/or log shapes) and where it came from.
+        // novel (new edges, or a deeper virtual-time frontier) and where it
+        // came from.
         let mut what = Vec::new();
         if new_edges > 0 {
             what.push(format!("+{new_edges} edges"));
@@ -1056,6 +1087,31 @@ pub fn serial_crash_reason(serial: &[String]) -> Option<String> {
     })
 }
 
+/// Collapse a crash `reason` to a coarse signature that ignores its volatile
+/// fields — branch id, virtual time, podman timestamp, container hash, and the
+/// specific node name (`lnd1`/`lnd2`/`lnd3`) — so recurrences of one bug dedup
+/// to a single finding. A dead container keys on its `image=` (every lnd node
+/// shares one image, so all three collapse together, while btcd stays
+/// distinct); a Go runtime crash keys on the matched marker. Anything else
+/// falls back to the whole reason.
+fn crash_signature(reason: &str) -> String {
+    if reason.contains(CONTAINER_DIED_MARKER) {
+        if let Some(i) = reason.find("image=") {
+            let image = reason[i + "image=".len()..]
+                .split([',', ')', ' '])
+                .next()
+                .unwrap_or("")
+                .trim();
+            return format!("container-died:{image}");
+        }
+        return "container-died".to_string();
+    }
+    if let Some(m) = CRASH_MARKERS.iter().find(|m| reason.contains(**m)) {
+        return format!("crash:{m}");
+    }
+    reason.to_string()
+}
+
 /// Outcome of replaying a [`Reproduction`].
 pub struct ReplayOutcome {
     /// Full guest serial captured from the fuzzing root to the bug.
@@ -1072,7 +1128,9 @@ pub struct ReplayOutcome {
 /// recorded `RDRAND`/IO stream drives the guest down the exact same path. The
 /// `sink` must be in fuzz mode so the branch's serial is captured.
 pub fn replay(seed_cp: &Checkpoint, repro: &Reproduction, sink: &Sink) -> Option<ReplayOutcome> {
-    let source = repro.input.source_from(repro.root_instr, repro.frequency, 0);
+    let source = repro
+        .input
+        .source_from(repro.root_instr, repro.frequency, 0);
     let mut branch = seed_cp.branch_with_input_source(source).ok()?;
     let bid = branch.id();
     sink.start_capture(bid);
@@ -1089,4 +1147,38 @@ pub fn replay(seed_cp: &Checkpoint, repro: &Reproduction, sink: &Sink) -> Option
         crashed,
         end_instr,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crash_signature;
+
+    #[test]
+    fn dead_lnd_nodes_share_one_signature_but_btcd_differs() {
+        // Real `container died` reasons differ in branch id, vt, timestamp,
+        // container hash, node name and label order — but all three lnd nodes
+        // share an image, so they must dedup to a single finding.
+        let lnd2 = "serial reported: [br BranchId(29014) vt  479.165] [podman] | 2024-01-01 00:07:58 container died de5e67 (image=localhost/bedrock/lnd:latest, name=lnd2, com.docker.compose.container-number=1)";
+        let lnd1 = "serial reported: [br BranchId(37581) vt  501.632] [podman] | 2024-01-01 00:08:21 container died 827463 (image=localhost/bedrock/lnd:latest, name=lnd1, io.podman.compose.service=lnd1)";
+        let lnd3 = "serial reported: [br BranchId(72222) vt  504.815] [podman] | 2024-01-01 00:08:24 container died 572d4c (image=localhost/bedrock/lnd:latest, name=lnd3, io.podman.compose.version=1.5.0)";
+        let btcd = "serial reported: [br BranchId(99) vt  500.0] [podman] | 2024-01-01 00:08:30 container died abc123 (image=localhost/bedrock/btcd:latest, name=btcd1)";
+
+        assert_eq!(crash_signature(lnd2), crash_signature(lnd1));
+        assert_eq!(crash_signature(lnd2), crash_signature(lnd3));
+        assert_eq!(
+            crash_signature(lnd2),
+            "container-died:localhost/bedrock/lnd:latest"
+        );
+        assert_ne!(crash_signature(lnd2), crash_signature(btcd));
+    }
+
+    #[test]
+    fn go_runtime_crashes_key_on_marker() {
+        let a = "workload crash (fatal error:): [lnd1] | fatal error: concurrent map writes goroutine 42";
+        let b = "workload crash (fatal error:): [lnd2] | fatal error: concurrent map writes goroutine 99";
+        let oom = "workload crash (runtime: out of memory): [btcd1] | runtime: out of memory: cannot allocate";
+        assert_eq!(crash_signature(a), crash_signature(b));
+        assert_eq!(crash_signature(a), "crash:fatal error:");
+        assert_ne!(crash_signature(a), crash_signature(oom));
+    }
 }

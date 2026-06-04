@@ -95,8 +95,9 @@ impl EventSink for Sink {
                     }
                     Mode::Fuzz => {
                         if let Some(buf) = s.captures.get_mut(&branch) {
-                            // The fuzz-time prefix is what the shape feedback's
-                            // `[source]` matcher keys off, so keep it verbatim.
+                            // Tag each captured line with its branch id and
+                            // virtual time — context for solution reports and
+                            // the on-disk serial logs.
                             buf.push(format!(
                                 "[br {branch:?} vt {:>8.3}] {body}",
                                 at.as_secs_f64()

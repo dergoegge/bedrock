@@ -194,7 +194,10 @@ mod tests {
     fn reproduction_json_roundtrips() {
         let input = Input {
             rng: vec![
-                RngVal { at: 100, value: 0xdead_beef },
+                RngVal {
+                    at: 100,
+                    value: 0xdead_beef,
+                },
                 RngVal { at: 250, value: 42 },
             ],
             io: vec![

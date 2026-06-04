@@ -112,8 +112,7 @@ pub struct Solution {
 /// entries, while the linear `effort` denominator decays over-mined ones and
 /// `/(1+in_flight)` fans workers across distinct checkpoints.
 pub fn node_weight(node: &Node) -> f64 {
-    (1.0 + (node.novelty as f64).ln_1p()) / (1.0 + node.effort)
-        * (1.0 + node.depth_secs.ln_1p())
+    (1.0 + (node.novelty as f64).ln_1p()) / (1.0 + node.effort) * (1.0 + node.depth_secs.ln_1p())
         / (1.0 + node.in_flight as f64)
         * (1.0 + node.rarity.ln_1p())
 }
@@ -169,8 +168,7 @@ mod tests {
     // A weight-only stand-in so we can test the scheduler without real
     // checkpoints (which require a live VM). Mirrors `node_weight`.
     fn w(novelty: u64, effort: f64, depth: f64, in_flight: u32, rarity: f64) -> f64 {
-        (1.0 + (novelty as f64).ln_1p()) / (1.0 + effort)
-            * (1.0 + depth.ln_1p())
+        (1.0 + (novelty as f64).ln_1p()) / (1.0 + effort) * (1.0 + depth.ln_1p())
             / (1.0 + in_flight as f64)
             * (1.0 + rarity.ln_1p())
     }

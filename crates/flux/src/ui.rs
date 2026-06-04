@@ -7,10 +7,11 @@
 //!
 //! - `[+]` green   — something good happened (new coverage, a corpus add).
 //! - `[*]` blue    — neutral status / progress.
-//! - `[-]` dim     — minor detail, muted (e.g. a newly-seen log shape).
 //! - `[!]` yellow  — a warning worth noticing.
 //! - `[x]` red     — an error.
-//! - `[!]` magenta — a solution (a bug), with sparkles, impossible to miss.
+//! - `✦` magenta  — a solution (a bug), bracketed in sparkles, impossible to miss.
+//!
+//! Indented sub-details (under a heartbeat or status line) print dim with no tag.
 //!
 //! Color is emitted only to a real terminal with `NO_COLOR` unset; piped or
 //! benchmark output stays plain. In benchmark mode everything but errors and
@@ -125,14 +126,6 @@ pub fn info(msg: &str) {
 /// `[+]` something good happened.
 pub fn good(msg: &str) {
     tagged("[+]", GREEN, msg);
-}
-
-/// `[-]` muted detail (printed dim).
-pub fn note(msg: &str) {
-    if quiet() {
-        return;
-    }
-    emit(&format!("{} {}", paint("[-]", 130, 130, 140, false), dimmed(msg)));
 }
 
 /// `[!]` a warning worth noticing.
