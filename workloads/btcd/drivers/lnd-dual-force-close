@@ -1,0 +1,47 @@
+#!/bin/sh
+# Force-close the SAME channel from BOTH endpoints in one shot, so two
+# competing commitment transactions hit the mempool for one funding output.
+# This drives lnd's contractcourt / sweeper / chain-watcher into the
+# simultaneous-unilateral-close race — a background-goroutine state machine
+# (not an RPC handler, so an lnd recover() wouldn't catch a panic there). The
+# conservative lnd-force-close driver only ever closes from one side; this
+# reaches the corner it can't. Picks a channel via the deterministic
+# /dev/urandom stream; benign no-op when the chosen node has no channels.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+nb=$(fz 0)
+node=$(echo "$NODES" | cut -d' ' -f$(( nb % 3 + 1 )))
+
+# First channel on the chosen node: its point plus the remote node's pubkey.
+info=$($LNCLI --rpcserver="$node:10009" listchannels 2>/dev/null) || { echo "$node down"; exit 0; }
+cp=$(printf '%s' "$info" \
+    | sed -n 's/.*"channel_point":[[:space:]]*"\([0-9a-f]*:[0-9]*\)".*/\1/p' | head -n1)
+remote_pk=$(printf '%s' "$info" \
+    | sed -n 's/.*"remote_pubkey":[[:space:]]*"\([0-9a-f]*\)".*/\1/p' | head -n1)
+if [ -z "$cp" ]; then
+    echo "$node has no channel to dual-force-close"
+    exit 0
+fi
+txid=${cp%%:*}; idx=${cp##*:}
+
+# Find which node owns remote_pk so we can force-close the peer's side too.
+peer=""
+for n in $NODES; do
+    pk=$($LNCLI --rpcserver="$n:10009" getinfo 2>/dev/null \
+        | sed -n 's/.*"identity_pubkey":[[:space:]]*"\([0-9a-f]*\)".*/\1/p' | head -n1)
+    if [ -n "$pk" ] && [ "$pk" = "$remote_pk" ]; then peer="$n"; break; fi
+done
+
+echo "dual force-close $cp: $node and ${peer:-<unknown>}"
+# Fire both sides; backgrounding the first narrows the window between the two
+# commitment broadcasts so they race on-chain.
+$LNCLI --rpcserver="$node:10009" closechannel --force \
+    --funding_txid "$txid" --output_index "$idx" >/dev/null 2>&1 &
+if [ -n "$peer" ]; then
+    $LNCLI --rpcserver="$peer:10009" closechannel --force \
+        --funding_txid "$txid" --output_index "$idx" >/dev/null 2>&1 || true
+fi
+wait

@@ -9,17 +9,25 @@ set -eu
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 
-rand_bytes=$(od -An -N4 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
-node_byte=$(echo "$rand_bytes" | sed -n 1p)
-base_byte=$(echo "$rand_bytes" | sed -n 2p)
-rate_byte=$(echo "$rand_bytes" | sed -n 3p)
-tld_byte=$(echo  "$rand_bytes" | sed -n 4p)
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+node_byte=$(fz 0)
+base_byte=$(fz 1)
+rate_byte=$(fz 2)
+tld_byte=$(fz 3)
 
 node=$(echo "$NODES" | cut -d' ' -f$(( node_byte % 3 + 1 )))
-base_fee=$((base_byte * 10))        # 0 .. 2550 msat
-fee_ppm=$((rate_byte * 20 + 1))     # 1 .. 5101 ppm
-time_lock=$((tld_byte % 100 + 18))  # 18 .. 117 (>= lnd's minimum CLTV delta)
+base_fee=$((base_byte * 100000))    # 0 .. ~25.5M msat (wide, incl. 0)
+fee_ppm=$((rate_byte * 100000))     # 0 .. ~25.5M ppm (incl. 0 and absurd)
+# Span the cltv-delta range across and past lnd's uint16 channel-update field
+# (0, below-minimum, normal, and >65535 which the RPC takes as uint32 — a
+# truncation / validation boundary worth probing).
+case $(( tld_byte % 4 )) in
+  0) time_lock=0 ;;
+  1) time_lock=$(( tld_byte % 18 )) ;;       # below minimum CLTV delta
+  2) time_lock=$(( tld_byte % 100 + 18 )) ;; # normal band
+  3) time_lock=$(( 65535 + tld_byte )) ;;    # past uint16
+esac
 
 echo "updating policy on $node: base_fee=${base_fee}msat fee_ppm=${fee_ppm} time_lock_delta=${time_lock}"
 $LNCLI --rpcserver="$node:10009" updatechanpolicy \
-    --base_fee_msat "$base_fee" --fee_rate_ppm "$fee_ppm" --time_lock_delta "$time_lock"
+    --base_fee_msat "$base_fee" --fee_rate_ppm "$fee_ppm" --time_lock_delta "$time_lock" || true

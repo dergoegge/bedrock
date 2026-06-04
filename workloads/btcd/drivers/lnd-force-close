@@ -12,7 +12,8 @@ set -eu
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 
-node_byte=$(od -An -N1 -tu1 /dev/urandom | tr -d ' \n')
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+node_byte=$(fz 0)
 node=$(echo "$NODES" | cut -d' ' -f$(( node_byte % 3 + 1 )))
 
 cp=$($LNCLI --rpcserver="$node:10009" listchannels \

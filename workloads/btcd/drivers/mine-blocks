@@ -1,5 +1,5 @@
 #!/bin/sh
-# Mine a random number (1-3) of regtest blocks on a randomly-chosen
+# Mine a random number (1-16) of regtest blocks on a randomly-chosen
 # peer (btcd1 or btcd2). Both peers share the same --miningaddr (the
 # btcd-launcher injects it on every node), so the coinbase always pays
 # to the wallet's default-account address regardless of which side
@@ -10,16 +10,22 @@
 # kernel RNG → deterministic across replays under bedrock.
 set -eu
 
-rand_bytes=$(od -An -N2 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
-host_byte=$(echo "$rand_bytes" | sed -n 1p)
-count_byte=$(echo "$rand_bytes" | sed -n 2p)
+# Entropy comes from the fuzzer-controlled hex argument ($1): byte N is fz N.
+# This lets the fuzzer steer driver parameters directly (mutating the arg
+# bytes), instead of via /dev/urandom (the guest CRNG, which a recorded-RDRAND
+# mutation can't actually move). Falls back to /dev/urandom when no arg is
+# passed (e.g. manual invocation).
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+
+host_byte=$(fz 0)
+count_byte=$(fz 1)
 
 if [ $((host_byte % 2)) -eq 0 ]; then
     host=btcd1
 else
     host=btcd2
 fi
-n=$((count_byte % 3 + 1))
+n=$((count_byte % 16 + 1))
 
 echo "mining $n block(s) on $host"
 btcctl --regtest -u user -P password \

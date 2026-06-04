@@ -1,0 +1,39 @@
+#!/bin/sh
+# Coverage-guided parser-fuzz harness for btcd's hex deserializers. Feeds a
+# fuzzer-controlled, variable-length random byte blob (hex-encoded) to
+# decoderawtransaction (wire.MsgTx.BtcDecode) and decodescript (txscript
+# disassembly / address extraction). Both parse fully attacker-controlled
+# bytes, so they're the richest crash surface btcd exposes over RPC. The
+# instrumented btcd's edge coverage steers exploration; a panic in a parser
+# kills the btcd container. Length + bytes come from the deterministic
+# /dev/urandom stream so any crash replays. RPC errors are expected and benign.
+set -eu
+BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+HOSTS="btcd1 btcd2"
+
+# The fuzzer-controlled hex argument ($1) IS the parser input: bytes past the
+# first two select the host/RPC, the rest is fed verbatim to btcd's hex
+# deserializers. So the fuzzer steers the deserializer input directly (smooth,
+# coverage-hill-climbable). Falls back to a random blob with no arg.
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+
+hb=$(fz 0)
+host=$(echo "$HOSTS" | cut -d' ' -f$(( hb % 2 + 1 )))
+sel=$(fz 1)
+
+if [ -n "$FZ" ]; then
+    hex=$(printf %s "$FZ" | cut -c5- | tr -cd '0-9a-f')
+else
+    len=$(( $(fz 1) % 96 + 1 )); hex=$(od -An -N"$len" -tx1 /dev/urandom | tr -d ' \n')
+fi
+[ $(( ${#hex} % 2 )) -eq 1 ] && hex="${hex}0"     # even-length hex
+len=$(( ${#hex} / 2 ))
+
+case $(( sel % 3 )) in
+  0) echo "decoderawtransaction $host len=$len"
+     $BCTL --rpcserver="$host:18334" decoderawtransaction "$hex" >/dev/null 2>&1 || true ;;
+  1) echo "decodescript $host len=$len"
+     $BCTL --rpcserver="$host:18334" decodescript "$hex" >/dev/null 2>&1 || true ;;
+  2) echo "sendrawtransaction $host len=$len"
+     $BCTL --rpcserver="$host:18334" sendrawtransaction "$hex" >/dev/null 2>&1 || true ;;
+esac

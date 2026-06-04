@@ -61,14 +61,20 @@ services:
     depends_on:
       - btcd1
 
+  # lnd2's chain backend is btcd1 (not btcd2) on purpose: it leaves btcd2 with
+  # no lnd dependents, so the fault injector can isolate btcd2 to drive
+  # realistic reorgs (split the peers, let each mine, heal → the longer chain
+  # wins and btcd1 + all lnds reorg) without any lnd losing its backend and
+  # shutting down. btcd2 is the workload's "reorg engine"; all three lnds ride
+  # btcd1.
   lnd2:
     image: bedrock/lnd:latest
     pull_policy: never
     container_name: lnd2
     environment:
-      - BTCD_HOST=btcd2
+      - BTCD_HOST=btcd1
     depends_on:
-      - btcd2
+      - btcd1
 
   lnd3:
     image: bedrock/lnd:latest

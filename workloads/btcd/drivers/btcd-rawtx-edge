@@ -1,0 +1,52 @@
+#!/bin/sh
+# Build raw transactions with fuzzer-controlled structure and adversarial
+# output amounts (zero, dust, near-max-money, over-max, huge floats), then push
+# them through decoderawtransaction and sendrawtransaction. createrawtransaction
+# exercises btcjson amount parsing (btcutil.NewAmount range checks) and tx
+# assembly; sendrawtransaction drops it into the mempool acceptance / script
+# validation path. Inputs reference a fuzzer-chosen outpoint so the tx is
+# structurally varied without needing real UTXOs. Generic harness — the fuzzer
+# steers amounts/counts via deterministic /dev/urandom; nothing is rigged.
+set -eu
+. /etc/bedrock/key.env   # ADDR (a valid regtest address to pay)
+BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+HOSTS="btcd1 btcd2"
+
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+hb=$(fz 0)
+vout=$(fz 1)
+shape=$(fz 2)
+a0=$(fz 3)
+a1=$(fz 4)
+host=$(echo "$HOSTS" | cut -d' ' -f$(( hb % 2 + 1 )))
+
+# A fuzzer-controlled 32-byte input txid (hex): bytes 5..36 of the arg. Falls
+# back to a random txid when no arg is present.
+if [ -n "$FZ" ]; then
+    in_txid=$(printf %s "$FZ" | cut -c11-74 | tr -cd '0-9a-f')
+    while [ ${#in_txid} -lt 64 ]; do in_txid="${in_txid}0"; done
+else
+    in_txid=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+fi
+
+base=$(( a1 * 256 + a0 ))
+case $(( shape % 6 )) in
+  0) amt="0" ;;
+  1) amt="0.00000001" ;;                         # 1 sat (dust-ish)
+  2) amt="$(( base % 21 )).$(printf '%08d' $(( base % 100000000 )))" ;;  # 0..20.xxxxxxxx BTC
+  3) amt="20999999.99999999" ;;                  # just under max money
+  4) amt="21000000.00000001" ;;                  # just over max money (should error)
+  5) amt="1e308" ;;                              # absurd float
+esac
+
+inputs="[{\"txid\":\"$in_txid\",\"vout\":$(( vout % 8 ))}]"
+outputs="{\"$ADDR\":$amt}"
+
+echo "createrawtransaction $host amt=$amt vout=$(( vout % 8 ))"
+raw=$($BCTL --rpcserver="$host:18334" createrawtransaction "$inputs" "$outputs" 2>/dev/null || true)
+if [ -z "$raw" ]; then
+    echo "createrawtransaction rejected (amt=$amt)"
+    exit 0
+fi
+$BCTL --rpcserver="$host:18334" decoderawtransaction "$raw" >/dev/null 2>&1 || true
+$BCTL --rpcserver="$host:18334" sendrawtransaction "$raw" >/dev/null 2>&1 || true

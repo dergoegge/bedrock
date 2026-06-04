@@ -12,9 +12,9 @@ set -eu
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 
-rand_bytes=$(od -An -N2 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
-b1=$(echo "$rand_bytes" | sed -n 1p)
-b2=$(echo "$rand_bytes" | sed -n 2p)
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+b1=$(fz 0)
+b2=$(fz 1)
 self=$(echo "$NODES" | cut -d' ' -f$(( b1 % 3 + 1 )))
 
 peers=$($LNCLI --rpcserver="$self:10009" listpeers \

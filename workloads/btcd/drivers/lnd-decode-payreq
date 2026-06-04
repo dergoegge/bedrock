@@ -1,0 +1,34 @@
+#!/bin/sh
+# Coverage-guided parser-fuzz harness for lnd's payment-request decoder
+# (zpay32: bech32 + TLV). Builds a candidate request from a regtest HRP prefix
+# plus a fuzzer-controlled run of bech32-charset characters, then feeds it to
+# `decodepayreq`. The body characters come DIRECTLY from the fuzzer-controlled
+# hex argument ($1): each hex nibble-pair maps to a bech32 char, so the fuzzer
+# steers the exact decoder input (smooth, coverage-hill-climbable) rather than
+# through the guest CRNG. The instrumented lnd's edge coverage guides the search
+# deeper into the decoder; an input that panics a non-recovered lnd goroutine
+# crashes the daemon (dead container). Deterministic: the arg is replayed.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+
+nb=$(fz 0)
+node=$(echo "$NODES" | cut -d' ' -f$(( nb % 3 + 1 )))
+
+# Body: take the arg hex past the first byte and map each hex char to a bech32
+# char via tr (no awk strtonum — busybox awk lacks it). Each of the fuzzer's hex
+# chars thus controls one decoder-input char. Falls back to a short random body
+# when no arg is present.
+if [ -n "$FZ" ]; then
+    body=$(printf %s "$FZ" | cut -c3- | tr -cd '0-9a-f' | tr '0123456789abcdef' 'qpzry9x8gf2tvdw0')
+else
+    body=$(od -An -N40 -tx1 /dev/urandom | tr -d ' \n' | tr '0123456789abcdef' 'qpzry9x8gf2tvdw0')
+fi
+
+req="lnbcrt${body}"
+echo "decodepayreq fuzz on $node len=${#body}"
+$LNCLI --rpcserver="$node:10009" decodepayreq "$req" >/dev/null 2>&1 || true
+# Also try paying it: a different validation surface than decode alone.
+$LNCLI --rpcserver="$node:10009" payinvoice --force --timeout 5s "$req" >/dev/null 2>&1 || true

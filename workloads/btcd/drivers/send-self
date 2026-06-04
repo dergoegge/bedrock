@@ -14,27 +14,37 @@
 # sequence.
 set -eu
 
+# Entropy from the fuzzer-controlled hex argument ($1); byte N is fz N. See
+# mine-blocks for why this replaces /dev/urandom. Falls back to urandom with no
+# arg.
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+
 BCTL_W="btcctl --regtest --wallet -u user -P password --rpccert=/etc/bedrock/rpc.cert --rpcserver=btcwallet:18332"
 
 $BCTL_W walletpassphrase password 86400 >/dev/null
 
-# Pull two bytes up front: first decides the tx count, second seeds the
-# per-tx amounts via simple modular arithmetic on a sliding base.
-rand_bytes=$(od -An -N2 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
-count_byte=$(echo "$rand_bytes" | sed -n 1p)
-seed_byte=$(echo "$rand_bytes"  | sed -n 2p)
+# Byte 0 decides the tx count; per-tx amount bytes come from offsets 2*i+2.
+count_byte=$(fz 0)
 
-count=$((count_byte % 5 + 1))
+count=$((count_byte % 12 + 1))
 echo "sending $count tx(s)"
 
 i=0
 while [ $i -lt $count ]; do
-    # Re-draw a byte per tx so amounts vary independently. od on
-    # /dev/urandom is cheap enough not to matter.
-    amt_byte=$(od -An -N1 -tu1 /dev/urandom | tr -d ' \n')
-    amount=$(( (amt_byte + seed_byte + i) % 10 + 1 ))
+    # Two fuzzer bytes per tx (offsets 2*i+2, 2*i+3) so amounts vary
+    # independently. Span dust through large amounts so the fuzzer can hit
+    # relay/dust/fee-estimation edges as well as the common case; over-balance
+    # sends are rejected and benign.
+    a0=$(fz $((2*i + 2)))
+    a1=$(fz $((2*i + 3)))
+    case $(( (a1 + i) % 4 )) in
+      0) amount="0.00000$(printf '%03d' $(( a0 % 1000 )))" ;;  # ~dust
+      1) amount="$(( a0 % 10 + 1 )).0" ;;                      # 1..10 BTC
+      2) amount="$(( a0 % 100 + 1 )).$(printf '%08d' $(( (a0*7) % 100000000 )))" ;;
+      3) amount="0.$(printf '%08d' $(( (a0*131) % 100000000 )))" ;;
+    esac
     addr=$($BCTL_W getnewaddress)
-    txid=$($BCTL_W sendtoaddress "$addr" "${amount}.0")
-    echo "  [$((i+1))/$count] ${amount}.0 -> $addr  ($txid)"
+    txid=$($BCTL_W sendtoaddress "$addr" "$amount" 2>/dev/null || echo "")
+    echo "  [$((i+1))/$count] $amount -> $addr  (${txid:-rejected})"
     i=$((i + 1))
 done

@@ -1,0 +1,50 @@
+#!/bin/sh
+# Mint invoices across the edge of lnd's invoice parameter space (amount,
+# expiry, final-cltv delta), then immediately decode the resulting payment
+# request back through `decodepayreq`. This exercises both the invoice
+# registry / creation path and the zpay32 bech32+TLV decoder on lnd-generated
+# requests with unusual fields. Generic harness: the fuzzer steers the field
+# values via the deterministic /dev/urandom stream; nothing here is rigged.
+set -eu
+LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
+NODES="lnd1 lnd2 lnd3"
+
+FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+nb=$(fz 0)
+a0=$(fz 1)
+a1=$(fz 2)
+expb=$(fz 3)
+cltvb=$(fz 4)
+shape=$(fz 5)
+
+node=$(echo "$NODES" | cut -d' ' -f$(( nb % 3 + 1 )))
+base=$(( a1 * 256 + a0 ))
+
+case $(( shape % 4 )) in
+  0) amt=0 ;;                          # any-amount invoice
+  1) amt=$(( base + 1 )) ;;            # small
+  2) amt=$(( base * 100000 + 1 )) ;;   # large
+  3) amt=$(( 2100000000000000 )) ;;    # ~21M BTC in sat (max money)
+esac
+
+expiry=$(( expb * expb ))             # 0 .. ~65k seconds, includes 0
+cltv=$(( cltvb ))                     # 0 .. 255 final cltv delta (0 = use default)
+
+echo "addinvoice on $node amt=$amt expiry=$expiry cltv=$cltv"
+# Try with the cltv-delta flag (present on newer lnd); fall back to the
+# guaranteed flags so the driver still produces an invoice on older builds.
+extract='s/.*"payment_request":[[:space:]]*"\([a-zA-Z0-9]*\)".*/\1/p'
+pr=$($LNCLI --rpcserver="$node:10009" addinvoice \
+        --amt "$amt" --expiry "$expiry" --cltv_expiry_delta "$cltv" 2>/dev/null \
+    | sed -n "$extract" | head -n1)
+if [ -z "$pr" ]; then
+    pr=$($LNCLI --rpcserver="$node:10009" addinvoice \
+            --amt "$amt" --expiry "$expiry" 2>/dev/null \
+        | sed -n "$extract" | head -n1)
+fi
+if [ -z "$pr" ]; then
+    echo "no invoice produced (amt=$amt expiry=$expiry cltv=$cltv)"
+    exit 0
+fi
+echo "decodepayreq on $node"
+$LNCLI --rpcserver="$node:10009" decodepayreq "$pr" >/dev/null || true
