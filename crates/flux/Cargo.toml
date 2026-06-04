@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+[package]
+name = "flux"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+description = "Clean-room coverage-guided fuzzer for bedrock VMs"
+
+[dependencies]
+bedrock-lab = { path = "../bedrock-lab" }
+bedrock-vm = { path = "../bedrock-vm" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tiny_http = "0.12"
+libc = "0.2"
+
+[[bin]]
+name = "flux"
+path = "src/bin/flux.rs"

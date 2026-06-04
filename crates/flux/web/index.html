@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flux</title>
+<style>
+  /* SEED design system (dark-first). IBM Plex from Google Fonts CDN — swap for
+     self-hosted if offline rendering is needed. */
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@500;600;700&display=swap');
+  :root {
+    /* surfaces / foregrounds / lines */
+    --bg-0:#1f1f1f; --bg-1:#272727; --bg-2:#303030; --bg-3:#3a3a3a;
+    --fg-0:#fafafa; --fg-1:#d4d4d4; --fg-2:#8a8a8a; --fg-3:#5a5a5a; --fg-4:#4a4a4a;
+    --line-1:#363636; --line-2:#484848; --line-3:#686868;
+    /* semantic */
+    --accent:#5D8BFF; --accent-hi:#4A6FE0; --accent-fg:#0a0a0a;
+    --pass:#4ADE80; --fail:#ef4444; --warn:#f59e0b; --info:#8a9bbd;
+    --radius:4px; --radius-sm:2px;
+    --font-sans:'IBM Plex Sans',ui-sans-serif,system-ui,sans-serif;
+    --font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
+    --ease:cubic-bezier(0.2,0,0,1);
+    /* Canvas drawing colors — literal hex so getComputedStyle hands the 2D
+       context a real color (var() indirection isn't reliably resolved there).
+       Kept in sync with the tokens above:
+       cp=checkpoint(fg-1) br=live/rewind(accent) sol(fail) sel(accent)
+       line=edge(line-3) axis(line-2) muted(fg-2) panel(bg-1). */
+    --cp:#d4d4d4; --br:#5D8BFF; --sol:#ef4444; --sel:#5D8BFF;
+    --line:#686868; --axis:#484848; --muted:#8a8a8a; --panel:#272727;
+  }
+  /* light theme — opt in via data-theme="light" on <html>. Warm paper
+     surfaces + ink foregrounds; semantic + canvas colors shift darker so they
+     hold contrast on the lighter surface. */
+  [data-theme="light"] {
+    --bg-0:#f4f1ea; --bg-1:#fcfaf4; --bg-2:#ebe6da; --bg-3:#ddd6c5;
+    --fg-0:#0a0a0a; --fg-1:#2a2a2a; --fg-2:#6a665d; --fg-3:#9a9486; --fg-4:#c0bbae;
+    --line-1:#e0dcce; --line-2:#c4bea8; --line-3:#8a8470;
+    --accent:#2b5fe6; --accent-hi:#1a47c0; --accent-fg:#fafafa;
+    --pass:#2e8b4e; --fail:#c63838; --warn:#b87514; --info:#5a6a86;
+    --cp:#2a2a2a; --br:#2b5fe6; --sol:#c63838; --sel:#2b5fe6;
+    --line:#8a8470; --axis:#c4bea8; --muted:#6a665d; --panel:#fcfaf4;
+  }
+  *,*::before,*::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { display: flex; flex-direction: column; background: var(--bg-0); color: var(--fg-1);
+    font-family: var(--font-mono); font-size: 13px; line-height: 1.5;
+    font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+  ::selection { background: var(--accent); color: var(--accent-fg); }
+
+  /* ---- top bar ---- */
+  header.mh { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 16px;
+    min-height: 44px; padding: 6px 16px; background: var(--bg-1);
+    border-bottom: 1px solid var(--line-2); flex-shrink: 0; }
+  .wm { font-family: var(--font-sans); font-weight: 700; font-size: 14px; letter-spacing: -0.04em;
+    color: var(--fg-0); display: inline-flex; align-items: baseline; gap: 8px; }
+  .wm .sub { font-family: var(--font-mono); font-size: 10px; font-weight: 400; color: var(--fg-2);
+    letter-spacing: 0.04em; text-transform: uppercase; }
+  .sep { width: 1px; height: 20px; background: var(--line-2); flex-shrink: 0; }
+  #stats { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 11px; color: var(--fg-2); min-width: 0; }
+  #stats b { color: var(--fg-0); font-weight: 400; }
+  .spacer { flex: 1; }
+  .legend { display: flex; gap: 14px; align-items: center; font-family: var(--font-sans);
+    font-size: 9px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 7px; height: 7px; display: inline-block; background: var(--cp); }
+  .legend i.br { background: var(--br); }
+  .legend i.so { background: var(--fail); }
+  .legend u { display: inline-block; width: 14px; border-top: 1px solid var(--line-3); }
+  #status { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--fg-2); white-space: nowrap; }
+  #status::before { content: ""; width: 6px; height: 6px; display: inline-block; background: var(--fg-3); }
+  #status.live::before { background: var(--pass); }
+  #status.down::before { background: var(--fail); }
+  .theme-tog { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
+    padding: 4px 10px; background: transparent; border: 1px solid var(--line-2);
+    color: var(--fg-2); cursor: pointer; border-radius: var(--radius); }
+  .theme-tog:hover { color: var(--fg-0); background: var(--bg-2); }
+  .theme-tog:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+
+  /* ---- layout ---- */
+  main { flex: 1; display: grid; grid-template-columns: 1fr minmax(360px, 40vw); min-height: 0; }
+
+  /* ---- tree pane ---- */
+  .tree-pane { display: flex; flex-direction: column; min-width: 0; background: var(--bg-0); overflow: hidden; }
+  #cov { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 16px; border-bottom: 1px solid var(--line-1); }
+  .cov { min-width: 180px; flex: 1; }
+  .cov > div { font-size: 11px; color: var(--fg-2); margin-bottom: 4px; }
+  .cov > div b { color: var(--fg-0); font-weight: 400; }
+  .cov .bar { height: 4px; background: var(--bg-2); overflow: hidden; }   /* chart-internal — hard corners */
+  .cov .bar > i { display: block; height: 100%; background: var(--info); }
+  #treewrap { flex: 1; position: relative; overflow: hidden; min-height: 0; }
+  #tree { position: absolute; inset: 0; cursor: grab; display: block; }
+  #tree.drag { cursor: grabbing; }
+  #hint { position: absolute; left: 12px; bottom: 30px; color: var(--fg-3); font-size: 10px;
+    letter-spacing: 0.04em; pointer-events: none; }
+
+  /* ---- detail panel ---- */
+  .detail { background: var(--bg-1); border-left: 1px solid var(--line-2);
+    display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .detail-head { display: flex; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--line-2); }
+  .detail-head .label, .dsec .lbl { font-family: var(--font-sans); font-size: 10px; font-weight: 500;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3); }
+  .detail-body { overflow: auto; padding: 14px 16px; flex: 1; }
+  .dsec + .dsec { margin-top: 22px; }
+  .dsec .lbl { display: block; margin-bottom: 10px; }
+  #solcount { color: var(--fg-3); font-family: var(--font-mono); font-weight: 400; letter-spacing: 0; }
+  .kv { font-size: 11px; color: var(--fg-2); padding: 1px 0; }
+  .kv b { color: var(--fg-0); font-weight: 400; }
+  .serial { margin-top: 10px; padding: 10px 12px; background: var(--bg-0); border: 1px solid var(--line-2);
+    border-radius: var(--radius); max-height: 60vh; overflow: auto; white-space: pre;
+    font-size: 11px; line-height: 1.55; color: var(--fg-1); }
+  #solutions .sol { padding: 6px 10px; border: 1px solid var(--line-2); border-radius: var(--radius);
+    margin-bottom: 6px; cursor: pointer; font-size: 12px; color: var(--fg-1);
+    transition: border-color 160ms var(--ease), background 160ms var(--ease); }
+  #solutions .sol:hover { border-color: var(--line-3); background: var(--bg-2); }
+  #solutions .sol .r { color: var(--fail); }
+  .empty { color: var(--fg-3); font-size: 12px; }
+  @media (prefers-reduced-motion: reduce) { * { transition-duration: 0ms !important; } }
+</style>
+<script>/* apply stored theme before first paint to avoid a flash */
+try { document.documentElement.dataset.theme = localStorage.getItem('seed-theme') || 'dark'; } catch (_) {}</script>
+</head>
+<body>
+<header class="mh">
+  <span class="wm">FLUX</span>
+  <span class="sep"></span>
+  <div id="stats"></div>
+  <span class="spacer"></span>
+  <div class="legend">
+    <span><i></i> checkpoint</span>
+    <span><u></u> branch</span>
+    <span><i class="br"></i> live</span>
+    <span><i class="so"></i> solution</span>
+  </div>
+  <span class="sep"></span>
+  <span id="status">connecting…</span>
+  <span class="sep"></span>
+  <button class="theme-tog" data-theme-toggle>LIGHT</button>
+</header>
+<main>
+  <section class="tree-pane">
+    <div id="cov"></div>
+    <div id="treewrap">
+      <canvas id="tree"></canvas>
+      <div id="hint">x = virtual time · scroll to zoom · drag to pan · double-click to refit · click a checkpoint</div>
+    </div>
+  </section>
+  <aside class="detail">
+    <div class="detail-head"><span class="label">Inspector</span></div>
+    <div class="detail-body">
+      <section class="dsec">
+        <div class="lbl">Details</div>
+        <div id="detail"><span class="empty">Click a checkpoint…</span></div>
+      </section>
+      <section class="dsec">
+        <div class="lbl">Solutions <span id="solcount"></span></div>
+        <div id="solutions"><span class="empty">none yet</span></div>
+      </section>
+    </div>
+  </aside>
+</main>
+<script>
+const API = location.protocol === 'file:' ? 'http://localhost:8080' : '';
+const MARGIN = 30, R = 2.5, HIT = 9;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+async function getJSON(p) { const r = await fetch(API + p); if (!r.ok) throw new Error(r.status); return r.json(); }
+const cssCache = {};
+const css = v => cssCache[v] || (cssCache[v] = getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+
+// Render serial output's ANSI SGR colors as HTML; strip other escape/control
+// codes. Text segments are HTML-escaped, so output is injection-safe.
+const ANSI_FG = {
+  30: '#484f58', 31: '#f85149', 32: '#3fb950', 33: '#d29922', 34: '#58a6ff',
+  35: '#bc8cff', 36: '#39c5cf', 37: '#b1bac4', 90: '#6e7681', 91: '#ff7b72',
+  92: '#56d364', 93: '#e3b341', 94: '#79c0ff', 95: '#d2a8ff', 96: '#56d4dd', 97: '#f0f6fc',
+};
+function ansiToHtml(s) {
+  let html = '', buf = '', fg = null, bold = false, spanOpen = false, i = 0;
+  const flush = () => { if (buf) { html += esc(buf); buf = ''; } };
+  const close = () => { if (spanOpen) { html += '</span>'; spanOpen = false; } };
+  const open = () => {
+    if (fg || bold) { html += `<span style="${fg ? `color:${fg};` : ''}${bold ? 'font-weight:600;' : ''}">`; spanOpen = true; }
+  };
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\x1b' && s[i + 1] === '[') {                 // CSI escape
+      let j = i + 2;
+      while (j < s.length && !/[A-Za-z]/.test(s[j])) j++;
+      if (s[j] === 'm') {                                    // SGR — apply colors
+        flush(); close();
+        const p = s.slice(i + 2, j);
+        for (const code of (p === '' ? [0] : p.split(';').map(n => parseInt(n, 10) || 0))) {
+          if (code === 0) { fg = null; bold = false; }
+          else if (code === 1) bold = true;
+          else if (code === 22) bold = false;
+          else if (code === 39) fg = null;
+          else if (code === 38 || code === 48) break;   // extended (256/truecolor) — skip its params
+          else if (ANSI_FG[code] !== undefined) fg = ANSI_FG[code];
+        }
+        open();
+      }
+      i = j < s.length ? j + 1 : j;                          // skip whole sequence
+      continue;
+    }
+    if (ch < ' ' && ch !== '\t' && ch !== '\n') { i++; continue; }  // drop other control chars
+    buf += ch;
+    i++;
+  }
+  flush(); close();
+  return html;
+}
+
+const cv = $('tree'), ctx = cv.getContext('2d'), wrap = $('treewrap');
+
+// corpus[i].id === i (append-only): {parent, checkpoint, time_secs,
+// runtime_secs, scheduled, novelty, serial_lines}. liveBranches are in-flight
+// {id, parent (corpus idx), start_secs, current_secs}. Both are laid out as one
+// tidy dendrogram so edges never cross: each subtree gets a contiguous band of
+// rows, parents centered between their children, and every edge's vertical
+// trunk sits at the PARENT's x (left of all its descendants).
+let corpus = [], liveBranches = [], solutions = [];
+let scaleX = 8, scaleY = 16, panX = MARGIN, panY = MARGIN;  // world(vt-sec, row) -> screen
+let selectedId = null, haveFit = false, autoFit = true;
+const AXIS_H = 22;                   // reserved screen height for the vt axis
+
+// Unified laid-out arrays: corpus nodes 0..n-1, then included live branches.
+// Everything is in TRUE virtual time (no clamping). LSTART[i] = the branch's
+// rewind/fork vt; LX[i] = its end vt (checkpoint vt, or live current vt).
+// LDP[i] = the *drawing parent*: the ancestor whose branch was executing at
+// this node's rewind vt. A branch attaches there with a dot at LSTART and goes
+// down + right, so edges only ever run downward/rightward — never backward.
+let LX = [], LSTART = [], LDP = [], LY = [], LCP = [], LN = 0, rowCount = 1;
+
+function relayout() {
+  const n = corpus.length;
+  const live = [];
+  for (const b of liveBranches) {
+    if (b.parent == null || b.parent < 0 || b.parent >= n) continue;
+    if (b.current_secs > b.start_secs) live.push(b);   // skip purely-rewinding (no forward progress)
+  }
+  const total = n + live.length;
+  LN = total;
+  const mp = new Array(total), s = new Array(total), e = new Array(total), isCp = new Array(total);
+  for (let i = 0; i < n; i++) {
+    const c = corpus[i], p = c.parent;
+    mp[i] = (p != null && p >= 0 && p < n) ? p : -1;
+    s[i] = c.time_secs - c.runtime_secs; e[i] = c.time_secs; isCp[i] = true;
+  }
+  for (let k = 0; k < live.length; k++) {
+    const b = live[k], i = n + k;
+    mp[i] = b.parent; s[i] = b.start_secs; e[i] = b.current_secs; isCp[i] = false;
+  }
+  // Drawing parent: climb the mutation-parent chain to the deepest ancestor
+  // that had already started by this node's rewind vt — i.e. the branch that
+  // was executing when this one forked. The fork dot then lands on a real bar.
+  //
+  // EPS absorbs float noise in the fork-time reconstruction s[i] = time_secs -
+  // runtime_secs: a node that forks at exactly its parent's vt (every direct
+  // child of the zero-width seed, which has runtime_secs = 0) reconstructs to a
+  // value that can land a ULP below the parent's single-division time_secs. A
+  // strict `>` would then climb past the seed to -1, orphaning first-level
+  // children as roots with no edge. 1µs is far below any real fork gap (those
+  // differ by the run window) yet well above the ~1e-13s reconstruction error.
+  const EPS = 1e-6;
+  const dp = new Array(total);
+  for (let i = 0; i < total; i++) {
+    let a = mp[i];
+    while (a >= 0 && s[a] > s[i] + EPS) a = mp[a];
+    dp[i] = a;
+  }
+  // Drawing tree by dp. Order siblings by fork vt DESCENDING — later-forking
+  // branches on top, earlier-forking ones further down. A branch's down-line
+  // sits at its fork vt, so an earlier sibling (smaller fork) drawn below stays
+  // left of every later sibling above it, and later siblings never reach the
+  // rows below them. With that ordering no trunk can cross another bar.
+  const kids = Array.from({ length: total }, () => []);
+  const roots = [];
+  for (let i = 0; i < total; i++) { if (dp[i] >= 0) kids[dp[i]].push(i); else roots.push(i); }
+  // Within the same fork vt (equal to within EPS — the reconstruction noise
+  // above), order by branch LENGTH descending: longer branches on top, then by
+  // index for a stable, deterministic tie-break. Same-fork siblings share a
+  // trunk x, so reordering them by length can't cross any bar.
+  const len = (i) => e[i] - s[i];
+  const cmp = (a, b) => {
+    if (Math.abs(s[a] - s[b]) > EPS) return s[b] - s[a];
+    return (len(b) - len(a)) || (a - b);
+  };
+  for (const c of kids) c.sort(cmp);
+  roots.sort(cmp);
+  // preorder rows — parent first, subtree directly below (downward only).
+  const Y = new Array(total);
+  let r = 0;
+  {
+    const st = roots.slice().reverse();
+    while (st.length) {
+      const i = st.pop();
+      Y[i] = r++;
+      const ch = kids[i]; for (let j = ch.length - 1; j >= 0; j--) st.push(ch[j]);
+    }
+  }
+  LX = e; LSTART = s; LDP = dp; LY = Y; LCP = isCp; rowCount = Math.max(1, r);
+}
+
+function bounds() {
+  if (!LN) return { minx: 0, maxx: 1, rows: 1 };
+  let minx = Infinity, maxx = -Infinity;
+  for (let i = 0; i < LN; i++) { if (LSTART[i] < minx) minx = LSTART[i]; if (LX[i] > maxx) maxx = LX[i]; }
+  if (!isFinite(minx)) { minx = 0; maxx = 1; }
+  return { minx, maxx, rows: rowCount };
+}
+
+function fitView() {
+  if (!LN) return;
+  const b = bounds(), w = wrap.clientWidth, h = wrap.clientHeight - AXIS_H;
+  scaleX = (w - 2 * MARGIN) / Math.max(0.001, b.maxx - b.minx);
+  scaleY = Math.min(22, Math.max(4, (h - 2 * MARGIN) / Math.max(1, b.rows - 1)));
+  panX = MARGIN - b.minx * scaleX; panY = MARGIN;
+}
+
+// True if all content sits within the viewport at the current camera. Used to
+// keep the full graph visible while auto-fit is on, without constant rescale.
+function fitsInView() {
+  if (!LN) return true;
+  const b = bounds(), w = wrap.clientWidth, h = wrap.clientHeight - AXIS_H;
+  const x0 = b.minx * scaleX + panX, x1 = b.maxx * scaleX + panX;
+  const y0 = panY, y1 = (b.rows - 1) * scaleY + panY;
+  return x0 >= 0 && x1 <= w && y0 >= 0 && y1 <= h;
+}
+
+// ---- render (batched + culled) -------------------------------------------
+function resize() {
+  const dpr = devicePixelRatio || 1, w = wrap.clientWidth, h = wrap.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + 'px'; cv.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (autoFit && !fitsInView()) fitView();
+  draw();
+}
+
+function draw() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+  const sxv = v => v * scaleX + panX, sy = i => LY[i] * scaleY + panY;
+
+  // Each branch: from its fork vt on the drawing-parent's row, drop straight
+  // down to this row, then run right to the end vt. Fork vt <= end vt and the
+  // parent row is above, so every segment is down or right — never backward.
+  // Checkpoint branches muted; live branches accent.
+  for (const live of [false, true]) {
+    ctx.beginPath();
+    ctx.strokeStyle = live ? css('--br') : css('--line');
+    ctx.lineWidth = live ? 1.5 : 1.25;
+    for (let i = 0; i < LN; i++) {
+      if (LCP[i] === live) continue;           // muted pass draws cp, accent pass draws live
+      const p = LDP[i]; if (p < 0) continue;
+      const cy = sy(i); if (cy < -2 || cy > h + 2) continue;
+      const xs = sxv(LSTART[i]), xe = sxv(LX[i]);
+      if (xe < 0 || xs > w) continue;
+      ctx.moveTo(xs, sy(p)); ctx.lineTo(xs, cy); ctx.lineTo(xe, cy);
+    }
+    ctx.stroke();
+  }
+
+  // checkpoint dots (at the checkpoint vt)
+  ctx.beginPath(); ctx.fillStyle = css('--cp');
+  for (let i = 0; i < LN; i++) {
+    if (!LCP[i]) continue;
+    const x = sxv(LX[i]), y = sy(i);
+    if (x < -R || x > w + R || y < -R || y > h + R) continue;
+    ctx.moveTo(x + R, y); ctx.arc(x, y, R, 0, 6.2832);
+  }
+  ctx.fill();
+
+  // rewind dots on the parent's bar — only where the branch actually
+  // rewound (forked before the parent's checkpoint vt).
+  ctx.beginPath(); ctx.fillStyle = css('--br');
+  for (let i = 0; i < LN; i++) {
+    const p = LDP[i]; if (p < 0) continue;
+    if (LSTART[i] >= LX[p]) continue;          // forked at the parent's checkpoint -> not a rewind
+    const x = sxv(LSTART[i]), y = sy(p);
+    if (x < -R || x > w + R || y < -R || y > h + R) continue;
+    ctx.moveTo(x + R, y); ctx.arc(x, y, R, 0, 6.2832);
+  }
+  ctx.fill();
+
+  if (selectedId != null && selectedId < corpus.length && LX[selectedId] !== undefined) {
+    const x = sxv(LX[selectedId]), y = sy(selectedId);
+    ctx.beginPath(); ctx.strokeStyle = css('--sel'); ctx.lineWidth = 2.5; ctx.arc(x, y, R + 3, 0, 6.2832); ctx.stroke();
+  }
+
+  drawAxis(w, h);
+}
+
+// ---- vt x-axis ------------------------------------------------------------
+function niceStep(scaleX) {            // ~90px between ticks, rounded to 1/2/5·10^k
+  const raw = 90 / scaleX, pow = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / pow;
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * pow;
+}
+function fmtSecs(t) {
+  const a = Math.abs(t);
+  return (a >= 100 ? t.toFixed(0) : a >= 1 ? (Math.round(t * 100) / 100) : (Math.round(t * 1000) / 1000)) + 's';
+}
+function drawAxis(w, h) {
+  const ay = h - AXIS_H;
+  ctx.fillStyle = css('--panel'); ctx.fillRect(0, ay, w, AXIS_H);
+  ctx.strokeStyle = css('--axis'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, ay + 0.5); ctx.lineTo(w, ay + 0.5); ctx.stroke();
+  if (!(scaleX > 0)) return;
+  const step = niceStep(scaleX);
+  if (!isFinite(step) || step <= 0) return;
+  const vtMin = (0 - panX) / scaleX, vtMax = (w - panX) / scaleX;
+  ctx.fillStyle = css('--muted'); ctx.strokeStyle = css('--axis'); ctx.font = '11px ui-monospace, monospace'; ctx.textBaseline = 'top';
+  ctx.beginPath();
+  for (let t = Math.ceil(vtMin / step) * step; t <= vtMax; t += step) {
+    const x = t * scaleX + panX;
+    ctx.moveTo(x + 0.5, ay); ctx.lineTo(x + 0.5, ay + 5);
+    ctx.fillText(fmtSecs(t), x + 3, ay + 6);
+  }
+  ctx.stroke();
+}
+
+function hitTest(cx, cy) {            // nearest checkpoint; returns corpus id
+  let best = null, bd = HIT * HIT;
+  for (let i = 0; i < LN; i++) {
+    if (!LCP[i]) continue;
+    const dx = (LX[i] * scaleX + panX) - cx, dy = (LY[i] * scaleY + panY) - cy, d = dx * dx + dy * dy;
+    if (d <= bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
+// ---- frame scheduling (coalesce live adds) -------------------------------
+let needLayout = false, queued = false;
+function schedule(layoutToo) {
+  if (layoutToo) needLayout = true;
+  if (queued) return; queued = true;
+  requestAnimationFrame(() => {
+    queued = false;
+    if (needLayout) { relayout(); needLayout = false; }
+    // Keep the whole graph in view while auto-fit is on: refit on first paint
+    // and whenever content (incl. growing live branches) would clip.
+    if (autoFit && (!haveFit || !fitsInView())) { fitView(); haveFit = true; }
+    draw();
+  });
+}
+
+// ---- pan / zoom / click ---------------------------------------------------
+let drag = null;
+cv.addEventListener('mousedown', e => { drag = { x: e.clientX, y: e.clientY, moved: 0 }; cv.classList.add('drag'); });
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+  drag.moved += Math.abs(dx) + Math.abs(dy);
+  if (drag.moved >= 4) autoFit = false;   // user took control of the view
+  panX += dx; panY += dy; draw();
+});
+window.addEventListener('mouseup', e => {
+  if (drag && drag.moved < 4) {
+    const r = cv.getBoundingClientRect(), i = hitTest(e.clientX - r.left, e.clientY - r.top);
+    if (i != null) { selectedId = i; draw(); showDetails(i); }
+  }
+  drag = null; cv.classList.remove('drag');
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  autoFit = false;   // user took control of the view
+  const r = cv.getBoundingClientRect(), cx = e.clientX - r.left, cy = e.clientY - r.top;
+  const wx = (cx - panX) / scaleX, wy = (cy - panY) / scaleY, f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  scaleX = Math.min(400, Math.max(0.02, scaleX * f));
+  scaleY = Math.min(60, Math.max(2, scaleY * f));
+  panX = cx - wx * scaleX; panY = cy - wy * scaleY; draw();
+}, { passive: false });
+// Double-click re-enables auto-fit and refits the whole graph.
+cv.addEventListener('dblclick', () => { autoFit = true; haveFit = false; schedule(false); });
+
+// ---- details / stats / solutions -----------------------------------------
+function kv(k, v) { return `<div class="kv">${k}: <b>${esc(v)}</b></div>`; }
+async function showDetails(i) {
+  const e = corpus[i];
+  let html = kv('corpus #', i) + kv('checkpoint', 'cp' + e.checkpoint) + kv('vt', e.time_secs.toFixed(3) + 's')
+    + kv('runtime', e.runtime_secs.toFixed(3) + 's') + kv('parent', e.parent ?? '—')
+    + kv('scheduled', e.scheduled) + kv('novelty', e.novelty);
+  try { const d = await getJSON('/corpus/' + i); if (d.serial.length) html += `<div class="serial">${ansiToHtml(d.serial.join('\n'))}</div>`; } catch (_) {}
+  $('detail').innerHTML = html;
+}
+
+// Duration as XhYmZs — minutes/seconds zero-padded once a larger unit shows.
+// 3725 -> "1h02m05s", 125 -> "2m05s", 45 -> "45s".
+function fmtDur(secs) {
+  const t = Math.max(0, Math.floor(secs)), h = (t / 3600) | 0, m = ((t % 3600) / 60) | 0, sec = t % 60;
+  const p = n => String(n).padStart(2, '0');
+  return h ? `${h}h${p(m)}m${p(sec)}s` : m ? `${m}m${p(sec)}s` : `${sec}s`;
+}
+
+function renderStats(s) {
+  $('stats').innerHTML = [['wall', fmtDur(s.wall_secs)], ['vt', fmtDur(s.vt_secs)],
+    ['vt/wall', s.vt_per_wall.toFixed(1) + 'x'], ['branches', s.branches], ['checkpoints', s.checkpoints],
+    ['corpus', s.corpus], ['adds', s.adds], ['solutions', s.solutions]]
+    .map(([k, v]) => `${k} <b>${v}</b>`).join('');
+  $('cov').innerHTML = (s.coverage || []).map(c => {
+    const pct = c.total ? 100 * c.seen / c.total : 0;
+    return `<div class="cov"><div>${esc(c.id)} <b>${c.seen}/${c.total}</b> (${pct.toFixed(1)}%)</div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join('');
+}
+
+function renderSolutions() {
+  $('solcount').textContent = solutions.length ? `(${solutions.length})` : '';
+  $('solutions').innerHTML = solutions.length
+    ? solutions.slice().reverse().map(s => `<div class="sol" data-id="${s.id}">#${s.id} <span class="r">${esc(s.reason)}</span></div>`).join('')
+    : '<span class="empty">none yet</span>';
+  for (const el of $('solutions').querySelectorAll('.sol')) el.addEventListener('click', () => showSolution(+el.dataset.id));
+}
+async function showSolution(id) {
+  try {
+    const s = await getJSON('/solutions/' + id);
+    selectedId = null; draw();
+    $('detail').innerHTML = kv('solution #', s.id) + kv('from corpus', s.parent ?? '—')
+      + `<div class="kv">reason: <b class="r" style="color:var(--sol)">${esc(s.reason)}</b></div>`
+      + (s.serial.length ? `<div class="serial">${ansiToHtml(s.serial.join('\n'))}</div>` : '');
+  } catch (_) {}
+}
+
+// ---- live stream ----------------------------------------------------------
+let resyncing = false;
+async function resync() {
+  if (resyncing) return; resyncing = true;
+  try { corpus = await getJSON('/corpus'); schedule(true); } catch (_) {}
+  resyncing = false;
+}
+function connect() {
+  const es = new EventSource(API + '/events');
+  es.addEventListener('open', () => { const s = $('status'); s.textContent = 'live'; s.className = 'live'; });
+  es.addEventListener('error', () => { const s = $('status'); s.textContent = 'disconnected — retrying…'; s.className = 'down'; });
+  es.addEventListener('stats', e => renderStats(JSON.parse(e.data)));
+  es.addEventListener('branches', e => { liveBranches = JSON.parse(e.data); schedule(true); });
+  es.addEventListener('corpus_add', e => {
+    const v = JSON.parse(e.data);
+    if (v.id === corpus.length) { corpus.push(v); schedule(true); }
+    else if (v.id > corpus.length) resync();   // missed some — resync
+  });
+  es.addEventListener('solution', e => { solutions.push(JSON.parse(e.data)); renderSolutions(); });
+}
+
+// ---- theme toggle ---------------------------------------------------------
+// Light is opt-in (data-theme="light" on <html>); a pre-paint script in <head>
+// applies the stored choice. The canvas caches resolved colors in cssCache and
+// reads them via css(), so flipping the theme must clear that cache and redraw
+// for the tree (dots, edges, axis) to recolor.
+(function () {
+  const btn = document.querySelector('[data-theme-toggle]');
+  const relabel = () => { if (btn) btn.textContent = document.documentElement.dataset.theme === 'light' ? 'DARK' : 'LIGHT'; };
+  relabel();
+  if (btn) btn.addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem('seed-theme', next); } catch (_) {}
+    relabel();
+    for (const k in cssCache) delete cssCache[k];   // drop cached canvas colors
+    draw();                                         // repaint tree in the new theme
+  });
+})();
+
+new ResizeObserver(resize).observe(wrap);
+(async function init() {
+  resize();
+  try { renderStats(await getJSON('/stats')); } catch (_) {}
+  try { corpus = await getJSON('/corpus'); schedule(true); } catch (_) {}
+  try { solutions = await getJSON('/solutions'); renderSolutions(); } catch (_) {}
+  connect();
+})();
+</script>
+</body>
+</html>

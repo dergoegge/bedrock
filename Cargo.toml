@@ -11,6 +11,7 @@ members = [
     "crates/bedrock-memory",
     "crates/bedrock-vm",
     "crates/bedrock-vmx",
+    "crates/flux",
 ]
 
 # Shared workspace settings
