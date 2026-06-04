@@ -145,7 +145,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         if excluded.is_empty() {
             String::new()
         } else {
-            format!(" (partition excludes: {})", excluded.iter().copied().collect::<Vec<_>>().join(","))
+            format!(
+                " (partition excludes: {})",
+                excluded.iter().copied().collect::<Vec<_>>().join(",")
+            )
         }
     );
 
@@ -399,13 +402,8 @@ fn worker(
         // into the next — the workload's clean baseline is the branch
         // point, not whatever state the previous iteration left.
         let first_at = discovery_cp.time() + max_spacing;
-        let source = RandomDriverSource::new(
-            iter_actions,
-            iter_seed,
-            num_calls,
-            first_at,
-            max_spacing,
-        );
+        let source =
+            RandomDriverSource::new(iter_actions, iter_seed, num_calls, first_at, max_spacing);
         let iter_wall_start = Instant::now();
         let mut branch = discovery_cp.branch_with_input_source(source)?;
         let bid = branch.id();
@@ -511,9 +509,11 @@ fn worker(
 
 #[derive(Parser, Debug)]
 #[command(name = "lab_random_drivers")]
-#[command(about = "Dumb fuzzer: branch from a baseline checkpoint, run a random-length \
+#[command(
+    about = "Dumb fuzzer: branch from a baseline checkpoint, run a random-length \
                    sequence of random driver / fault-injector inputs, check container \
-                   liveness, repeat with a fresh seed.")]
+                   liveness, repeat with a fresh seed."
+)]
 struct Args {
     /// Path to the vmlinux ELF image.
     vmlinux: String,
@@ -642,7 +642,8 @@ fn parse_u64_hex_or_dec(s: &str) -> Result<u64, String> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16).map_err(|e| format!("bad hex u64: {e}"))
     } else {
-        s.parse::<u64>().map_err(|e| format!("bad decimal u64: {e}"))
+        s.parse::<u64>()
+            .map_err(|e| format!("bad decimal u64: {e}"))
     }
 }
 
@@ -729,9 +730,7 @@ impl InputSource for RandomDriverSource {
         let action = eligible[pick];
 
         let (target, command) = match action {
-            DriverAction::Container(d) => {
-                (BashTarget::container(&d.container), d.driver.clone())
-            }
+            DriverAction::Container(d) => (BashTarget::container(&d.container), d.driver.clone()),
             DriverAction::FaultPartition(c) => {
                 self.fault_active = true;
                 (BashTarget::Host, format!("fault-injector partition {c}"))

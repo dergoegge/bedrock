@@ -91,10 +91,7 @@ impl Tree {
         for cp in &self.checkpoints {
             nodes.insert(cp.id(), cp);
             match cp.closest_live_ancestor() {
-                Some(parent) => children
-                    .entry(parent.id())
-                    .or_default()
-                    .push(cp.id()),
+                Some(parent) => children.entry(parent.id()).or_default().push(cp.id()),
                 None => roots.push(cp.id()),
             }
         }
