@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let reason = if out.crashed {
                     Some("guest yielded on unexpected exit".to_string())
                 } else {
-                    flux::serial_crash_reason(&out.serial)
+                    flux::assertion_failure_reason(&out.serial)
                 };
                 match reason {
                     Some(r) => ui::solution(&format!("REPRODUCED \u{2713} — {r}")),

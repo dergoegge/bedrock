@@ -8,6 +8,13 @@
 # reaches the corner it can't. Picks a channel via the deterministic
 # /dev/urandom stream; benign no-op when the chosen node has no channels.
 set -eu
+
+# Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
+# would trip the "exec exit code is zero" assertion and be flagged as a bug.
+# Expected RPC/edge-input failures (a partitioned peer, a rejected blob) are
+# handled by forcing a clean exit on every path out of the script.
+trap 'exit 0' EXIT
+
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 

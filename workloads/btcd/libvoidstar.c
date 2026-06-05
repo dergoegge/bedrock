@@ -15,14 +15,26 @@
 // classifying the raw counts into AFL-style hitcount buckets to drive
 // coverage-guided fuzzing.
 //
+// The map is backed by a named file on a persistent tmpfs (COVERAGE_DIR, a
+// host-namespace mount bind-mounted into every container) rather than anonymous
+// memory, so its physical pages are owned by the file's inode — not this
+// process. When the instrumented process dies (cleanly or by a crash), and even
+// when its container is torn down, the pages survive. The hypervisor captured
+// their guest-physical addresses at registration and keeps reading them, so it
+// sees a valid, frozen bitmap instead of memory the guest has freed and reused
+// (which reads back as a flood of bogus "new" coverage edges).
+//
 // The three fuzz_* entrypoints are part of the SDK ABI (the loader panics if
 // any symbol is missing) but only matter for Antithesis' own
 // assertion/randomness fuzzing, which bedrock does not use. They are stubs.
 
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 // HYPERCALL_REGISTER_FEEDBACK_BUFFER, from crates/bedrock-vmx/src/hypercalls.rs.
 #define HYPERCALL_REGISTER_FEEDBACK_BUFFER 2
@@ -37,6 +49,12 @@
 // thousand, so aliasing should never bite in practice).
 #define PAGE_SIZE 4096UL
 #define MAX_COVERAGE_BYTES (256UL * PAGE_SIZE)
+
+// Persistent tmpfs directory (a host-namespace mount bind-mounted into every
+// container; see nix/podman-initrd.nix) where each instrumented process keeps
+// its coverage bitmap as a named file, so the pages outlive the process and the
+// container. See the file header for why.
+#define COVERAGE_DIR "/bedrock/coverage"
 
 static uint8_t *coverage_buffer = NULL;
 static size_t coverage_size = 0;
@@ -61,6 +79,64 @@ static unsigned long bedrock_register_feedback_buffer(const void *buf,
     return rax;
 }
 
+// Append `n` bytes of `src` into `path` at `*p`, mapping anything outside a
+// safe filename charset to '_', bounded by `cap`.
+static void append_sanitized(char *path, size_t *p, size_t cap, const char *src,
+                             size_t n) {
+    for (size_t i = 0; i < n && *p < cap - 1; i++) {
+        char c = src[i];
+        int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                 (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+        path[(*p)++] = ok ? c : '_';
+    }
+}
+
+// Map the coverage buffer onto a persistent tmpfs file (MAP_SHARED), so its
+// pages survive this process and its container (see the file header). The file
+// name is the buffer id plus the container hostname — both deterministic under
+// bedrock and distinct per container — so each instrumented process gets its
+// own stable file. Falls back to an anonymous mapping if the tmpfs path is
+// unavailable (e.g. the dir isn't mounted), preserving coverage at the cost of
+// the survive-death property.
+static void *map_coverage_buffer(size_t size, const char *id, size_t id_len) {
+    char host[64];
+    if (gethostname(host, sizeof(host)) != 0) {
+        host[0] = '\0';
+    }
+    host[sizeof(host) - 1] = '\0';
+
+    char path[256];
+    int n = snprintf(path, sizeof(path), "%s/", COVERAGE_DIR);
+    if (n > 0 && (size_t)n < sizeof(path)) {
+        size_t p = (size_t)n;
+        append_sanitized(path, &p, sizeof(path), id, id_len);
+        if (p < sizeof(path) - 1) {
+            path[p++] = '-';
+        }
+        append_sanitized(path, &p, sizeof(path), host, strlen(host));
+        path[p] = '\0';
+
+        int fd = open(path, O_CREAT | O_RDWR, 0600);
+        if (fd >= 0) {
+            int truncated = ftruncate(fd, (off_t)size) == 0;
+            if (truncated) {
+                void *buf =
+                    mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                close(fd);
+                if (buf != MAP_FAILED) {
+                    return buf;
+                }
+            } else {
+                close(fd);
+            }
+        }
+    }
+
+    void *buf = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return buf == MAP_FAILED ? NULL : buf;
+}
+
 // Called once at program start by the generated notifier's init(). num_edges
 // is the instrumentor's edge count; symbols is the symbol-table name, which we
 // reuse verbatim as the feedback-buffer id so delorean can key coverage on it.
@@ -77,9 +153,13 @@ uint64_t init_coverage_module(size_t num_edges, const char *symbols) {
         size = MAX_COVERAGE_BYTES;
     }
 
-    void *buf = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (buf == MAP_FAILED) {
+    size_t id_len = symbols ? strlen(symbols) : 0;
+    if (id_len > FEEDBACK_BUFFER_ID_MAX_LEN) {
+        id_len = FEEDBACK_BUFFER_ID_MAX_LEN;
+    }
+
+    void *buf = map_coverage_buffer(size, symbols ? symbols : "", id_len);
+    if (buf == NULL) {
         return 0;
     }
     memset(buf, 0, size);
@@ -87,10 +167,6 @@ uint64_t init_coverage_module(size_t num_edges, const char *symbols) {
     coverage_buffer = (uint8_t *)buf;
     coverage_size = size;
 
-    size_t id_len = symbols ? strlen(symbols) : 0;
-    if (id_len > FEEDBACK_BUFFER_ID_MAX_LEN) {
-        id_len = FEEDBACK_BUFFER_ID_MAX_LEN;
-    }
     if (id_len > 0) {
         bedrock_register_feedback_buffer(coverage_buffer, coverage_size,
                                          symbols, id_len);

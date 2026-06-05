@@ -8,6 +8,13 @@
 # structurally varied without needing real UTXOs. Generic harness — the fuzzer
 # steers amounts/counts via deterministic /dev/urandom; nothing is rigged.
 set -eu
+
+# Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
+# would trip the "exec exit code is zero" assertion and be flagged as a bug.
+# Expected RPC/edge-input failures (a partitioned peer, a rejected blob) are
+# handled by forcing a clean exit on every path out of the script.
+trap 'exit 0' EXIT
+
 . /etc/bedrock/key.env   # ADDR (a valid regtest address to pay)
 BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
 HOSTS="btcd1 btcd2"

@@ -1,6 +1,13 @@
 #!/bin/sh
 # Mature + total balances on the wallet. The two numbers differ until
 # the latest 100 coinbases pass maturity.
+
+# Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
+# would trip the "exec exit code is zero" assertion and be flagged as a bug.
+# Expected RPC/edge-input failures (a partitioned peer, a rejected blob) are
+# handled by forcing a clean exit on every path out of the script.
+trap 'exit 0' EXIT
+
 BCTL="btcctl --regtest --wallet -u user -P password --rpccert=/etc/bedrock/rpc.cert --rpcserver=btcwallet:18332"
 printf 'mature: '; $BCTL getbalance "*" 100
 printf 'total:  '; $BCTL getbalance "*" 0

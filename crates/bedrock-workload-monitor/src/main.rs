@@ -1,22 +1,21 @@
 //! Bedrock workload monitor.
 //!
 //! A long-lived service that runs in the guest's host namespace (outside the
-//! workload containers) and streams container lifecycle events from podman.
-//! Started once at guest boot, it spawns `podman events --format json` and
-//! tails the stream, printing each newline-delimited JSON event as it arrives.
+//! workload containers). Started once at guest boot, it spawns
+//! `podman events --format json` and tails the stream to derive assertions
+//! about the workloads. It writes nothing to stdout.
 //!
-//! On top of surfacing the raw stream, it documents an invariant about the
-//! workloads: whenever a container dies, its exit code should always be greater
-//! than zero (a clean exit means the workload stopped on its own, which we don't
-//! expect under test). Each death appends an [`Assertion`] recording the
-//! observed exit code — serialized as one line of JSON — to the sink at
+//! The invariant it documents: whenever a container's main process or one of
+//! its `podman exec` sessions dies, the exit code should always be zero (a
+//! clean exit). Each such death appends an [`Assertion`] recording the observed
+//! exit code — serialized as one line of JSON — to the sink at
 //! [`ASSERTIONS_PATH`], where a downstream collector can aggregate the results.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
-use bedrock_assertions::always_gt;
+use bedrock_assertions::always_eq;
 use serde::Deserialize;
 
 /// Default assertion sink: an append-only JSONL file, one assertion per line.
@@ -32,20 +31,39 @@ const ASSERTIONS_PATH: &str = "/bedrock/assertions.jsonl";
 struct Event {
     #[serde(rename = "Type")]
     type_: Option<String>,
-    /// The event action, e.g. `"died"`, `"start"`, `"create"`.
+    /// The event action, e.g. `"died"`, `"exec_died"`, `"start"`.
     #[serde(rename = "Status")]
     status: Option<String>,
-    /// Process exit code, populated by podman on `"died"` container events.
+    /// Process exit code. podman populates it on `"died"` (the container's main
+    /// process) and `"exec_died"` (a `podman exec` session).
     #[serde(rename = "ContainerExitCode")]
     exit_code: Option<i64>,
+    /// Container name — the container itself, or the one an exec ran in.
+    #[serde(rename = "Name")]
+    name: Option<String>,
 }
 
+/// Assertion message for a `podman exec` session dying.
+const EXEC_DEATH_MSG: &str = "exec exit code is zero";
+
 impl Event {
-    /// The exit code if this record is a container-death event, else `None`.
-    fn container_death_exit_code(&self) -> Option<i64> {
-        let is_container_death =
-            self.type_.as_deref() == Some("container") && self.status.as_deref() == Some("died");
-        is_container_death.then(|| self.exit_code.unwrap_or(0))
+    /// For a container- or exec-death event we assert on, the exit code paired
+    /// with the assertion message; else `None`. The container-death message
+    /// names the container. Both `"died"` and `"exec_died"` carry
+    /// `ContainerExitCode`; a missing code is treated as a clean `0` exit.
+    fn death(&self) -> Option<(i64, String)> {
+        if self.type_.as_deref() != Some("container") {
+            return None;
+        }
+        let exit_code = self.exit_code.unwrap_or(0);
+        match self.status.as_deref() {
+            Some("died") => {
+                let name = self.name.as_deref().unwrap_or("<unknown>");
+                Some((exit_code, format!("container {name} exit code is zero")))
+            }
+            Some("exec_died") => Some((exit_code, EXEC_DEATH_MSG.to_string())),
+            _ => None,
+        }
     }
 }
 
@@ -59,8 +77,9 @@ fn main() {
 fn run() -> Result<(), String> {
     // Open the shared assertion sink up front. Append mode + whole-line writes
     // keep concurrent writers (this monitor plus the containers that mount the
-    // same file) from interleaving. A failure here is non-fatal: we still want
-    // the event stream below, we just can't record assertions.
+    // same file) from interleaving. A failure here is non-fatal: we keep
+    // draining the event stream (so podman doesn't block on a full pipe), we
+    // just can't record assertions.
     let path = std::env::var("BEDROCK_ASSERTIONS_PATH").unwrap_or_else(|_| ASSERTIONS_PATH.into());
     let mut sink = match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(file) => Some(file),
@@ -70,10 +89,10 @@ fn run() -> Result<(), String> {
         }
     };
 
-    // Stream events as they happen. `--stream` keeps the process attached and
+    // Read events as they happen. `--stream` keeps the process attached and
     // emitting; without a `--filter` we receive every event podman reports.
     // `--format json` emits one self-contained JSON object per line (newline-
-    // delimited), so each line we print is a complete, parseable record.
+    // delimited), so each line parses on its own.
     let mut child = Command::new("podman")
         .args(["events", "--stream", "--format", "json"])
         .stdout(Stdio::piped())
@@ -87,13 +106,11 @@ fn run() -> Result<(), String> {
 
     for line in BufReader::new(stdout).lines() {
         let line = line.map_err(|e| format!("reading podman events: {e}"))?;
-        println!("{line}");
 
-        // Best-effort: a line we can't parse is still surfaced above, we just
-        // can't assert on it.
+        // Best-effort: a line we can't parse is simply skipped.
         if let Ok(event) = serde_json::from_str::<Event>(&line) {
-            if let Some(exit_code) = event.container_death_exit_code() {
-                record_exit_code_assertion(sink.as_mut(), exit_code);
+            if let Some((exit_code, message)) = event.death() {
+                record_exit_code_assertion(sink.as_mut(), exit_code, &message);
             }
         }
     }
@@ -104,12 +121,14 @@ fn run() -> Result<(), String> {
     Err(format!("podman events exited: {status}"))
 }
 
-/// Record the "container exit code is always > 0" invariant for an observed
-/// death by appending one line of serialized JSON to the assertion sink.
-fn record_exit_code_assertion(sink: Option<&mut File>, exit_code: i64) {
+/// Record the "exit code is always == 0" invariant for an observed container-
+/// or exec-death by appending one line of serialized JSON to the assertion
+/// sink. `message` distinguishes the two kinds: the container-death message
+/// names the container; the exec-death one is [`EXEC_DEATH_MSG`].
+fn record_exit_code_assertion(sink: Option<&mut File>, exit_code: i64, message: &str) {
     let Some(file) = sink else { return };
 
-    let assertion = always_gt!(exit_code, 0);
+    let assertion = always_eq!(exit_code, 0, message);
     let mut line = match serde_json::to_string(&assertion) {
         Ok(json) => json,
         Err(e) => {

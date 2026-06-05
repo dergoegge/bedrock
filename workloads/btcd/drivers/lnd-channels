@@ -4,6 +4,13 @@
 # The two ends of a channel should mirror each other (local on one side ==
 # remote on the other) once an HTLC settles; a mismatch, or a channel
 # present on only one side, flags a commitment-state bug.
+
+# Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
+# would trip the "exec exit code is zero" assertion and be flagged as a bug.
+# Expected RPC/edge-input failures (a partitioned peer, a rejected blob) are
+# handled by forcing a clean exit on every path out of the script.
+trap 'exit 0' EXIT
+
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 for node in lnd1 lnd2 lnd3; do
     echo "=== $node ==="

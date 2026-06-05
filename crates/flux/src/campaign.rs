@@ -20,11 +20,12 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use bedrock_assertions::Assertion;
 use bedrock_lab::{
     Branch, Checkpoint, CheckpointId, InputRecording, LabError, RunOutcome, VirtDuration, VirtTime,
 };
 
-use crate::corpus::{deep_pick, weighted_pick, ActiveBranch, Node, Solution};
+use crate::corpus::{weighted_pick, ActiveBranch, Node, Solution};
 use crate::coverage::{read_coverage, Coverage, RunBitmap};
 use crate::input::{Input, IoAction, Reproduction, Target};
 use crate::mutate::{drift_subset, random_subset, Action, MutationResult, Mutators, SwarmMode};
@@ -33,28 +34,14 @@ use crate::shape::strip_ansi;
 use crate::sink::Sink;
 use crate::views::*;
 
-/// Serial marker that flags a branch as a bug: a workload container reported
-/// dead (e.g. a `podman events` "container died" line). Matched case-sensitively
-/// as a substring against ANSI-stripped serial.
-const CONTAINER_DIED_MARKER: &str = "container died";
-
-/// Serial markers that flag a workload-process crash. A Go `fatal error:`
-/// (concurrent map access, deadlock detector, stack overflow, out-of-memory) is
-/// raised by the runtime and is **not** recoverable — unlike a `panic:`, which
-/// btcd's net/http RPC server catches per-request — so its presence means a
-/// daemon is going down regardless of any in-process recovery. These never
-/// appear in normal operation, so matching them is low-false-positive and fires
-/// at crash time (more immediate than waiting for the deferred `container died`
-/// event). Matched case-sensitively as substrings against ANSI-stripped serial.
-const CRASH_MARKERS: &[&str] = &["fatal error:", "[signal SIGSEGV", "runtime: out of memory"];
 
 /// Per-subscriber SSE queue depth. Bounded so a stuck client can't grow memory
 /// without limit; events overflow (drop) for that client only.
 const SSE_CHANNEL_CAP: usize = 1024;
 
-/// Breadth-worker mutation mix (percent): splice grafts another entry's action
-/// sequence onto this one; extend appends forward to deepen; the remainder is
-/// full havoc. Deep-seeking workers always extend regardless.
+/// Worker mutation mix (percent): splice grafts another entry's action sequence
+/// onto this one; extend appends a forward burst to build longer sequences; the
+/// remainder is full havoc.
 const SPLICE_PCT: usize = 20;
 const EXTEND_PCT: usize = 40;
 
@@ -105,12 +92,11 @@ pub struct Campaign {
     intermediates: Mutex<HashMap<CheckpointId, Checkpoint>>,
     coverage: Mutex<Coverage>,
     solutions: Mutex<Vec<Solution>>,
-    /// Coarse signatures (volatile fields stripped) of crashes already reported
-    /// as findings. A recurrence with a seen signature is counted but not
-    /// re-saved, so the same bug doesn't flood the repro dir. Replaces the old
-    /// coverage-novelty dedup, which a crashing run's restart-polluted feedback
-    /// buffer made unreliable (every recurrence looked "novel").
-    seen_crashes: Mutex<HashSet<String>>,
+    /// Reasons (a failed `Always` assertion's message, or the unexpected-exit
+    /// string) already reported as findings. A recurrence with a seen reason is
+    /// counted but not re-printed or re-saved, so the same bug doesn't flood the
+    /// log or repro dir. Its length is the unique-bug count shown on heartbeat.
+    seen_reasons: Mutex<HashSet<String>>,
     active: Mutex<HashMap<u64, ActiveBranch>>,
     stats: Mutex<Stats>,
     subscribers: Mutex<Vec<SyncSender<Vec<u8>>>>,
@@ -119,9 +105,6 @@ pub struct Campaign {
     /// Any live checkpoint; used to reach `tree()` for printing + the
     /// checkpoint count. `tree()` always returns the whole graph.
     tree_anchor: Checkpoint,
-    /// Virtual seconds of the corpus root, subtracted from a node's checkpoint
-    /// time to get its `depth_secs`.
-    root_secs: f64,
     cfg: Config,
     /// Cooperative shutdown flag, set on the first solution (when
     /// `quit_on_solution`) or by the bench timer.
@@ -133,14 +116,6 @@ pub struct Campaign {
     /// Wall-clock instant of the last corpus find (or run start). Feeds the
     /// spinner's "time since last find".
     last_add: Mutex<Instant>,
-    /// Deepest virtual-time frontier any branch has reached (seconds past the
-    /// root), stored as `f64` bits. Coverage novelty saturates near the root,
-    /// so without this the corpus never deepens — every entry is a one-window
-    /// branch off the seed. Retaining a checkpoint that advances this frontier
-    /// (even with no new edges) grows a deep "spine" of long coherent action
-    /// sequences, the only way to reach state-machine corners (mature CSV,
-    /// post-sweep contract resolution) where the real bugs live.
-    max_depth_secs: AtomicU64,
 }
 
 impl Campaign {
@@ -153,7 +128,6 @@ impl Campaign {
         sink: Arc<Sink>,
         cfg: Config,
     ) -> Arc<Self> {
-        let root_secs = seed_cp.time().as_secs_f64();
         // Bench mode accumulates bugs over the whole window, so never
         // short-circuit on the first one regardless of the flag.
         let quit_on_solution = cfg.quit_on_solution && cfg.bench_duration.is_none();
@@ -166,20 +140,18 @@ impl Campaign {
             intermediates: Mutex::new(HashMap::new()),
             coverage: Mutex::new(Coverage::default()),
             solutions: Mutex::new(Vec::new()),
-            seen_crashes: Mutex::new(HashSet::new()),
+            seen_reasons: Mutex::new(HashSet::new()),
             active: Mutex::new(HashMap::new()),
             stats: Mutex::new(Stats::default()),
             subscribers: Mutex::new(Vec::new()),
             start: OnceLock::new(),
             sink,
             tree_anchor,
-            root_secs,
             cfg,
             stop: AtomicBool::new(false),
             quit_on_solution,
             branches_since_add: AtomicU64::new(0),
             last_add: Mutex::new(Instant::now()),
-            max_depth_secs: AtomicU64::new(0.0f64.to_bits()),
         })
     }
 
@@ -247,36 +219,17 @@ impl Campaign {
             self.cfg.swarm,
         );
 
-        // A thin slice of the longest-window fleet (≈1/8) are depth-seeking
-        // workers: they always pick the deepest frontier tip and extend it
-        // forward, with a dry-cap of 1, to keep a spine alive so multi-step
-        // sequences stay reachable. Kept thin on purpose — at 1/3 the fleet
-        // tunneled onto a handful of barren deepest nodes (~80–96% of all
-        // effort) and starved the shallow, diverse exploration where many bugs
-        // actually sit. The rest run the breadth-first balanced scheduler, which
-        // already has a modest depth pull, so sequences still build.
-        let n_workers = self.cfg.run_fors.len();
-        let deep_mode = n_workers > 4 && tid >= n_workers - (n_workers / 8).max(1);
-        let max_dry = if deep_mode {
-            1
-        } else {
-            self.cfg.max_dry_rounds.max(1)
-        };
+        let max_dry = self.cfg.max_dry_rounds.max(1);
 
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 break;
             }
 
-            // 1. Pick one entry: depth workers chase the frontier tip; the rest
-            //    use the breadth-first fertility/underexplored weighting.
+            // 1. Pick one entry by the fertility/rarity/underexplored weighting.
             let (parent_idx, base_input, cp, parent_swarm) = {
                 let mut corpus = self.corpus.lock().unwrap();
-                let idx = if deep_mode {
-                    deep_pick(&corpus, &mut rng)
-                } else {
-                    weighted_pick(&corpus, &mut rng)
-                };
+                let idx = weighted_pick(&corpus, &mut rng);
                 corpus[idx].scheduled += 1;
                 (
                     idx,
@@ -301,36 +254,31 @@ impl Campaign {
                 dry += 1;
 
                 // Mutate; retry until at least one sub-mutation applies (the
-                // seed's empty input only accepts an insert/splice). Deep-seeking
-                // workers always extend forward to grow the spine. Breadth
-                // workers mix per attempt: splice (graft another entry's action
-                // sequence — combines building blocks a single mutation can't),
-                // extend (append forward to deepen), or full havoc (rewrite /
-                // retime / re-arg, may rewind for breadth).
+                // seed's empty input only accepts an insert/splice). Mix per
+                // attempt: splice (graft another entry's action sequence —
+                // combines building blocks a single mutation can't), extend
+                // (append a forward burst to build longer sequences), or full
+                // havoc (rewrite / retime / re-arg, may rewind for breadth).
                 let mut input = base_input.clone();
                 input.mutated_at = None;
                 let mut mutated = false;
                 for _ in 0..8 {
-                    let r = if deep_mode {
-                        mutators.extend_forward(&mut rng, &mut input, lineage.as_deref())
-                    } else {
-                        match rng.below(100) {
-                            k if k < SPLICE_PCT => {
-                                let donor = {
-                                    let corpus = self.corpus.lock().unwrap();
-                                    if corpus.len() < 2 {
-                                        Vec::new()
-                                    } else {
-                                        corpus[weighted_pick(&corpus, &mut rng)].input.io.clone()
-                                    }
-                                };
-                                mutators.splice(&mut rng, &mut input, &donor)
-                            }
-                            k if k < SPLICE_PCT + EXTEND_PCT => {
-                                mutators.extend_forward(&mut rng, &mut input, lineage.as_deref())
-                            }
-                            _ => mutators.havoc(&mut rng, &mut input, lineage.as_deref()),
+                    let r = match rng.below(100) {
+                        k if k < SPLICE_PCT => {
+                            let donor = {
+                                let corpus = self.corpus.lock().unwrap();
+                                if corpus.len() < 2 {
+                                    Vec::new()
+                                } else {
+                                    corpus[weighted_pick(&corpus, &mut rng)].input.io.clone()
+                                }
+                            };
+                            mutators.splice(&mut rng, &mut input, &donor)
                         }
+                        k if k < SPLICE_PCT + EXTEND_PCT => {
+                            mutators.extend_forward(&mut rng, &mut input, lineage.as_deref())
+                        }
+                        _ => mutators.havoc(&mut rng, &mut input, lineage.as_deref()),
                     };
                     if r == MutationResult::Mutated {
                         mutated = true;
@@ -385,13 +333,9 @@ impl Campaign {
                 let new_edges = self.coverage.lock().unwrap().merge_bitmap(&res.coverage);
                 let novel = new_edges > 0;
 
-                // 7. Append to the shared corpus when the branch is novel OR it
-                //    pushed the virtual-time frontier deeper — the latter grows
-                //    a deep spine of long action sequences even where coverage
-                //    has saturated, so workers can keep building on it.
-                let depth = (res.new_cp.time().as_secs_f64() - self.root_secs).max(0.0);
-                let depth_frontier = self.try_advance_depth(depth);
-                if novel || depth_frontier {
+                // 7. Append to the shared corpus when the branch covered new
+                //    edges.
+                if novel {
                     dry = 0;
                     self.add_node(
                         parent_idx,
@@ -412,66 +356,26 @@ impl Campaign {
         }
     }
 
-    /// Try to claim `depth` (virtual seconds past root) as a new frontier.
-    /// Returns `true` iff it advanced the global max by at least `DELTA` —
-    /// the caller then retains the checkpoint even without coverage novelty,
-    /// extending the deep spine. `DELTA` keeps short-window workers (whose
-    /// branches barely move the frontier) from spamming near-duplicate nodes,
-    /// while letting each genuine forward step persist.
-    fn try_advance_depth(&self, depth: f64) -> bool {
-        const DELTA: f64 = 20.0;
-        // Cap the retained spine: past this depth, deep workers keep running
-        // long sequences (and checking for solutions) but stop adding new
-        // checkpoints, so memory plateaus instead of growing without bound.
-        // ~30 min of guest time past the root is far enough for multiple
-        // force-close → CSV-maturation → sweep cycles.
-        const MAX_DEPTH: f64 = 1800.0;
-        if depth > MAX_DEPTH {
-            return false;
-        }
-        loop {
-            let cur = f64::from_bits(self.max_depth_secs.load(Ordering::Relaxed));
-            if depth < cur + DELTA {
-                return false;
-            }
-            if self
-                .max_depth_secs
-                .compare_exchange_weak(
-                    cur.to_bits(),
-                    depth.to_bits(),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                return true;
-            }
-        }
-    }
-
-    /// Why this run is a bug, if it is: an unexpected guest exit, a serial line
-    /// reporting a dead container, or an unrecoverable Go runtime crash.
+    /// Why this run is a bug, if it is: an unexpected guest exit, or a failed
+    /// `Always` assertion reported on the guest serial (see
+    /// [`assertion_failure_reason`]).
     fn detect_solution(&self, res: &RunResult) -> Option<String> {
         if res.crashed {
             return Some("guest yielded on unexpected exit".to_string());
         }
-        serial_crash_reason(&res.serial)
+        assertion_failure_reason(&res.serial)
     }
 
     /// Record a solution. A solution is a distinct **finding** the first time
-    /// its [`crash_signature`] is seen; later recurrences of the same signature
-    /// are just counted. Only findings get the full treatment — serial retained,
-    /// printed, and a reproducer written — so keep-fuzzing runs don't flood the
-    /// repro dir or memory with duplicates of the same bug. Signature dedup
-    /// replaces the old coverage-novelty test, which a crash's restart-polluted
-    /// feedback buffer defeated (every recurrence looked novel).
+    /// its `reason` is seen; later recurrences of the same reason are just
+    /// counted. For a failed `Always` assertion the reason is its message, so
+    /// findings are keyed by message — the same violated invariant dedups to one
+    /// finding regardless of which branch/run hit it. Only findings get the full
+    /// treatment — serial retained, printed, and a reproducer written — so
+    /// keep-fuzzing runs don't flood the repro dir or memory with duplicates.
     fn report_solution(&self, parent_idx: usize, res: &RunResult, reason: String) {
         let serial_lines = res.serial.len();
-        let is_finding = self
-            .seen_crashes
-            .lock()
-            .unwrap()
-            .insert(crash_signature(&reason));
+        let is_finding = self.seen_reasons.lock().unwrap().insert(reason.clone());
         let id = {
             let mut sols = self.solutions.lock().unwrap();
             let id = sols.len();
@@ -489,9 +393,8 @@ impl Campaign {
             id
         };
         if !is_finding {
-            crate::ui::info(&format!(
-                "solution #{id} — recurring crash (known signature); reproducer not saved"
-            ));
+            // Recurrence of a known reason: counted in the heartbeat total, but
+            // not printed or re-saved.
             return;
         }
         crate::ui::solution(&format!(
@@ -553,7 +456,7 @@ impl Campaign {
         match replay(&seed_cp, &repro, &self.sink) {
             Some(out) => {
                 let _ = std::fs::write(format!("{base}.serial.log"), out.serial.join("\n"));
-                let reproduced = out.crashed || serial_crash_reason(&out.serial).is_some();
+                let reproduced = out.crashed || assertion_failure_reason(&out.serial).is_some();
                 crate::ui::good(&format!(
                     "saved reproduction {base}.json + .serial.log — replay {}",
                     if reproduced {
@@ -595,7 +498,6 @@ impl Campaign {
         } else {
             res.vt as f64 / self.cfg.frequency as f64
         };
-        let depth_secs = (res.new_cp.time().as_secs_f64() - self.root_secs).max(0.0);
         let serial_lines = res.serial.len();
         let time_secs = res.new_cp.time().as_secs_f64();
         let checkpoint = res.new_cp.id().as_u64();
@@ -625,7 +527,6 @@ impl Campaign {
             effort: 0.0,
             novelty: 0,
             runtime_secs,
-            depth_secs,
             in_flight: 0,
             swarm: child_swarm,
             rarity,
@@ -641,20 +542,10 @@ impl Campaign {
             }
             new_id
         };
-        // Concise progress signal: one line per novel find, with what made it
-        // novel (new edges, or a deeper virtual-time frontier) and where it
-        // came from.
-        let mut what = Vec::new();
-        if new_edges > 0 {
-            what.push(format!("+{new_edges} edges"));
-        }
-        if what.is_empty() {
-            // Retained for advancing the virtual-time frontier, not coverage.
-            what.push(format!("frontier {depth_secs:.0}s deep"));
-        }
+        // Concise progress signal: one line per novel find, with how many new
+        // edges it covered and where it came from.
         crate::ui::good(&format!(
-            "corpus #{new_id} ({}) · {time_secs:.1}s vt · from #{parent_idx}",
-            what.join(" ")
+            "corpus #{new_id} (+{new_edges} edges) · {time_secs:.1}s vt · from #{parent_idx}"
         ));
         self.publish(
             "corpus_add",
@@ -757,9 +648,9 @@ impl Campaign {
         while self.sleep_unless_stopped(Duration::from_secs(15)) {
             let view = self.stats_view();
             crate::ui::heartbeat(&format!(
-                "wall {:.0}s · vt {:.0}s ({:.1}x) · {} branches · {} corpus (+{}) · {} checkpoints · {} bugs",
+                "wall {:.0}s · vt {:.0}s ({:.1}x) · {} branches · {} corpus (+{}) · {} checkpoints · {} bug ({} unique)",
                 view.wall_secs, view.vt_secs, view.vt_per_wall, view.branches,
-                view.corpus, view.adds, view.checkpoints, view.solutions,
+                view.corpus, view.adds, view.checkpoints, view.solutions, view.unique_solutions,
             ));
             let edges: usize = view.coverage.iter().map(|c| c.seen).sum();
             let total: usize = view.coverage.iter().map(|c| c.total).sum();
@@ -841,6 +732,7 @@ impl Campaign {
             vt_instr as f64 / self.cfg.frequency as f64
         };
         let vt_per_wall = if wall > 0.0 { vt / wall } else { 0.0 };
+        let unique_solutions = self.seen_reasons.lock().unwrap().len() as u64;
         let corpus = self.corpus.lock().unwrap().len();
         let checkpoints = self.tree_anchor.tree().checkpoints().len();
         let coverage = {
@@ -859,6 +751,7 @@ impl Campaign {
             corpus,
             adds,
             solutions,
+            unique_solutions,
             coverage,
         }
     }
@@ -1071,45 +964,30 @@ fn pump_branch(
     }
 }
 
-/// Inspect captured serial for a crash signature: a dead workload container or
-/// an unrecoverable Go runtime crash. Shared by the live objective check and
-/// `--reproduce`. Matched case-sensitively against ANSI-stripped lines.
-pub fn serial_crash_reason(serial: &[String]) -> Option<String> {
-    serial.iter().find_map(|line| {
-        let stripped = strip_ansi(line);
-        if stripped.contains(CONTAINER_DIED_MARKER) {
-            return Some(format!("serial reported: {}", stripped.trim()));
-        }
-        CRASH_MARKERS
-            .iter()
-            .find(|m| stripped.contains(**m))
-            .map(|m| format!("workload crash ({m}): {}", stripped.trim()))
-    })
+/// Inspect captured serial for the one bug signal flux acts on: a failed
+/// `Always` assertion. Each assertion is emitted on a serial line rendered
+/// `[assertions] | {json}`; this returns the message of the first `Always`
+/// record whose `result` is false. `Sometimes` records and passing
+/// (`result: true`) records are ignored. The message is used verbatim as the
+/// solution reason, so findings dedup by message. Shared by the live objective
+/// check and `--reproduce`.
+pub fn assertion_failure_reason(serial: &[String]) -> Option<String> {
+    serial.iter().find_map(|line| failed_always_message(line))
 }
 
-/// Collapse a crash `reason` to a coarse signature that ignores its volatile
-/// fields — branch id, virtual time, podman timestamp, container hash, and the
-/// specific node name (`lnd1`/`lnd2`/`lnd3`) — so recurrences of one bug dedup
-/// to a single finding. A dead container keys on its `image=` (every lnd node
-/// shares one image, so all three collapse together, while btcd stays
-/// distinct); a Go runtime crash keys on the matched marker. Anything else
-/// falls back to the whole reason.
-fn crash_signature(reason: &str) -> String {
-    if reason.contains(CONTAINER_DIED_MARKER) {
-        if let Some(i) = reason.find("image=") {
-            let image = reason[i + "image=".len()..]
-                .split([',', ')', ' '])
-                .next()
-                .unwrap_or("")
-                .trim();
-            return format!("container-died:{image}");
-        }
-        return "container-died".to_string();
+/// The message of a failed `Always` assertion carried by one serial line, if
+/// any. The trailing JSON object on the line is parsed as an [`Assertion`];
+/// returns `None` for lines without a parseable assertion record, for
+/// `Sometimes` records, and for assertions that held.
+fn failed_always_message(line: &str) -> Option<String> {
+    let stripped = strip_ansi(line);
+    // The assertion record is the trailing JSON object; the formatter prefix
+    // (`[assertions] | `) and flux's branch/vt prefix contain no `{`.
+    let json = stripped.get(stripped.find('{')?..)?;
+    match serde_json::from_str::<Assertion>(json).ok()? {
+        Assertion::Always(data) if !data.result => Some(data.message),
+        _ => None,
     }
-    if let Some(m) = CRASH_MARKERS.iter().find(|m| reason.contains(**m)) {
-        return format!("crash:{m}");
-    }
-    reason.to_string()
 }
 
 /// Outcome of replaying a [`Reproduction`].
@@ -1151,34 +1029,54 @@ pub fn replay(seed_cp: &Checkpoint, repro: &Reproduction, sink: &Sink) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::crash_signature;
+    use super::{assertion_failure_reason, failed_always_message};
+
+    /// A serial line as flux captures it: branch/vt prefix plus the
+    /// `[assertions]` formatter output carrying one assertion record.
+    fn line(json: &str) -> String {
+        format!("[br BranchId(7) vt  12.345] [assertions] | {json}")
+    }
+
+    const FAILED_CONTAINER: &str = r#"{"Always":{"condition":{"Eq":{"x":137,"y":0}},"result":false,"message":"container btcd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#;
 
     #[test]
-    fn dead_lnd_nodes_share_one_signature_but_btcd_differs() {
-        // Real `container died` reasons differ in branch id, vt, timestamp,
-        // container hash, node name and label order — but all three lnd nodes
-        // share an image, so they must dedup to a single finding.
-        let lnd2 = "serial reported: [br BranchId(29014) vt  479.165] [podman] | 2024-01-01 00:07:58 container died de5e67 (image=localhost/bedrock/lnd:latest, name=lnd2, com.docker.compose.container-number=1)";
-        let lnd1 = "serial reported: [br BranchId(37581) vt  501.632] [podman] | 2024-01-01 00:08:21 container died 827463 (image=localhost/bedrock/lnd:latest, name=lnd1, io.podman.compose.service=lnd1)";
-        let lnd3 = "serial reported: [br BranchId(72222) vt  504.815] [podman] | 2024-01-01 00:08:24 container died 572d4c (image=localhost/bedrock/lnd:latest, name=lnd3, io.podman.compose.version=1.5.0)";
-        let btcd = "serial reported: [br BranchId(99) vt  500.0] [podman] | 2024-01-01 00:08:30 container died abc123 (image=localhost/bedrock/btcd:latest, name=btcd1)";
-
-        assert_eq!(crash_signature(lnd2), crash_signature(lnd1));
-        assert_eq!(crash_signature(lnd2), crash_signature(lnd3));
+    fn failed_always_reports_its_message() {
         assert_eq!(
-            crash_signature(lnd2),
-            "container-died:localhost/bedrock/lnd:latest"
+            failed_always_message(&line(FAILED_CONTAINER)).as_deref(),
+            Some("container btcd1 exit code is zero")
         );
-        assert_ne!(crash_signature(lnd2), crash_signature(btcd));
     }
 
     #[test]
-    fn go_runtime_crashes_key_on_marker() {
-        let a = "workload crash (fatal error:): [lnd1] | fatal error: concurrent map writes goroutine 42";
-        let b = "workload crash (fatal error:): [lnd2] | fatal error: concurrent map writes goroutine 99";
-        let oom = "workload crash (runtime: out of memory): [btcd1] | runtime: out of memory: cannot allocate";
-        assert_eq!(crash_signature(a), crash_signature(b));
-        assert_eq!(crash_signature(a), "crash:fatal error:");
-        assert_ne!(crash_signature(a), crash_signature(oom));
+    fn passing_always_is_not_a_bug() {
+        let l = line(r#"{"Always":{"condition":{"Eq":{"x":0,"y":0}},"result":true,"message":"container btcd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#);
+        assert_eq!(failed_always_message(&l), None);
+    }
+
+    #[test]
+    fn failed_sometimes_is_not_a_bug() {
+        let l = line(r#"{"Sometimes":{"condition":{"Eq":{"x":1,"y":0}},"result":false,"message":"x reached zero","location":{"file":"m.rs","line":1,"column":1}}}"#);
+        assert_eq!(failed_always_message(&l), None);
+    }
+
+    #[test]
+    fn non_assertion_lines_are_ignored() {
+        assert_eq!(
+            failed_always_message("[br BranchId(1) vt 1.0] [btcd1] | starting node {ok}"),
+            None
+        );
+    }
+
+    #[test]
+    fn scan_returns_first_failure_message_as_reason() {
+        let serial = vec![
+            line(r#"{"Always":{"condition":{"Eq":{"x":0,"y":0}},"result":true,"message":"ok","location":{"file":"m.rs","line":1,"column":1}}}"#),
+            line(r#"{"Always":{"condition":{"Eq":{"x":2,"y":0}},"result":false,"message":"container lnd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#),
+        ];
+        // The reason is the message verbatim — that is the per-message dedup key.
+        assert_eq!(
+            assertion_failure_reason(&serial).as_deref(),
+            Some("container lnd1 exit code is zero")
+        );
     }
 }

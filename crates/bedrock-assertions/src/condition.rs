@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 /// without loss. The creation macros ([`always_lt!`](crate::always_lt) etc.)
 /// accept any integer value up to `u64`.
 ///
-/// More variants (`Eq`, `Ne`, …) will be added as needed.
+/// More variants (`Ne`, …) will be added as needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Condition {
     /// A bare boolean, with no operands to compare.
@@ -47,6 +47,13 @@ pub enum Condition {
         /// Right-hand operand.
         y: i128,
     },
+    /// `x == y`.
+    Eq {
+        /// Left-hand operand.
+        x: i128,
+        /// Right-hand operand.
+        y: i128,
+    },
 }
 
 impl Condition {
@@ -58,6 +65,7 @@ impl Condition {
             Condition::Gt { x, y } => x > y,
             Condition::Lte { x, y } => x <= y,
             Condition::Gte { x, y } => x >= y,
+            Condition::Eq { x, y } => x == y,
         }
     }
 }
@@ -98,6 +106,13 @@ mod tests {
         assert!(Condition::Gte { x: 3, y: 2 }.evaluate());
         assert!(Condition::Gte { x: 2, y: 2 }.evaluate());
         assert!(!Condition::Gte { x: 1, y: 2 }.evaluate());
+    }
+
+    #[test]
+    fn eq_compares_operands() {
+        assert!(Condition::Eq { x: 2, y: 2 }.evaluate());
+        assert!(!Condition::Eq { x: 1, y: 2 }.evaluate());
+        assert!(!Condition::Eq { x: 3, y: 2 }.evaluate());
     }
 
     #[test]

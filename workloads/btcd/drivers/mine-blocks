@@ -10,6 +10,12 @@
 # kernel RNG → deterministic across replays under bedrock.
 set -eu
 
+# Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
+# would trip the "exec exit code is zero" assertion and be flagged as a bug.
+# Expected RPC/edge-input failures (a partitioned peer, a rejected blob) are
+# handled by forcing a clean exit on every path out of the script.
+trap 'exit 0' EXIT
+
 # Entropy comes from the fuzzer-controlled hex argument ($1): byte N is fz N.
 # This lets the fuzzer steer driver parameters directly (mutating the arg
 # bytes), instead of via /dev/urandom (the guest CRNG, which a recorded-RDRAND

@@ -59,10 +59,10 @@ run windows, exponentially spaced), `--max-dry-rounds` (per-pick early-stop),
 Each corpus node's selection weight is
 
 ```
-(1 + novelty) / (1 + effort) · (1 + depth_secs) / (1 + in_flight)
+(1 + ln(1+novelty)) / (1 + effort) / (1 + in_flight) · (1 + ln(1+rarity))
 ```
 
-— favoring fertile, under-explored, time-frontier checkpoints while spreading
+— favoring fertile, under-explored, rare-edge checkpoints while spreading
 concurrent workers across distinct ones. See `corpus::node_weight`.
 
 ### Determinism

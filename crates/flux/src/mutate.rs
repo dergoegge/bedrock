@@ -296,12 +296,11 @@ impl Mutators {
     /// Forward-only extension: append a burst of actions strictly at or past
     /// the input's anchor, never touching earlier RNG. Because `mutated_at`
     /// lands at the anchor, the campaign takes the no-rewind forward path and
-    /// the branch runs *onward* from the picked checkpoint, deepening the
-    /// virtual-time frontier. This is the counterpart to [`Self::havoc`], whose
-    /// `rng_byte_havoc` component pulls `mutated_at` back to an early time and
-    /// so rewinds a deep node to a shallow one — preventing deep chains from
-    /// ever forming. The worker alternates between the two so the corpus both
-    /// explores (havoc) and deepens (extend).
+    /// the branch runs *onward* from the picked checkpoint, building a longer
+    /// action sequence. The counterpart to [`Self::havoc`], whose
+    /// `rng_byte_havoc` component instead pulls `mutated_at` back to an early
+    /// time and rewinds; the worker mixes the two so the corpus both extends
+    /// sequences and re-explores from earlier points.
     pub fn extend_forward(
         &self,
         rng: &mut Rng,

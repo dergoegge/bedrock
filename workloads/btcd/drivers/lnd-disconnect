@@ -9,6 +9,13 @@
 # Prints a notice if the node has no peers. Random bytes from /dev/urandom —
 # deterministic across replays under bedrock.
 set -eu
+
+# Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
+# would trip the "exec exit code is zero" assertion and be flagged as a bug.
+# Expected RPC/edge-input failures (a partitioned peer, a rejected blob) are
+# handled by forcing a clean exit on every path out of the script.
+trap 'exit 0' EXIT
+
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 

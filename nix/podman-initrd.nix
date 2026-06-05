@@ -68,10 +68,11 @@ let
     meta.mainProgram = "fault-injector";
   };
 
-  # Workload monitor (Rust). Streams `podman events` so container lifecycle
-  # transitions are visible in the guest log. Built as a static musl binary for
-  # the same self-contained-rootfs reason as faultInjector above; it has no
-  # native deps, so no extra buildInputs / pkg-config are needed.
+  # Workload monitor (Rust). Tails `podman events` and records an exit-code
+  # assertion to /bedrock/assertions.jsonl on each container/exec death; it does
+  # not write to the guest log. Built as a static musl binary for the same
+  # self-contained-rootfs reason as faultInjector above; it has no native deps,
+  # so no extra buildInputs / pkg-config are needed.
   workloadMonitor = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
     pname = "bedrock-workload-monitor";
     version = "0.1.0";
@@ -195,13 +196,23 @@ let
     # host` for a specific service.
     log_driver = "journald"
 
-    # Bind-mount the shared assertion sink into every container podman creates,
-    # without touching any compose file. The same host file is appended to by
-    # the host-side workload monitor and by workload code inside containers, so
-    # all assertions land in one place. The file must already exist as a regular
-    # file when a container starts (the initrd pre-creates it), else podman
-    # bind-mounts an auto-created directory in its place.
-    volumes = ["/bedrock/assertions.jsonl:/bedrock/assertions.jsonl"]
+    # Bind-mount shared host-namespace paths into every container podman creates,
+    # without touching any compose file:
+    #   - the assertion sink (a single JSONL file appended to by the host-side
+    #     workload monitor and by workload code inside containers); and
+    #   - the coverage dir, where each instrumented process keeps its feedback
+    #     bitmap as a file (see workloads/btcd/libvoidstar.c). Backing the bitmap
+    #     on this host tmpfs — rather than container-internal memory — means its
+    #     pages outlive the container (the instrumented binary is the container's
+    #     PID 1, so its death tears the container's own mount namespace down),
+    #     so the hypervisor keeps reading a valid frozen bitmap after a node dies
+    #     instead of memory the guest has freed and reused.
+    # Each source must exist (the initrd pre-creates them) before a container
+    # starts, else podman bind-mounts an auto-created path in its place.
+    volumes = [
+      "/bedrock/assertions.jsonl:/bedrock/assertions.jsonl",
+      "/bedrock/coverage:/bedrock/coverage",
+    ]
 
     [engine]
     cgroup_manager = "cgroupfs"
@@ -355,6 +366,13 @@ let
     mkdir -p /bedrock
     : > /bedrock/assertions.jsonl
 
+    # Coverage feedback-buffer dir: each instrumented workload process mmaps its
+    # bitmap onto a file here (bind-mounted into every container via
+    # containers.conf) so the pages survive the process/container dying. World-
+    # writable + sticky so containers running as any uid can create their file.
+    mkdir -p /bedrock/coverage
+    chmod 1777 /bedrock/coverage
+
     # Surface the assertion sink in the guest log: follow it and pipe each line
     # through `systemd-cat` into the journal under the `assertions` tag, so the
     # formatter below renders every assertion (host- or container-written) as
@@ -363,12 +381,11 @@ let
     # missed.
     tail -n +1 -F /bedrock/assertions.jsonl 2>/dev/null | systemd-cat -t assertions &
 
-    # Start the workload monitor. It tails `podman events` and surfaces
-    # container lifecycle transitions; its output goes through `systemd-cat`
-    # into the journal — same treatment as the fault-injector and container
-    # output — so the formatter below renders it as `[workload-monitor]`. On
-    # each container death it also appends an exit-code assertion to
-    # /bedrock/assertions.jsonl.
+    # Start the workload monitor. It tails `podman events` and, on each
+    # container or exec death, appends an exit-code assertion to
+    # /bedrock/assertions.jsonl (surfaced as `[assertions]` by the tail above).
+    # It prints nothing to stdout; only its error diagnostics reach the journal
+    # via `systemd-cat`, rendered as `[workload-monitor]`.
     bedrock-workload-monitor 2>&1 | systemd-cat -t workload-monitor &
 
     # Load all workload images from the single docker-archive tarball.
@@ -387,19 +404,18 @@ let
     # stream, and a small jq filter renders each record back to the
     # `[name] | message` human format with a deterministic per-source
     # color (sum of label bytes modulo the 31..36 palette). It drops the
-    # podman daemon's own lifecycle-event records, which bedrock-workload-
-    # monitor now reports under [workload-monitor]. This replaces the
-    # previous per-container follow-loop entirely — restart resilience is
-    # now journald's problem, not ours.
+    # podman daemon's own lifecycle-event records — we don't render raw
+    # lifecycle events in the human log. This replaces the previous
+    # per-container follow-loop entirely — restart resilience is now
+    # journald's problem, not ours.
     cd /workload
     podman-compose up -d
 
     journalctl -f -o json --no-tail | jq -r --unbuffered '
         # Drop podman daemon lifecycle-event records (events_logger=journald
         # writes them under SYSLOG_IDENTIFIER=podman with no CONTAINER_NAME).
-        # bedrock-workload-monitor now surfaces these under [workload-monitor],
-        # so rendering them here as well would just duplicate every event.
-        # Container stdout carries CONTAINER_NAME, so this only drops events.
+        # Raw lifecycle events are not rendered in the human log. Container
+        # stdout carries CONTAINER_NAME, so this only drops events, not output.
         select((.SYSLOG_IDENTIFIER // "") != "podman") |
         ((.CONTAINER_NAME // .SYSLOG_IDENTIFIER) // "kernel") as $label |
         (($label | explode | add // 0) % 6 + 31) as $color |
@@ -463,9 +479,10 @@ pkgs.stdenv.mkDerivation {
     install -m 0755 ${faultInjector}/bin/fault-injector \
         rootfs/usr/local/bin/fault-injector
 
-    # bedrock-workload-monitor: streams podman container lifecycle events into
-    # the guest log. Lives on the guest rootfs (not inside any container image)
-    # so it observes every running container from the host namespace.
+    # bedrock-workload-monitor: watches podman container/exec lifecycle events
+    # and records exit-code assertions to /bedrock/assertions.jsonl. Lives on the
+    # guest rootfs (not inside any container image) so it observes every
+    # container from the host namespace.
     install -m 0755 ${workloadMonitor}/bin/bedrock-workload-monitor \
         rootfs/usr/local/bin/bedrock-workload-monitor
 

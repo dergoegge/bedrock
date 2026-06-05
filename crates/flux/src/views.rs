@@ -25,6 +25,8 @@ pub struct StatsView {
     pub corpus: usize,
     pub adds: u64,
     pub solutions: u64,
+    /// Distinct findings (unique solution reasons); ≤ `solutions`.
+    pub unique_solutions: u64,
     pub coverage: Vec<CoverageView>,
 }
 

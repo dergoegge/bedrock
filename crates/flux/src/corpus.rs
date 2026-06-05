@@ -37,12 +37,6 @@ pub struct Node {
     /// Virtual seconds the branch that produced this checkpoint ran for. 0 for
     /// the seed. The dashboard draws each node's incoming edge this long.
     pub runtime_secs: f64,
-    /// Virtual seconds this checkpoint sits forward of the root (root = 0) —
-    /// real forward progress, not corpus hop count. A scheduling multiplier so
-    /// the time-frontier outcompetes shallow, perpetually-fertile nodes.
-    /// Virtual time rather than hops: an in-place rewind lands a child early in
-    /// time, so crediting hops would let it masquerade as deep.
-    pub depth_secs: f64,
     /// Workers currently running a branch off this entry. Transient; divides
     /// the weight so workers spread across distinct checkpoints.
     pub in_flight: u32,
@@ -72,7 +66,6 @@ impl Node {
             effort: 0.0,
             novelty: 0,
             runtime_secs: 0.0,
-            depth_secs: 0.0,
             in_flight: 0,
             swarm: Vec::new(),
             rarity: 0.0,
@@ -98,51 +91,19 @@ pub struct Solution {
 
 /// Selection weight for the scheduler.
 ///
-/// Three "attractiveness" signals, each **log-damped to the same order of
-/// magnitude** so none can dominate and tunnel the fleet onto one dimension:
+/// Two "attractiveness" signals, each **log-damped to the same order of
+/// magnitude** so neither can dominate and tunnel the fleet onto one dimension:
 /// - `(1+ln(1+novelty))` — fertility: entries that keep spawning novel children.
-/// - `(1+ln(1+depth_secs))` — a modest pull to the time-frontier so multi-step
-///   sequences can build and deep states stay reachable.
 /// - `(1+ln(1+rarity))` — a generic FairFuzz-style rare-edge bias.
 ///
-/// Earlier these were linear, and whichever was largest won outright: linear
-/// depth (~1800× at a 30-min-deep tip) made the whole fleet pile onto a handful
-/// of barren deepest nodes; linear novelty re-traps it on the super-fertile
-/// root. Log-damping keeps all three ~single-digit so the *combination* ranks
-/// entries, while the linear `effort` denominator decays over-mined ones and
-/// `/(1+in_flight)` fans workers across distinct checkpoints.
+/// Earlier these were linear and whichever was largest won outright (novelty
+/// re-trapped the fleet on the super-fertile root). Log-damping keeps both
+/// ~single-digit so the *combination* ranks entries, while the linear `effort`
+/// denominator decays over-mined ones and `/(1+in_flight)` fans workers across
+/// distinct checkpoints.
 pub fn node_weight(node: &Node) -> f64 {
-    (1.0 + (node.novelty as f64).ln_1p()) / (1.0 + node.effort) * (1.0 + node.depth_secs.ln_1p())
-        / (1.0 + node.in_flight as f64)
+    (1.0 + (node.novelty as f64).ln_1p()) / (1.0 + node.effort) / (1.0 + node.in_flight as f64)
         * (1.0 + node.rarity.ln_1p())
-}
-
-/// Selection weight for depth-seeking workers: depth dominates (linear) and
-/// `in_flight` spreads the deep fleet across distinct frontier tips instead of
-/// piling onto one. Coverage fertility is ignored on purpose — these workers
-/// exist to extend the virtual-time frontier, not to mine shallow novelty.
-/// Linear rather than squared: `depth²` collapsed the whole deep fleet onto the
-/// single deepest node, which then spun barren at the depth cap; linear still
-/// favors the frontier but keeps the deep workers spread across deep nodes.
-pub fn deep_weight(node: &Node) -> f64 {
-    (1.0 + node.depth_secs) / (1.0 + node.in_flight as f64)
-}
-
-/// Weighted random index biased hard toward the time-frontier, for the
-/// depth-seeking workers. See [`deep_weight`].
-pub fn deep_pick(corpus: &[Node], rng: &mut Rng) -> usize {
-    let total: f64 = corpus.iter().map(deep_weight).sum();
-    if total <= 0.0 {
-        return corpus.len().saturating_sub(1);
-    }
-    let mut r = rng.next_f64() * total;
-    for (i, node) in corpus.iter().enumerate() {
-        r -= deep_weight(node);
-        if r < 0.0 {
-            return i;
-        }
-    }
-    corpus.len() - 1
 }
 
 /// Weighted random index into `corpus` using [`node_weight`]. O(n) per draw
@@ -167,30 +128,24 @@ pub fn weighted_pick(corpus: &[Node], rng: &mut Rng) -> usize {
 mod tests {
     // A weight-only stand-in so we can test the scheduler without real
     // checkpoints (which require a live VM). Mirrors `node_weight`.
-    fn w(novelty: u64, effort: f64, depth: f64, in_flight: u32, rarity: f64) -> f64 {
-        (1.0 + (novelty as f64).ln_1p()) / (1.0 + effort) * (1.0 + depth.ln_1p())
-            / (1.0 + in_flight as f64)
+    fn w(novelty: u64, effort: f64, in_flight: u32, rarity: f64) -> f64 {
+        (1.0 + (novelty as f64).ln_1p()) / (1.0 + effort) / (1.0 + in_flight as f64)
             * (1.0 + rarity.ln_1p())
     }
 
     #[test]
     fn fertile_outweighs_barren() {
-        assert!(w(5, 1.0, 1.0, 0, 0.0) > w(0, 1.0, 1.0, 0, 0.0));
+        assert!(w(5, 1.0, 0, 0.0) > w(0, 1.0, 0, 0.0));
     }
 
     #[test]
     fn effort_decays_weight() {
-        assert!(w(1, 0.0, 1.0, 0, 0.0) > w(1, 10.0, 1.0, 0, 0.0));
-    }
-
-    #[test]
-    fn depth_boosts_frontier() {
-        assert!(w(1, 1.0, 5.0, 0, 0.0) > w(1, 1.0, 0.0, 0, 0.0));
+        assert!(w(1, 0.0, 0, 0.0) > w(1, 10.0, 0, 0.0));
     }
 
     #[test]
     fn in_flight_deprioritizes() {
-        assert!(w(1, 1.0, 1.0, 0, 0.0) > w(1, 1.0, 1.0, 3, 0.0));
+        assert!(w(1, 1.0, 0, 0.0) > w(1, 1.0, 3, 0.0));
     }
 
     #[test]
@@ -198,7 +153,7 @@ mod tests {
         // An entry that broke into rare territory outweighs an identical one
         // that re-trod common edges, and the boost is log-damped (a 100×
         // rarity gap is well under a 100× weight gap).
-        assert!(w(1, 1.0, 1.0, 0, 50.0) > w(1, 1.0, 1.0, 0, 0.0));
-        assert!(w(1, 1.0, 1.0, 0, 50.0) < 10.0 * w(1, 1.0, 1.0, 0, 0.5));
+        assert!(w(1, 1.0, 0, 50.0) > w(1, 1.0, 0, 0.0));
+        assert!(w(1, 1.0, 0, 50.0) < 10.0 * w(1, 1.0, 0, 0.5));
     }
 }

@@ -43,7 +43,7 @@ pub mod sink;
 pub mod ui;
 pub mod views;
 
-pub use campaign::{replay, serial_crash_reason, Campaign, Config, ReplayOutcome};
+pub use campaign::{assertion_failure_reason, replay, Campaign, Config, ReplayOutcome};
 pub use input::{Input, Reproduction};
 pub use mutate::{Action, SwarmMode};
 pub use rng::Rng;
