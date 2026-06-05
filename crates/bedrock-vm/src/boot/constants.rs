@@ -76,7 +76,11 @@ pub mod mptable {
 /// Default values for boot configuration.
 pub mod defaults {
     pub const MEMORY_MB: usize = 1024;
+    // `loglevel=3` keeps the kernel from echoing printk (info/warn/err) to the
+    // serial console — those records still reach journald via /dev/kmsg, where
+    // the initrd's formatter renders them once (bedrock-io's traces tagged
+    // `[bedrock-io]`). Only crit+ (panics/oopses) still hit the raw console.
     pub const CMDLINE: &str =
-        "console=ttyS0,keep earlyprintk=serial nopti nokaslr mitigations=off break";
+        "console=ttyS0,keep earlyprintk=serial nopti nokaslr mitigations=off audit=0 loglevel=3 break";
     pub const RDRAND_SEED: u64 = 0x12345678_deadbeef;
 }

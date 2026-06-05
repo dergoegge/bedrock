@@ -309,8 +309,10 @@ let
     # duration-based expiry; the hypervisor triggers `fault-injector partition
     # …` / `clear` clients via ACTION_EXEC_HOST_BASH, which connect to its unix
     # socket. Started before the workload so the socket is bound before any
-    # fault action can arrive.
-    fault-injector serve &
+    # fault action can arrive. Its log lines go through `systemd-cat` into the
+    # journal — same treatment as container output and bedrock-io exec — so the
+    # formatter below renders them as `[fault-injector]`.
+    fault-injector serve 2>&1 | systemd-cat -t fault-injector &
 
     # Load all workload images from the single docker-archive tarball.
     # `podman load` reads the embedded manifest to recover each image's
