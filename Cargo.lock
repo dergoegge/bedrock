@@ -169,6 +169,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bedrock-workload-monitor"
+version = "0.1.0"
+dependencies = [
+ "bedrock-assertions",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
