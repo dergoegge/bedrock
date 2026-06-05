@@ -52,19 +52,37 @@ pub enum SwarmMode {
     Off,
 }
 
+/// Auto-heal durations offered for partitions, passed straight through as the
+/// fault-injector's `--duration` value. Every partition is timed — the server
+/// heals it on its own — so the fuzzer never needs to schedule a `clear`. The
+/// spread brackets the default run-window range (0.5–5 virtual seconds): the
+/// short ones heal mid-branch (a self-contained split→heal → reorg-and-recovery
+/// within one input), while the long one outlives a single branch yet still
+/// self-clears, so an inherited split never wedges descendant branches forever.
+/// Coverage feedback selects whichever land in a productive regime.
+const FAULT_DURATIONS: &[&str] = &["500ms", "2s", "10s"];
+
 /// One host- or container-driven action the IO mutators can schedule.
 ///
 /// The discovered workload drivers plus workload-agnostic fault injection.
-/// Fault actions are plain host-side bash commands; no state machine is
-/// enforced (an unmatched `clear` is a no-op, stacked `partition`s layer), so
-/// the fuzzer is free to schedule them in any order.
+/// Fault actions are plain host-side bash commands handed to the in-guest
+/// fault-injector server, which tracks the live faults. Partitions are timed and
+/// heal themselves, so no ordering is required; `clear` stays a defined action
+/// but the mutators never schedule it (see [`Action::insertable`]).
 #[derive(Clone)]
 pub enum Action {
     /// Invoke a discovered driver inside its container.
     Driver(WorkloadDriver),
-    /// Network-partition the named container (host-side fault injection).
-    FaultPartition(String),
-    /// Clear any active network partition (host-side fault injection).
+    /// Network-partition the named container for `duration` of guest time, after
+    /// which the server heals it automatically — a self-contained split→heal
+    /// that drives a reorg without a paired `clear`.
+    FaultPartition {
+        container: String,
+        duration: &'static str,
+    },
+    /// Clear every fault the server is tracking. Kept as a defined action (it is
+    /// part of the fault-injector's surface), but [`Action::insertable`] is false
+    /// for it, so the mutators never insert it — every partition self-heals.
     FaultClear,
 }
 
@@ -73,15 +91,23 @@ impl Action {
     fn to_io(&self) -> (Target, String) {
         match self {
             Action::Driver(d) => (Target::Container(d.container.clone()), d.driver.clone()),
-            Action::FaultPartition(c) => (Target::Host, format!("fault-injector partition {c}")),
+            Action::FaultPartition {
+                container,
+                duration,
+            } => (
+                Target::Host,
+                format!("fault-injector partition {container} --duration {duration}"),
+            ),
             Action::FaultClear => (Target::Host, "fault-injector clear".to_string()),
         }
     }
 
     /// Build the default action vocabulary from a discovered workload: every
-    /// driver, a `partition` for each non-excluded container, and one `clear`.
-    /// `exclude_from_partition` names containers that legitimately exit on
-    /// isolation (so partitioning them would look like a crash).
+    /// driver, a timed `partition` per [`FAULT_DURATIONS`] for each non-excluded
+    /// container, and one `clear`. `exclude_from_partition` names containers that
+    /// legitimately exit on isolation (so partitioning them would look like a
+    /// crash). `clear` is included for completeness, but the mutators never
+    /// insert it ([`Action::insertable`]) — every partition self-heals.
     pub fn vocabulary(
         drivers: Vec<WorkloadDriver>,
         containers: &[String],
@@ -92,7 +118,12 @@ impl Action {
             if exclude_from_partition.iter().any(|e| e == c) {
                 continue;
             }
-            actions.push(Action::FaultPartition(c.clone()));
+            for &d in FAULT_DURATIONS {
+                actions.push(Action::FaultPartition {
+                    container: c.clone(),
+                    duration: d,
+                });
+            }
         }
         actions.push(Action::FaultClear);
         actions
@@ -106,6 +137,13 @@ impl Action {
     /// actions take no argument.
     fn wants_arg(&self) -> bool {
         matches!(self, Action::Driver(_))
+    }
+
+    /// Whether the mutators may schedule this action. Everything is insertable
+    /// except [`Action::FaultClear`]: partitions self-heal after their duration,
+    /// so an explicit `clear` is never needed and would only add noise.
+    fn insertable(&self) -> bool {
+        !matches!(self, Action::FaultClear)
     }
 }
 
@@ -378,6 +416,15 @@ impl Mutators {
             SwarmMode::Burst => random_subset(n, rng),
             SwarmMode::Off => (0..n).collect(),
         };
+        // `clear` lives in the vocabulary but is never inserted (partitions
+        // self-heal), so drop any non-insertable index the subset picked up.
+        let subset: Vec<usize> = subset
+            .into_iter()
+            .filter(|&i| self.actions[i].insertable())
+            .collect();
+        if subset.is_empty() {
+            return MutationResult::Skipped;
+        }
         let mut earliest: Option<u64> = None;
         for _ in 0..burst {
             let idx = pick_action(rng, &subset);
@@ -431,11 +478,16 @@ impl Mutators {
     /// Re-target one existing action to a different vocabulary entry, keeping
     /// its firing time. Divergence is at that action's time.
     fn io_driver_swap(&self, rng: &mut Rng, input: &mut Input) -> MutationResult {
-        if input.io.is_empty() || self.actions.is_empty() {
+        // Re-target only to insertable actions, so a swap never conjures a
+        // `clear` the fuzzer wouldn't otherwise insert.
+        let candidates: Vec<usize> = (0..self.actions.len())
+            .filter(|&i| self.actions[i].insertable())
+            .collect();
+        if input.io.is_empty() || candidates.is_empty() {
             return MutationResult::Skipped;
         }
         let idx = rng.below(input.io.len());
-        let a = rng.below(self.actions.len());
+        let a = candidates[rng.below(candidates.len())];
         let (target, mut command) = self.actions[a].to_io();
         if self.actions[a].wants_arg() {
             command = with_arg(&command, &rand_arg(rng));
@@ -570,7 +622,45 @@ mod tests {
         // Fault commands and bare driver paths have no hex tail.
         assert!(split_arg("fault-injector clear").is_none());
         assert!(split_arg("fault-injector partition btcd1").is_none());
+        // A timed partition ends in the `--duration` value, not a hex arg, so
+        // io_arg_havoc leaves it alone.
+        assert!(split_arg("fault-injector partition btcd1 --duration 500ms").is_none());
         assert!(split_arg("/opt/bedrock/drivers/mine-blocks").is_none());
+    }
+
+    #[test]
+    fn fault_partition_lowers_duration_to_flag() {
+        let timed = Action::FaultPartition {
+            container: "btcd2".into(),
+            duration: "2s",
+        };
+        assert_eq!(
+            timed.to_io(),
+            (
+                Target::Host,
+                "fault-injector partition btcd2 --duration 2s".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn vocabulary_partitions_are_all_timed_and_clear_is_not_insertable() {
+        let actions = Action::vocabulary(Vec::new(), &["btcd1".into()], &[]);
+        let cmds: Vec<String> = actions.iter().map(|a| a.to_io().1).collect();
+        // No persistent partition — every one carries a --duration.
+        assert!(!cmds.iter().any(|c| c == "fault-injector partition btcd1"));
+        for d in FAULT_DURATIONS {
+            assert!(
+                cmds.contains(&format!("fault-injector partition btcd1 --duration {d}")),
+                "missing timed partition for {d}: {cmds:?}"
+            );
+        }
+        // `clear` is still a defined action in the vocabulary, but not insertable.
+        assert!(cmds.iter().any(|c| c == "fault-injector clear"));
+        assert_eq!(actions.iter().filter(|a| !a.insertable()).count(), 1);
+        // Excluded containers get no partition at all.
+        let none = Action::vocabulary(Vec::new(), &["btcd1".into()], &["btcd1".into()]);
+        assert!(none.iter().all(|a| !a.to_io().1.contains("partition")));
     }
 
     #[test]
@@ -637,17 +727,21 @@ mod tests {
     fn io_insert_attaches_arg_to_drivers_only() {
         let mut rng = Rng::new(11);
         let mut actions = drivers(2);
-        actions.push(Action::FaultClear);
+        actions.push(Action::FaultPartition {
+            container: "btcd1".into(),
+            duration: "2s",
+        });
         let m = Mutators::new(actions, 1000, 40, SwarmMode::Off);
         let mut input = Input::new(0);
         // Insert many so we very likely hit both a driver and the fault action.
         for _ in 0..40 {
             m.io_insert(&mut rng, &mut input, None);
         }
-        let mut saw_driver_arg = false;
+        let (mut saw_driver_arg, mut saw_fault) = (false, false);
         for e in &input.io {
             if e.command.starts_with("fault-injector") {
-                assert!(split_arg(&e.command).is_none(), "fault has no arg");
+                assert!(split_arg(&e.command).is_none(), "fault has no hex arg");
+                saw_fault = true;
             } else {
                 assert!(
                     split_arg(&e.command).is_some(),
@@ -657,7 +751,31 @@ mod tests {
                 saw_driver_arg = true;
             }
         }
-        assert!(saw_driver_arg);
+        assert!(saw_driver_arg && saw_fault);
+    }
+
+    #[test]
+    fn mutations_never_insert_clear() {
+        let mut rng = Rng::new(99);
+        let mut actions = drivers(2);
+        actions.push(Action::FaultPartition {
+            container: "btcd1".into(),
+            duration: "2s",
+        });
+        actions.push(Action::FaultClear);
+        let m = Mutators::new(actions, 1000, 40, SwarmMode::Off);
+        let mut input = Input::new(0);
+        // io_insert draws from the full vocabulary (incl. clear) yet never emits it.
+        for _ in 0..200 {
+            m.io_insert(&mut rng, &mut input, None);
+        }
+        assert!(!input.io.is_empty());
+        assert!(input.io.iter().all(|e| e.command != "fault-injector clear"));
+        // io_driver_swap never re-targets an existing entry to clear either.
+        for _ in 0..200 {
+            m.io_driver_swap(&mut rng, &mut input);
+        }
+        assert!(input.io.iter().all(|e| e.command != "fault-injector clear"));
     }
 
     #[test]
