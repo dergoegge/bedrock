@@ -20,7 +20,6 @@ use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use crate::nft;
 use crate::podman;
 use crate::protocol::{Request, Response, SOCKET_PATH};
-use crate::util::log;
 
 /// One installed fault the server is tracking.
 struct ActiveFault {
@@ -81,10 +80,10 @@ impl Server {
                 let a_sbx = a.sandbox_path()?.to_string();
                 let b_sbx = b.sandbox_path()?.to_string();
                 let (a_ip, b_ip) = (a.require_ip()?, b.require_ip()?);
-                log(&format!(
+                eprintln!(
                     "fault {id}: partition {} ({a_ip}) <-/-> {} ({b_ip}){dur}",
                     a.name, b.name
-                ));
+                );
                 nft::apply_drop_saddr(&a_sbx, &table, b_ip)?;
                 // Roll back the first side if the second fails, so a failed
                 // request leaves nothing behind.
@@ -99,7 +98,7 @@ impl Server {
                 let c = &cs[0];
                 let sbx = c.sandbox_path()?.to_string();
                 let ip = c.ip.map_or_else(|| "?".to_string(), |ip| ip.to_string());
-                log(&format!("fault {id}: isolate {} (ip={ip}){dur}", c.name));
+                eprintln!("fault {id}: isolate {} (ip={ip}){dur}", c.name);
                 nft::apply_partition_all(&sbx, &table)?;
                 vec![sbx]
             }
@@ -121,10 +120,10 @@ impl Server {
     fn teardown(id: u64, fault: &ActiveFault) {
         for sbx in &fault.sandboxes {
             if let Err(e) = nft::delete_table(sbx, &fault.table) {
-                log(&format!(
+                eprintln!(
                     "fault {id}: cleanup of {} in {sbx} failed: {e}",
                     fault.table
-                ));
+                );
             }
         }
     }
@@ -135,7 +134,7 @@ impl Server {
         for (id, fault) in self.faults.drain() {
             Self::teardown(id, &fault);
         }
-        log(&format!("cleared {n} fault(s)"));
+        eprintln!("cleared {n} fault(s)");
     }
 
     /// Tear down every fault whose deadline has passed.
@@ -149,7 +148,7 @@ impl Server {
         for id in due {
             if let Some(fault) = self.faults.remove(&id) {
                 Self::teardown(id, &fault);
-                log(&format!("fault {id} expired"));
+                eprintln!("fault {id} expired");
             }
         }
     }
@@ -174,7 +173,7 @@ pub fn run() -> Result<(), String> {
     let _ = std::fs::remove_file(SOCKET_PATH);
     let listener =
         UnixListener::bind(SOCKET_PATH).map_err(|e| format!("bind {SOCKET_PATH}: {e}"))?;
-    log(&format!("fault server listening on {SOCKET_PATH}"));
+    eprintln!("fault server listening on {SOCKET_PATH}");
 
     let mut server = Server::new();
     loop {
@@ -192,10 +191,10 @@ pub fn run() -> Result<(), String> {
         match listener.accept() {
             Ok((stream, _)) => {
                 if let Err(e) = serve_one(&mut server, stream) {
-                    log(&format!("client error: {e}"));
+                    eprintln!("client error: {e}");
                 }
             }
-            Err(e) => log(&format!("accept failed: {e}")),
+            Err(e) => eprintln!("accept failed: {e}"),
         }
     }
 }
@@ -212,7 +211,7 @@ fn serve_one(server: &mut Server, mut stream: UnixStream) -> Result<(), String> 
     let response = match server.handle(req) {
         Ok(()) => Response::Ok,
         Err(e) => {
-            log(&format!("request failed: {e}"));
+            eprintln!("request failed: {e}");
             Response::Err(e)
         }
     };

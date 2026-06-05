@@ -36,7 +36,6 @@ mod util;
 use clap::{Parser, Subcommand};
 
 use protocol::{parse_duration_ms, Request};
-use util::log;
 
 #[derive(Parser)]
 #[command(
@@ -86,7 +85,7 @@ fn main() {
         FaultCommand::Clear => client::run(&Request::Clear),
     };
     if let Err(e) = result {
-        log(&e);
+        eprintln!("{e}");
         std::process::exit(1);
     }
 }
