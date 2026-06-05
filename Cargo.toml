@@ -2,6 +2,7 @@
 resolver = "2"
 
 members = [
+    "crates/bedrock-assertions",
     "crates/bedrock-cli",
     "crates/bedrock-determinism-tests",
     "crates/bedrock-ept",
