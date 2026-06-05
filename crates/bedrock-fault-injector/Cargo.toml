@@ -1,0 +1,29 @@
+[package]
+name = "bedrock-fault-injector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workload-agnostic fault injector for the bedrock guest"
+
+# Installed into the guest rootfs at /usr/local/bin/fault-injector. Callers
+# (flux, bedrock-lab, the hypervisor's ACTION_EXEC_HOST_BASH) invoke it by that
+# name, so the binary keeps the unprefixed name. `fault-injector serve` is the
+# long-lived server; every other subcommand is a thin client.
+[[bin]]
+name = "fault-injector"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+# Client/server wire protocol (newline-delimited JSON over a unix socket).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# nftables rules are applied over NETLINK_NETFILTER directly (no `nft` binary,
+# no `nsenter`) — see src/nft.rs. `mnl` carries the netlink batch; the version
+# feature gates the libnftnl symbol set we link against (kept conservative so
+# any reasonably recent libnftnl satisfies it).
+nftnl = { version = "0.9", features = ["nftnl-1-1-0"] }
+mnl = "0.3"
+# setns(2) to enter a container's netns; poll(2) for the server's single-threaded
+# event loop (socket readiness + duration-based fault expiry).
+nix = { version = "0.30", features = ["sched", "poll"] }

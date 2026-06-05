@@ -32,6 +32,42 @@ let
     installPhase = "mkdir -p $out/bin && cp bedrock-pebs-register $out/bin/";
   };
 
+  # Workload-agnostic fault injector (Rust). Built as a static musl
+  # binary so it is self-contained in the guest rootfs — same rationale as
+  # bedrockPebsRegister above. Installed at /usr/local/bin/fault-injector and
+  # invoked by the hypervisor via ACTION_EXEC_HOST_BASH. Only the workspace
+  # files are needed; the kernel-module crate (no Cargo.toml) and build/output
+  # dirs are filtered out so the cargo workspace resolves cleanly.
+  #
+  # It drives nftables over netlink via libnftnl (+ libmnl), so the static C
+  # libraries and pkg-config must be available at build time. PKG_CONFIG_ALL_STATIC
+  # makes the `pkg-config` crate emit static link flags for them.
+  faultInjector = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+    pname = "bedrock-fault-injector";
+    version = "0.1.0";
+    src = pkgs.lib.cleanSourceWith {
+      src = ./..;
+      filter = path: type:
+        let baseName = builtins.baseNameOf path; in
+        !(baseName == "target" ||
+          baseName == ".git" ||
+          baseName == ".claude" ||
+          baseName == "nix" ||
+          (type == "directory" && baseName == "bedrock" &&
+           builtins.match ".*/crates/bedrock$" path != null));
+    };
+    cargoLock.lockFile = ../Cargo.lock;
+    cargoBuildFlags = [ "-p" "bedrock-fault-injector" ];
+    # Only this crate is built; the rest of the workspace isn't static-musl
+    # ready, so skip the default `cargo test` check phase (which would compile
+    # the whole workspace). The cargo tests run on the host via `just test`.
+    doCheck = false;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.pkgsStatic.libnftnl pkgs.pkgsStatic.libmnl ];
+    PKG_CONFIG_ALL_STATIC = "1";
+    meta.mainProgram = "fault-injector";
+  };
+
   # Guest kernel module that drives the deterministic I/O channel. Built
   # against the patched 6.18 guest kernel's headers so its kbuild
   # configuration (LLVM=1, no CONFIG_RUST, etc.) matches what the running
@@ -88,7 +124,7 @@ let
     pkgs.slirp4netns
     pkgs.iproute2
     pkgs.iptables
-    pkgs.nftables     # bedrock-fault-inject installs/removes per-netns rules
+    pkgs.nftables     # netavark's firewall backend for the container bridge
     pkgs.procps
     pkgs.util-linux    # switch_root, mount, setsid, nsenter
     pkgs.kmod          # insmod (for loading bedrock-io.ko)
@@ -269,6 +305,13 @@ let
         sleep 0.05
     done
 
+    # Start the fault-injector server. It owns the active-fault registry and
+    # duration-based expiry; the hypervisor triggers `fault-injector partition
+    # …` / `clear` clients via ACTION_EXEC_HOST_BASH, which connect to its unix
+    # socket. Started before the workload so the socket is bound before any
+    # fault action can arrive.
+    fault-injector serve &
+
     # Load all workload images from the single docker-archive tarball.
     # `podman load` reads the embedded manifest to recover each image's
     # original name+tag, so a compose file referencing those names works
@@ -345,6 +388,13 @@ pkgs.stdenv.mkDerivation {
     # on PATH. Other bedrock helpers (shutdown, miner, etc.) are workload
     # concerns — workloads bake them into their own container images.
     ln -sf ${bedrockPebsRegister}/bin/bedrock-pebs-register rootfs/usr/local/bin/bedrock-pebs-register
+
+    # fault-injector: workload-agnostic network fault injector triggered
+    # by the hypervisor via ACTION_EXEC_HOST_BASH. Lives on the guest
+    # rootfs (not inside any container image) so it can apply per-netns
+    # nft rules across all running containers.
+    install -m 0755 ${faultInjector}/bin/fault-injector \
+        rootfs/usr/local/bin/fault-injector
 
     # Guest kernel module for the deterministic I/O channel. Placed at a
     # stable path so the init script can insmod it without depending on

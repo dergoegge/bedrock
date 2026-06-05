@@ -5,6 +5,7 @@ members = [
     "crates/bedrock-cli",
     "crates/bedrock-determinism-tests",
     "crates/bedrock-ept",
+    "crates/bedrock-fault-injector",
     "crates/bedrock-lab",
     "crates/bedrock-log",
     "crates/bedrock-memory",
