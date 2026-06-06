@@ -15,7 +15,9 @@ use super::super::factory::KernelFrameAllocator;
 use super::super::machine::MACHINE;
 use super::super::page::{LogBuffer, PagePool};
 use super::super::vmx::registers::GuestRegisters;
-use super::super::vmx::traits::{CowAllocator, Machine, VmContext};
+use super::super::vmx::traits::{
+    CowAllocator, InstructionCounterError, Machine, VmContext, VmRunError,
+};
 use super::super::vmx::ExitReason;
 use super::super::vmx::{LogMode, RdrandMode};
 use super::super::vmx_asm::RealVmRunner;
@@ -243,7 +245,12 @@ where
             Ok(reason) => break reason,
             Err(e) => {
                 log_err!("VM run failed: {:?}\n", e);
-                return -(bindings::EIO as isize);
+                return match e {
+                    VmRunError::InstructionCounter(InstructionCounterError::Unavailable) => {
+                        -(bindings::EOPNOTSUPP as isize)
+                    }
+                    _ => -(bindings::EIO as isize),
+                };
             }
         }
     };

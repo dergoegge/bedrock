@@ -638,6 +638,12 @@ fn run() -> io::Result<()> {
                 }
             }
             Err(e) => {
+                if e.kind() == io::ErrorKind::Unsupported {
+                    log::error!(
+                        "VM run is unsupported by the loaded Bedrock module or host configuration"
+                    );
+                    return Err(e);
+                }
                 log::error!("VM run failed: {}", e);
                 if let Ok(regs) = vm.get_regs() {
                     log::error!("  RIP: {:#018x}, RFLAGS: {:#018x}", regs.rip, regs.rflags);
