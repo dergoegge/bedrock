@@ -63,6 +63,12 @@ extern "C" {
         failed_cpu: *mut i32,
     ) -> i32;
 
+    /// Read an MSR while handling the #GP raised by an unavailable address.
+    pub(crate) fn bedrock_rdmsr_safe(msr: u32, value: *mut u64) -> core::ffi::c_int;
+
+    /// Write an MSR while handling the #GP raised by an unavailable address or value.
+    pub(crate) fn bedrock_wrmsr_safe(msr: u32, value: u64) -> core::ffi::c_int;
+
     /// Allocate zeroed memory that can be mapped to userspace.
     pub(crate) fn bedrock_vmalloc_user(size: core::ffi::c_ulong) -> *mut core::ffi::c_void;
 

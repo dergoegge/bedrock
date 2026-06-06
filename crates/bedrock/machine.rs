@@ -131,33 +131,22 @@ pub(crate) struct RealMsrAccess;
 
 impl MsrAccess for RealMsrAccess {
     fn read_msr(&self, address: u32) -> Result<u64, MsrError> {
-        let low: u32;
-        let high: u32;
-        // SAFETY: RDMSR is safe when the MSR address is valid; the caller is responsible for providing a valid address.
-        unsafe {
-            asm!(
-                "rdmsr",
-                in("ecx") address,
-                out("eax") low,
-                out("edx") high,
-                options(nomem, nostack)
-            );
+        let mut value = 0;
+        // SAFETY: `value` is a valid output pointer. The kernel helper catches
+        // the #GP raised when `address` is unavailable.
+        let ret = unsafe { c_helpers::bedrock_rdmsr_safe(address, &mut value) };
+        if ret != 0 {
+            return Err(MsrError::InvalidAddress);
         }
-        Ok((u64::from(high) << 32) | u64::from(low))
+        Ok(value)
     }
 
     fn write_msr(&self, address: u32, value: u64) -> Result<(), MsrError> {
-        let low = value as u32;
-        let high = (value >> 32) as u32;
-        // SAFETY: WRMSR is safe when the MSR address and value are valid; the caller is responsible for correctness.
-        unsafe {
-            asm!(
-                "wrmsr",
-                in("ecx") address,
-                in("eax") low,
-                in("edx") high,
-                options(nomem, nostack)
-            );
+        // SAFETY: The kernel helper catches the #GP raised when `address` or
+        // `value` is invalid.
+        let ret = unsafe { c_helpers::bedrock_wrmsr_safe(address, value) };
+        if ret != 0 {
+            return Err(MsrError::InvalidAddress);
         }
         Ok(())
     }

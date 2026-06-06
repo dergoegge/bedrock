@@ -124,6 +124,24 @@ int bedrock_for_each_cpu(smp_call_func_t func, void *info, int *failed_cpu)
 EXPORT_SYMBOL_GPL(bedrock_for_each_cpu);
 
 /*
+ * Fault-safe MSR access for Rust callers.
+ *
+ * Raw RDMSR/WRMSR instructions raise #GP for unavailable MSRs. The kernel
+ * helpers catch that exception and return an error instead.
+ */
+int bedrock_rdmsr_safe(u32 msr, u64 *value)
+{
+	return rdmsrq_safe(msr, value);
+}
+EXPORT_SYMBOL_GPL(bedrock_rdmsr_safe);
+
+int bedrock_wrmsr_safe(u32 msr, u64 value)
+{
+	return wrmsrq_safe(msr, value);
+}
+EXPORT_SYMBOL_GPL(bedrock_wrmsr_safe);
+
+/*
  * Allocate zeroed memory that can be mapped to userspace.
  * This wraps vmalloc_user() which allocates virtually contiguous memory
  * that is suitable for mmap'ing to userspace.
