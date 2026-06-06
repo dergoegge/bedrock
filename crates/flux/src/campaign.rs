@@ -85,6 +85,44 @@ struct Stats {
     solutions: u64,
 }
 
+/// Per-phase wall-time profiler. All fields are nanoseconds (or counts) summed
+/// across every worker thread, added with `Relaxed` (we only want aggregate
+/// magnitudes). Reported on the heartbeat as a `PROF:` line so we can see where
+/// worker time actually goes (execution vs fork vs checkpoint vs lock waits)
+/// instead of guessing.
+#[derive(Default)]
+struct Prof {
+    iters: AtomicU64,            // run_one invocations
+    progress_calls: AtomicU64,   // pump_branch on_progress callbacks (run_until roundtrips)
+    branch_ns: AtomicU64,        // branch creation (the fork ioctl)
+    pump_ns: AtomicU64,          // running the guest (incl. exit handling)
+    cov_read_ns: AtomicU64,      // read_coverage off the branch
+    checkpoint_ns: AtomicU64,    // branch.checkpoint()
+    cov_merge_ns: AtomicU64,     // coverage merge_bitmap (held + wait)
+    dedup_ns: AtomicU64,         // checkpoint deduplicate ioctl
+    addnode_ns: AtomicU64,       // rest of add_node (register_node + corpus push)
+    corpus_wait_ns: AtomicU64,   // time blocked acquiring the corpus lock
+    coverage_wait_ns: AtomicU64, // time blocked acquiring the coverage lock
+    active_wait_ns: AtomicU64,   // time blocked acquiring the active lock
+
+    // VM exit breakdown, summed over runs (read off each branch after its run;
+    // forked VMs start with fresh stats so each read reflects that run). Tells
+    // us whether `pump` is exit-storm-bound (e.g. mtf single-stepping) or
+    // genuinely executing the guest.
+    ex_total: AtomicU64,
+    ex_mtf: AtomicU64,
+    ex_ept: AtomicU64,
+    ex_extint: AtomicU64,
+    ex_rdtsc: AtomicU64,
+    ex_apic: AtomicU64,
+    ex_msr: AtomicU64,
+    ex_io: AtomicU64,
+    ex_cpuid: AtomicU64,
+    cyc_total: AtomicU64,      // total_run_cycles
+    cyc_guest: AtomicU64,      // guest_cycles (actual non-root execution)
+    cyc_vmexit_ovh: AtomicU64, // vmexit_overhead_cycles
+}
+
 pub struct Campaign {
     corpus: Mutex<Vec<Node>>,
     /// Retained rewind intermediates, keyed by id. Holding a strong handle
@@ -116,6 +154,8 @@ pub struct Campaign {
     /// Wall-clock instant of the last corpus find (or run start). Feeds the
     /// spinner's "time since last find".
     last_add: Mutex<Instant>,
+    /// Per-phase wall-time profiler (see [`Prof`]).
+    prof: Prof,
 }
 
 impl Campaign {
@@ -155,7 +195,38 @@ impl Campaign {
             quit_on_solution,
             branches_since_add: AtomicU64::new(0),
             last_add: Mutex::new(Instant::now()),
+            prof: Prof::default(),
         })
+    }
+
+    /// Acquire the corpus lock, charging blocked time to the profiler.
+    fn lock_corpus(&self) -> std::sync::MutexGuard<'_, Vec<Node>> {
+        let t = Instant::now();
+        let g = self.corpus.lock().unwrap();
+        self.prof
+            .corpus_wait_ns
+            .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        g
+    }
+
+    /// Acquire the coverage lock, charging blocked time to the profiler.
+    fn lock_coverage(&self) -> std::sync::MutexGuard<'_, Coverage> {
+        let t = Instant::now();
+        let g = self.coverage.lock().unwrap();
+        self.prof
+            .coverage_wait_ns
+            .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        g
+    }
+
+    /// Acquire the active-branches lock, charging blocked time to the profiler.
+    fn lock_active(&self) -> std::sync::MutexGuard<'_, HashMap<u64, ActiveBranch>> {
+        let t = Instant::now();
+        let g = self.active.lock().unwrap();
+        self.prof
+            .active_wait_ns
+            .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        g
     }
 
     /// Run one worker per entry in `run_fors`, pinned round-robin to `cores`,
@@ -231,7 +302,7 @@ impl Campaign {
 
             // 1. Pick one entry by the fertility/rarity/underexplored weighting.
             let (parent_idx, base_input, cp, parent_swarm) = {
-                let mut corpus = self.corpus.lock().unwrap();
+                let mut corpus = self.lock_corpus();
                 let idx = weighted_pick(&corpus, &mut rng);
                 corpus[idx].scheduled += 1;
                 (
@@ -245,7 +316,7 @@ impl Campaign {
 
             // Reserve the entry as in-flight for the whole havoc stage so other
             // workers deprioritize it.
-            self.corpus.lock().unwrap()[parent_idx].in_flight += 1;
+            self.lock_corpus()[parent_idx].in_flight += 1;
 
             // 2. Havoc stage: mutate-and-run rounds against this one entry until
             //    `max_dry` consecutive rounds turn up nothing novel.
@@ -269,7 +340,7 @@ impl Campaign {
                     let r = match rng.below(100) {
                         k if k < SPLICE_PCT => {
                             let donor = {
-                                let corpus = self.corpus.lock().unwrap();
+                                let corpus = self.lock_corpus();
                                 if corpus.len() < 2 {
                                     Vec::new()
                                 } else {
@@ -296,7 +367,7 @@ impl Campaign {
                 };
 
                 // 3. Run the branch (unlocked, parallel); charge effort.
-                self.corpus.lock().unwrap()[parent_idx].effort += effort_per_round;
+                self.lock_corpus()[parent_idx].effort += effort_per_round;
                 let fresh = rng.next_u64();
                 let Some(res) = self.run_one(&cp, parent_idx, &input, mutated_at, fresh, run_for)
                 else {
@@ -333,13 +404,18 @@ impl Campaign {
 
                 // 6. Global novelty (edge coverage) — trusted only now that the
                 //    run is known crash-free.
-                let new_edges = self.coverage.lock().unwrap().merge_bitmap(&res.coverage);
+                let t_cov = Instant::now();
+                let new_edges = self.lock_coverage().merge_bitmap(&res.coverage);
+                self.prof
+                    .cov_merge_ns
+                    .fetch_add(t_cov.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 let novel = new_edges > 0;
 
                 // 7. Append to the shared corpus when the branch covered new
                 //    edges.
                 if novel {
                     dry = 0;
+                    let t_add = Instant::now();
                     self.add_node(
                         parent_idx,
                         &parent_swarm,
@@ -348,12 +424,15 @@ impl Campaign {
                         n_actions,
                         new_edges,
                     );
+                    self.prof
+                        .addnode_ns
+                        .fetch_add(t_add.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 }
             }
 
             // Stage done: release the entry.
             {
-                let mut corpus = self.corpus.lock().unwrap();
+                let mut corpus = self.lock_corpus();
                 corpus[parent_idx].in_flight = corpus[parent_idx].in_flight.saturating_sub(1);
             }
         }
@@ -495,7 +574,7 @@ impl Campaign {
         // node as one owner of each edge it covered and score how rare that
         // territory is. The coverage lock is taken and released here, never held
         // alongside the corpus lock below.
-        let rarity = self.coverage.lock().unwrap().register_node(&res.coverage);
+        let rarity = self.lock_coverage().register_node(&res.coverage);
         let runtime_secs = if self.cfg.frequency == 0 {
             0.0
         } else {
@@ -525,7 +604,11 @@ impl Campaign {
         // deduplicating its COW pages now (immutable from here, no children
         // yet). We only do this for kept checkpoints — the many transient
         // checkpoints from non-novel runs are dropped without dedup. Best-effort.
+        let t_dedup = Instant::now();
         let _ = res.new_cp.deduplicate();
+        self.prof
+            .dedup_ns
+            .fetch_add(t_dedup.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let node = Node {
             input: recording_to_input(&res.recording, res.new_cp.time().instructions()),
             checkpoint: res.new_cp,
@@ -540,7 +623,7 @@ impl Campaign {
             rarity,
         };
         let new_id = {
-            let mut corpus = self.corpus.lock().unwrap();
+            let mut corpus = self.lock_corpus();
             corpus[parent_idx].novelty += 1;
             corpus.push(node);
             let new_id = corpus.len() - 1;
@@ -593,13 +676,18 @@ impl Campaign {
         };
 
         let source = input.source_from(mutated_at, self.cfg.frequency, fresh_seed);
+        let t_branch = Instant::now();
         let mut branch = start_cp.branch_with_input_source(source).ok()?;
+        self.prof
+            .branch_ns
+            .fetch_add(t_branch.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.prof.iters.fetch_add(1, Ordering::Relaxed);
         let branch_id = branch.id();
         self.sink.start_capture(branch_id);
 
         let bid = branch_id.as_u64();
         let start_secs = start_cp.time().as_secs_f64();
-        self.active.lock().unwrap().insert(
+        self.lock_active().insert(
             bid,
             ActiveBranch {
                 parent: parent_idx,
@@ -609,20 +697,52 @@ impl Campaign {
         );
 
         let run_target = start_cp.time() + run_for;
+        let t_pump = Instant::now();
         let crashed = pump_branch(&mut branch, run_target, |at| {
-            if let Some(a) = self.active.lock().unwrap().get_mut(&bid) {
+            self.prof.progress_calls.fetch_add(1, Ordering::Relaxed);
+            if let Some(a) = self.lock_active().get_mut(&bid) {
                 a.current_secs = at.as_secs_f64();
             }
         });
-        self.active.lock().unwrap().remove(&bid);
+        self.prof
+            .pump_ns
+            .fetch_add(t_pump.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        // Exit breakdown for this run (fresh stats per fork). Diagnostic.
+        let st = branch.exit_stats().unwrap_or_default();
+        let add = |c: &AtomicU64, v: u64| {
+            c.fetch_add(v, Ordering::Relaxed);
+        };
+        add(&self.prof.ex_total, st.total_exit_count());
+        add(&self.prof.ex_mtf, st.mtf.count);
+        add(&self.prof.ex_ept, st.ept_violation.count);
+        add(&self.prof.ex_extint, st.external_interrupt.count);
+        add(&self.prof.ex_rdtsc, st.rdtsc.count + st.rdtscp.count);
+        add(&self.prof.ex_apic, st.apic_access.count);
+        add(&self.prof.ex_msr, st.msr_read.count + st.msr_write.count);
+        add(&self.prof.ex_io, st.io_instruction.count);
+        add(&self.prof.ex_cpuid, st.cpuid.count);
+        add(&self.prof.cyc_total, st.total_run_cycles);
+        add(&self.prof.cyc_guest, st.guest_cycles);
+        add(&self.prof.cyc_vmexit_ovh, st.vmexit_overhead_cycles);
+
+        self.lock_active().remove(&bid);
 
         let vt = branch
             .current_time()
             .instructions()
             .saturating_sub(start_cp.time().instructions());
+        let t_cov = Instant::now();
         let coverage = read_coverage(&mut branch);
+        self.prof
+            .cov_read_ns
+            .fetch_add(t_cov.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let recording = branch.input_recording().clone();
+        let t_cp = Instant::now();
         let new_cp = branch.checkpoint().ok()?;
+        self.prof
+            .checkpoint_ns
+            .fetch_add(t_cp.elapsed().as_nanos() as u64, Ordering::Relaxed);
         let serial = self.sink.take_capture(branch_id);
 
         Some(RunResult {
@@ -652,6 +772,62 @@ impl Campaign {
         !self.stop.load(Ordering::Relaxed)
     }
 
+    /// One-line profiler dump: per-run wall-time spent in each phase and per-run
+    /// time blocked on each shared lock, plus cumulative lock-wait seconds
+    /// (summed across all worker threads). Lets us see the bottleneck rather
+    /// than guess. Note `active` lock-wait is mostly incurred inside `pump` (the
+    /// per-run-roundtrip progress callback), so it overlaps the `pump` figure.
+    fn prof_line(&self, wall_secs: f64) -> String {
+        let p = &self.prof;
+        let iters = p.iters.load(Ordering::Relaxed).max(1);
+        // Per-run average in microseconds.
+        let us = |c: &AtomicU64| (c.load(Ordering::Relaxed) as f64 / iters as f64) / 1000.0;
+        // Cumulative thread-seconds across all workers.
+        let s = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
+        format!(
+            "PROF: {iters} runs ({:.0}/s) · {:.1} roundtrips/run · per-run us [branch {:.0} pump {:.0} covrd {:.0} ckpt {:.0} covmrg {:.0} dedup {:.0} addnode {:.0}] · lock-wait us/run [corpus {:.0} cov {:.0} active {:.0}] · lock-wait total s [corpus {:.0} cov {:.0} active {:.0}]",
+            iters as f64 / wall_secs.max(1.0),
+            p.progress_calls.load(Ordering::Relaxed) as f64 / iters as f64,
+            us(&p.branch_ns),
+            us(&p.pump_ns),
+            us(&p.cov_read_ns),
+            us(&p.checkpoint_ns),
+            us(&p.cov_merge_ns),
+            us(&p.dedup_ns),
+            us(&p.addnode_ns),
+            us(&p.corpus_wait_ns),
+            us(&p.coverage_wait_ns),
+            us(&p.active_wait_ns),
+            s(&p.corpus_wait_ns),
+            s(&p.coverage_wait_ns),
+            s(&p.active_wait_ns),
+        )
+    }
+
+    /// Per-run VM-exit breakdown + guest-vs-overhead cycle split. If `mtf`/run
+    /// is huge it's single-stepping; if guest% is tiny the run is exit-bound;
+    /// if guest% is high the guest genuinely executes that much.
+    fn exit_line(&self) -> String {
+        let p = &self.prof;
+        let iters = p.iters.load(Ordering::Relaxed).max(1);
+        let per = |c: &AtomicU64| c.load(Ordering::Relaxed) / iters;
+        let ct = p.cyc_total.load(Ordering::Relaxed).max(1) as f64;
+        let guest_pct = 100.0 * p.cyc_guest.load(Ordering::Relaxed) as f64 / ct;
+        let ovh_pct = 100.0 * p.cyc_vmexit_ovh.load(Ordering::Relaxed) as f64 / ct;
+        format!(
+            "EXITS: {}/run [mtf {} ept {} extint {} rdtsc {} apic {} msr {} io {} cpuid {}] · cycles guest {guest_pct:.1}% vmexit-ovh {ovh_pct:.1}%",
+            per(&p.ex_total),
+            per(&p.ex_mtf),
+            per(&p.ex_ept),
+            per(&p.ex_extint),
+            per(&p.ex_rdtsc),
+            per(&p.ex_apic),
+            per(&p.ex_msr),
+            per(&p.ex_io),
+            per(&p.ex_cpuid),
+        )
+    }
+
     fn monitor(&self) {
         while self.sleep_unless_stopped(Duration::from_secs(15)) {
             let view = self.stats_view();
@@ -660,6 +836,8 @@ impl Campaign {
                 view.wall_secs, view.vt_secs, view.vt_per_wall, view.branches,
                 view.corpus, view.adds, view.checkpoints, view.solutions, view.unique_solutions,
             ));
+            crate::ui::heartbeat(&self.prof_line(view.wall_secs));
+            crate::ui::heartbeat(&self.exit_line());
             let edges: usize = view.coverage.iter().map(|c| c.seen).sum();
             let total: usize = view.coverage.iter().map(|c| c.total).sum();
             if total > 0 {

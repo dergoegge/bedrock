@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use bedrock_vm::{ExitKind, LogConfig, LogEntry, Vm, VmError};
+use bedrock_vm::{ExitKind, ExitStats, LogConfig, LogEntry, Vm, VmError};
 
 use crate::bash::{self, ActionResponse, BashOutput, BashTarget, WorkloadDetails};
 use crate::checkpoint::{Checkpoint, CheckpointId, CheckpointInner};
@@ -165,6 +165,13 @@ impl Branch {
 
     pub fn tsc_frequency(&self) -> u64 {
         self.lab.tsc_frequency
+    }
+
+    /// Per-exit-reason counts and guest/overhead cycle totals accumulated by
+    /// this branch's VM so far. Forked VMs start with fresh stats, so for a
+    /// branch read after a run this reflects that run. Diagnostic only.
+    pub fn exit_stats(&self) -> std::io::Result<ExitStats> {
+        self.vm().get_exit_stats()
     }
 
     /// The checkpoint this branch was forked from. Fixed for the lifetime of
