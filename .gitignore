@@ -13,3 +13,13 @@ __pycache__/
 # Nix
 result
 result-*
+
+# Kernel module build artifacts
+crates/bedrock/*.o
+crates/bedrock/*.ko
+crates/bedrock/*.mod
+crates/bedrock/*.mod.c
+crates/bedrock/*.cmd
+crates/bedrock/.*.cmd
+crates/bedrock/Module.symvers
+crates/bedrock/modules.order
