@@ -5,8 +5,8 @@
 # Then: make KDIR=/nix/store/...-linux-X.Y.Z-dev/lib/modules/X.Y.Z/build
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-# LLVM toolchain suffix (e.g. -18 for clang-18, empty for plain clang)
-LLVM ?= -18
+# Use the unsuffixed LLVM tools supplied by the Nix development shell.
+LLVM ?= 1
 
 obj-m := bedrock.o
 
