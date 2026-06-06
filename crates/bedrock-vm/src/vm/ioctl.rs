@@ -80,6 +80,9 @@ pub(crate) const BEDROCK_VM_GET_VM_ID: u64 = ioctl_ior(BEDROCK_IOC_MAGIC, 11, si
 // _IOW('B', 1, u64) - takes parent VM ID as argument
 pub(crate) const BEDROCK_CREATE_FORKED_VM: u64 = ioctl_iow(BEDROCK_IOC_MAGIC, 1, size_of::<u64>());
 
+// _IOW('B', 2, u64) - deduplicate the given VM's COW pages (takes VM ID).
+pub(crate) const BEDROCK_DEDUP_VM: u64 = ioctl_iow(BEDROCK_IOC_MAGIC, 2, size_of::<u64>());
+
 /// Maximum number of feedback buffers per VM.
 pub const MAX_FEEDBACK_BUFFERS: usize = 16;
 

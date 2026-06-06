@@ -34,9 +34,12 @@ pub use traits::{
     VmxContext, VmxInitError, VmxoffError, VmxonError,
 };
 
+// Hashing (used by the kernel module's COW duplication diagnostic).
+pub use logging::Xxh64Hasher;
+
 // VM implementation
 pub use cow::CowPageMap;
-pub use vm::{ForkableVm, ForkedVm, ParentVm, RootVm};
+pub use vm::{ForkableVm, ForkedVm, PageDeduplicator, ParentVm, RootVm};
 pub use vm_state::{
     EnqueueResult, FeedbackBufferInfo, LogMode, PendingIoAction, VmState,
     FEEDBACK_BUFFER_ID_MAX_LEN, MAX_FEEDBACK_BUFFERS,

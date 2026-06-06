@@ -37,7 +37,9 @@ pub use traits::{
 
 // VM implementation
 pub use traits::VmRunError;
-pub use vm::{ForkableVm, ForkedVm, ForkedVmError, ParentVm, RootVm, RootVmError};
+pub use vm::{
+    ForkableVm, ForkedVm, ForkedVmError, PageDeduplicator, ParentVm, RootVm, RootVmError,
+};
 pub use vm_state::{
     AllExitStats, ExitStats, LogMode, SyscallMsrs, VmState, VmStateError, DEFAULT_TSC_FREQUENCY,
     PAT_DEFAULT, SERIAL_BUFFER_SIZE,

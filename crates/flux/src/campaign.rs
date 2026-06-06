@@ -135,6 +135,9 @@ impl Campaign {
         for dir in [&cfg.repro_dir, &cfg.serial_dir].into_iter().flatten() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // The seed is the root corpus entry (kept for the whole campaign), so
+        // deduplicate it up front like any other retained checkpoint.
+        let _ = seed_cp.deduplicate();
         Arc::new(Self {
             corpus: Mutex::new(vec![Node::seed(seed_cp)]),
             intermediates: Mutex::new(HashMap::new()),
@@ -518,6 +521,11 @@ impl Campaign {
         } else {
             drift_subset(parent_swarm, n_actions, 30, rng)
         };
+        // This checkpoint is being retained in the corpus, so it's worth
+        // deduplicating its COW pages now (immutable from here, no children
+        // yet). We only do this for kept checkpoints — the many transient
+        // checkpoints from non-novel runs are dropped without dedup. Best-effort.
+        let _ = res.new_cp.deduplicate();
         let node = Node {
             input: recording_to_input(&res.recording, res.new_cp.time().instructions()),
             checkpoint: res.new_cp,
@@ -648,7 +656,7 @@ impl Campaign {
         while self.sleep_unless_stopped(Duration::from_secs(15)) {
             let view = self.stats_view();
             crate::ui::heartbeat(&format!(
-                "wall {:.0}s · vt {:.0}s ({:.1}x) · {} branches · {} corpus (+{}) · {} checkpoints · {} bug ({} unique)",
+                "wall {:.0}s · vt {:.0}s ({:.1}x) · {} branches · {} corpus (+{}) · {} checkpoints · {} bugs ({} unique)",
                 view.wall_secs, view.vt_secs, view.vt_per_wall, view.branches,
                 view.corpus, view.adds, view.checkpoints, view.solutions, view.unique_solutions,
             ));

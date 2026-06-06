@@ -242,6 +242,18 @@ impl Checkpoint {
         self.inner.id
     }
 
+    /// Deduplicate this checkpoint's copy-on-write pages against the kernel's
+    /// shared store, reclaiming pages identical to ones already stored.
+    ///
+    /// Call this only on checkpoints that will be retained (e.g. corpus
+    /// entries): a checkpoint is immutable, so collapsing its duplicate pages is
+    /// safe, but doing it for transient checkpoints that are immediately dropped
+    /// is wasted work. Best-effort — see `Vm::deduplicate` for the error
+    /// conditions (e.g. the checkpoint already has children).
+    pub fn deduplicate(&self) -> std::io::Result<()> {
+        self.inner.vm.deduplicate()
+    }
+
     /// The virtual time at which this checkpoint was taken.
     pub fn time(&self) -> VirtTime {
         self.inner.time

@@ -11,11 +11,28 @@ use super::memory::{HostPhysAddr, VirtAddr};
 use super::vmx::traits::{GuestMemory, Page as PageTrait};
 
 /// A kernel-allocated page wrapping the kernel crate's Page type.
+///
+/// A `KernelPage` is normally the sole owner of its backing page (`page` is
+/// `Some`). After freeze-time deduplication it may instead be a *reference* into
+/// the shared content-addressed store (`shared` is `Some`, `page` is `None`):
+/// the store owns the real page and this `KernelPage` just holds a refcounted
+/// handle plus the shared page's addresses.
 pub(crate) struct KernelPage {
-    pub(crate) page: Page,
+    /// Privately-owned backing page. `None` once deduplicated into the store.
+    page: Option<Page>,
+    /// Refcounted handle into the dedup store. `Some` once deduplicated.
+    shared: Option<super::cow_store::SharedRef>,
     pub(crate) phys: HostPhysAddr,
     pub(crate) virt: VirtAddr,
 }
+
+// SAFETY: KernelPage may carry a `SharedRef` (a raw pointer into the dedup
+// store). That pointer is only ever dereferenced through the store's mutex, so
+// the page is safe to send/share between threads like the owned-page variant.
+unsafe impl Send for KernelPage {}
+// SAFETY: see the Send impl; shared access does not touch the raw pointer
+// except through the store mutex.
+unsafe impl Sync for KernelPage {}
 
 impl PageTrait for KernelPage {
     fn physical_address(&self) -> HostPhysAddr {
@@ -29,8 +46,44 @@ impl PageTrait for KernelPage {
 
 impl KernelPage {
     /// Returns the raw kernel page pointer for use with remap_pfn_range.
+    ///
+    /// Only valid for privately-owned pages; deduplicated (shared) pages are not
+    /// mmap'd, so this panics if called on one.
     pub(crate) fn as_raw_page(&self) -> *mut kernel::bindings::page {
-        self.page.as_ptr()
+        self.page
+            .as_ref()
+            .expect("as_raw_page on a deduplicated (shared) page")
+            .as_ptr()
+    }
+
+    /// Take the privately-owned backing page out, leaving this `KernelPage`
+    /// temporarily without a backing page (the caller is converting it into a
+    /// shared reference and must call [`set_shared`] next).
+    pub(crate) fn take_owned(&mut self) -> Option<Page> {
+        self.page.take()
+    }
+
+    /// Rebind this page to a shared copy in the dedup store.
+    pub(crate) fn set_shared(
+        &mut self,
+        shared: super::cow_store::SharedRef,
+        phys: HostPhysAddr,
+        virt: VirtAddr,
+    ) {
+        self.shared = Some(shared);
+        self.phys = phys;
+        self.virt = virt;
+    }
+}
+
+impl Drop for KernelPage {
+    fn drop(&mut self) {
+        // If this was deduplicated, release our reference to the shared page;
+        // the store frees it when the last reference goes away. Otherwise the
+        // `Option<Page>` field drops below, freeing the privately-owned page.
+        if let Some(shared) = self.shared.take() {
+            super::cow_store::release(shared);
+        }
     }
 }
 
@@ -171,7 +224,8 @@ pub(crate) fn alloc_zeroed_page() -> Option<KernelPage> {
     let virt_addr = unsafe { c_helpers::bedrock_page_address(page.as_ptr()) as u64 };
 
     Some(KernelPage {
-        page,
+        page: Some(page),
+        shared: None,
         phys: HostPhysAddr::new(phys_addr),
         virt: VirtAddr::new(virt_addr),
     })

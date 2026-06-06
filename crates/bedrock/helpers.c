@@ -17,6 +17,7 @@
 #include <linux/preempt.h>
 #include <linux/percpu.h>
 #include <linux/xxhash.h>
+#include <linux/crc64.h>
 #include <asm/io.h>
 #include <asm/msr.h>
 #include <asm/tlbflush.h>
@@ -526,6 +527,17 @@ u64 bedrock_xxh64(const void *input, size_t length, u64 seed)
 	return xxh64(input, length, seed);
 }
 EXPORT_SYMBOL_GPL(bedrock_xxh64);
+
+/*
+ * One-shot CRC64 (NVME polynomial). On x86 this uses the PCLMULQDQ-accelerated
+ * path, which is faster than xxh64's scalar multiplies. Used as the COW dedup
+ * page hash (64-bit, so no extra collisions vs xxh64).
+ */
+u64 bedrock_crc64(const void *input, size_t length)
+{
+	return crc64_nvme(0, input, length);
+}
+EXPORT_SYMBOL_GPL(bedrock_crc64);
 
 /*
  * Reset xxh64 state for streaming hashing.

@@ -15,6 +15,24 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 const PAGE_SIZE: usize = 4096;
 
+/// Strategy for collapsing a COW page onto a shared, content-addressed copy.
+///
+/// Implemented by the platform's deduplication store (the kernel module). For a
+/// given page, `dedup_page` inspects its contents and:
+///
+/// - on a content hit, frees the private page, rebinds `page` to the shared
+///   copy, and returns the shared host-physical address; or
+/// - on a miss (or hash collision), leaves `page` unchanged and returns its
+///   current host-physical address.
+///
+/// The caller compares the returned HPA against the page's previous HPA to
+/// decide whether the EPT leaf needs repointing.
+pub trait PageDeduplicator<P: Page> {
+    /// Deduplicate a single page, returning the host-physical address it is now
+    /// backed by.
+    fn dedup_page(&self, page: &mut P) -> HostPhysAddr;
+}
+
 /// Error type for ForkedVm creation.
 #[derive(Debug)]
 pub enum ForkedVmError<E> {
@@ -238,6 +256,53 @@ impl<V: VirtualMachineControlStructure, P: Page, I: InstructionCounter> ForkedVm
     /// Get a mutable reference to the COW pages.
     pub fn cow_pages_mut(&mut self) -> &mut CowPageMap<P> {
         &mut self.cow_pages
+    }
+
+    /// Deduplicate this VM's COW pages against a shared content-addressed store.
+    ///
+    /// This must only be called once the VM has frozen — i.e. it has just gained
+    /// its first child and cannot run again — and before that child clones the
+    /// EPT. Under those conditions the VM's pages are immutable, so collapsing
+    /// private COW pages onto identical shared copies is invisible to the guest,
+    /// and the child inherits the shared host-physical addresses when it clones
+    /// the (now-deduplicated) EPT. Only byte-identical pages are ever merged, so
+    /// guest-visible content — and determinism — is unchanged.
+    ///
+    /// Returns `(pages_examined, pages_shared)`.
+    pub fn deduplicate_cow_pages<A, D>(&mut self, allocator: &A, dedup: &D) -> (usize, usize)
+    where
+        A: FrameAllocator,
+        D: PageDeduplicator<P>,
+    {
+        // Split the borrow: the COW map and the EPT are disjoint fields.
+        let cow_pages = &mut self.cow_pages;
+        let ept = &mut self.state.ept;
+        let mut examined = 0usize;
+        let mut shared = 0usize;
+        cow_pages.for_each_mut(|gpa, page| {
+            examined += 1;
+            let before = page.physical_address();
+            let after = dedup.dedup_page(page);
+            if after != before {
+                // The page now lives at a shared HPA; repoint the EPT leaf to it
+                // read-only. (On a miss the HPA is unchanged and the leaf is left
+                // as-is — the VM is frozen and children re-clone with R+X anyway.)
+                shared += 1;
+                if ept
+                    .remap_4k(
+                        allocator,
+                        gpa,
+                        after,
+                        EptPermissions::READ_EXECUTE,
+                        EptMemoryType::WriteBack,
+                    )
+                    .is_err()
+                {
+                    log_err!("DEDUP: failed to remap EPT for GPA {:#x}\n", gpa.as_u64());
+                }
+            }
+        });
+        (examined, shared)
     }
 
     /// Get the parent's memory size.

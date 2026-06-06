@@ -132,6 +132,15 @@ pub(crate) struct BedrockForkedVmFile {
     pub vm_id: u64,
     /// Flag to detect concurrent access to RUN ioctl.
     pub running: AtomicBool,
+    /// Set once this VM has been deduplicated (at its first freeze). Guards
+    /// against re-deduplicating if it re-crosses 0->1 children_count after a
+    /// child is dropped, which would double-count refcounts and leak pages.
+    pub deduplicated: AtomicBool,
+    /// True while a (lock-free) deduplication walk is mutating this VM's EPT and
+    /// COW pages. Set/observed under the handler lock so forks of this VM are
+    /// refused for the duration; lets the expensive walk run without holding the
+    /// global handler lock.
+    pub dedup_active: AtomicBool,
     /// Optional log buffer for deterministic exit logging.
     pub log_buffer: Option<LogBuffer>,
     /// Pre-allocated page pool for COW allocation during run loop.
@@ -155,6 +164,8 @@ impl BedrockForkedVmFile {
             _parent: parent,
             vm_id,
             running: AtomicBool::new(false),
+            deduplicated: AtomicBool::new(false),
+            dedup_active: AtomicBool::new(false),
             log_buffer: None,
             page_pool: PagePool::new(COW_POOL_SIZE),
         }

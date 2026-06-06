@@ -199,6 +199,10 @@ extern "C" {
     /// Finalize and return the XXH64 hash.
     pub(crate) fn bedrock_xxh64_digest(state: *const Xxh64State) -> u64;
 
+    /// One-shot CRC64 (NVME polynomial, PCLMULQDQ-accelerated on x86).
+    /// Faster than XXH64 for the COW dedup page hash and still 64-bit wide.
+    pub(crate) fn bedrock_crc64(input: *const core::ffi::c_void, length: usize) -> u64;
+
     /// Check if VMX is enabled on the current CPU.
     /// Must be called with preemption disabled.
     pub(crate) fn bedrock_vcpu_is_vmxon() -> bool;

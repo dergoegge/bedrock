@@ -25,7 +25,7 @@ mod forked;
 mod root;
 mod traits;
 
-pub use forked::{ForkedVm, ForkedVmError};
+pub use forked::{ForkedVm, ForkedVmError, PageDeduplicator};
 pub use root::{RootVm, RootVmError};
 pub use traits::{ForkableVm, ParentVm};
 

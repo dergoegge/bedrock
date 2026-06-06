@@ -361,6 +361,41 @@ impl Vm {
         Self::create_forked(vm_id)
     }
 
+    /// Deduplicate this VM's copy-on-write pages against the kernel's shared
+    /// content-addressed store, reclaiming pages whose contents are identical to
+    /// ones already stored.
+    ///
+    /// Intended for immutable snapshots (checkpoints): collapsing duplicate
+    /// pages eagerly avoids holding redundant memory until the VM is first
+    /// forked from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the VM already has children (the kernel reports
+    /// `EBUSY` — children's EPTs reference this VM's pages, so they can't be
+    /// reclaimed), if it is a root VM (`EINVAL`), or if the ioctl otherwise
+    /// fails. The page contents and VM behavior are unchanged on success.
+    pub fn deduplicate(&self) -> io::Result<()> {
+        let vm_id = self.get_vm_id()?;
+        let device = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(BEDROCK_DEVICE_PATH)?;
+
+        let ret = unsafe {
+            libc::ioctl(
+                device.as_raw_fd(),
+                BEDROCK_DEDUP_VM as libc::c_ulong,
+                vm_id,
+            )
+        };
+
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Returns true if this is a forked VM.
     pub fn is_forked(&self) -> bool {
         self.forked

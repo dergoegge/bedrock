@@ -18,6 +18,7 @@ use kernel::prelude::*;
 #[macro_use]
 mod log;
 mod c_helpers;
+mod cow_store;
 mod ept;
 mod factory;
 mod instruction_counter;
@@ -64,6 +65,13 @@ const BEDROCK_CREATE_ROOT_VM: u32 = _IOW::<BedrockCreateVmConfig>(BEDROCK_IOC_MA
 /// Ioctl number for CREATE_FORKED_VM command.
 /// This is _IOW('B', 1, u64) - takes parent VM ID as argument, returns FD via return value.
 const BEDROCK_CREATE_FORKED_VM: u32 = _IOW::<u64>(BEDROCK_IOC_MAGIC, 1);
+
+/// Ioctl number for DEDUP_VM command.
+/// This is _IOW('B', 2, u64) - takes a VM ID and deduplicates that VM's COW
+/// pages against the shared store. Used by the fuzzer at checkpoint creation:
+/// a checkpoint is immutable but may not be forked from for a while, so we
+/// reclaim its duplicate pages eagerly instead of waiting for its first child.
+const BEDROCK_DEDUP_VM: u32 = _IOW::<u64>(BEDROCK_IOC_MAGIC, 2);
 
 module! {
     type: Bedrock,
@@ -224,17 +232,32 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
 
         let parent_type = parent_ref.file_type();
 
+        // Refuse to fork a VM that is mid-deduplication: its EPT and COW pages
+        // are being rewritten without the handler lock, so cloning its EPT now
+        // could capture pages about to be freed. Checked under the handler lock
+        // against `dedup_active`, which the dedup path sets under the same lock.
+        // In practice never hit: checkpoints are deduplicated before they are
+        // published to workers, so nothing forks them during the walk.
+        if let ParentVmArc::Forked(parent_file) = &parent_ref {
+            if parent_file
+                .dedup_active
+                .load(core::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(EAGAIN);
+            }
+        }
+
         // Clone the parent Arc and increment children_count BEFORE releasing
         // the handler lock. The cloned reference keeps parent memory alive even
         // if userspace closes the parent FD while fork creation continues.
+        //
+        // Deduplication is NOT triggered here. The application drives it
+        // explicitly via the DEDUP_VM ioctl (only on checkpoints it retains),
+        // so the kernel never deduplicates on its own.
         let parent = parent_ref;
         match &parent {
-            ParentVmArc::Root(parent_file) => {
-                parent_file.vm.add_child();
-            }
-            ParentVmArc::Forked(parent_file) => {
-                parent_file.vm.add_child();
-            }
+            ParentVmArc::Root(parent_file) => parent_file.vm.add_child(),
+            ParentVmArc::Forked(parent_file) => parent_file.vm.add_child(),
         }
 
         log_info!(
@@ -314,6 +337,78 @@ fn handle_create_forked_vm(parent_vm_id: u64) -> Result<isize> {
     Ok(fd as isize)
 }
 
+/// Handle DEDUP_VM ioctl - deduplicate a VM's COW pages on demand.
+///
+/// Used by the fuzzer when it creates a checkpoint: the checkpoint is immutable
+/// but may not be forked from for a while, so we reclaim its duplicate pages now
+/// rather than waiting for the first-child trigger.
+///
+/// Returns `EBUSY` if the VM already has children: their EPTs have already cloned
+/// this VM's leaves, so freeing/repointing its pages would dangle them. Such a VM
+/// was deduplicated at its first freeze anyway. Returns `EINVAL` for root VMs
+/// (their contiguous memory is not page-reclaimable).
+#[inline(never)]
+fn handle_dedup_vm(vm_id: u64) -> Result<isize> {
+    use core::sync::atomic::Ordering::SeqCst;
+
+    // Phase 1: validate and claim under the handler lock (brief). We do NOT hold
+    // the lock during the expensive walk — that would serialize all fork and
+    // checkpoint creation across every worker. Instead we set `dedup_active`
+    // here (under the lock), and the fork path refuses to fork this VM while it
+    // is set, so the walk has exclusive access without the global lock.
+    let vm_ref = {
+        let mut guard = HANDLER.lock();
+        let handler = guard.as_mut().ok_or(ENODEV)?;
+        let vm_ref = handler.find_vm_by_id(vm_id).ok_or(ENOENT)?;
+        {
+            let parent_file = match &vm_ref {
+                ParentVmArc::Forked(f) => f,
+                // Root VMs own one contiguous allocation; nothing to reclaim.
+                ParentVmArc::Root(_) => return Err(EINVAL),
+            };
+            // Refuse if children already exist: their cloned EPTs reference this
+            // VM's pages, so we cannot free/repoint them.
+            if parent_file.vm.children_count() != 0 {
+                return Err(EBUSY);
+            }
+            // Deduplicate at most once; unify with the first-child trigger.
+            if parent_file.deduplicated.swap(true, SeqCst) {
+                return Ok(0);
+            }
+            // Block forks of this VM for the duration of the walk. Setting this
+            // under the handler lock (with children_count == 0) means no fork is
+            // mid-clone now, and later forks observe it and back off.
+            parent_file.dedup_active.store(true, SeqCst);
+        }
+        // Keep a strong reference so the VM outlives the walk after we release
+        // the handler lock.
+        vm_ref
+    };
+
+    // Phase 2: the expensive walk, WITHOUT the handler lock.
+    let parent_file = match &vm_ref {
+        ParentVmArc::Forked(f) => f,
+        // Unreachable: we returned EINVAL for Root above.
+        ParentVmArc::Root(_) => return Err(EINVAL),
+    };
+    let pid = parent_file.vm_id;
+    // Derive a raw *mut from the Arc (no &T -> &mut T cast) and form the
+    // exclusive &mut from it, the same access model the run path uses.
+    let file_ptr = kernel::sync::Arc::as_ptr(parent_file).cast_mut();
+    // SAFETY: `dedup_active` is set, so forks of this VM are refused under the
+    // handler lock until we clear it; children_count was 0 (no clone in flight);
+    // and the fuzzer treats checkpoints as immutable (not run). The Arc keeps the
+    // allocation alive, so we have exclusive access for the walk.
+    let vm = unsafe { &mut *core::ptr::addr_of_mut!((*file_ptr).vm) };
+    let allocator = KernelFrameAllocator::new(MACHINE.kernel());
+    let (examined, shared) = vm.deduplicate_cow_pages(&allocator, &cow_store::KernelDedup);
+    cow_store::log_stats(pid, examined, shared);
+
+    // Phase 3: re-open this VM to forks.
+    parent_file.dedup_active.store(false, SeqCst);
+    Ok(0)
+}
+
 #[vtable]
 impl MiscDevice for BedrockFile {
     type Ptr = Pin<KBox<Self>>;
@@ -327,6 +422,7 @@ impl MiscDevice for BedrockFile {
         match cmd {
             BEDROCK_CREATE_ROOT_VM => handle_create_root_vm(arg),
             BEDROCK_CREATE_FORKED_VM => handle_create_forked_vm(arg as u64),
+            BEDROCK_DEDUP_VM => handle_dedup_vm(arg as u64),
             _ => {
                 log_err!("Unknown ioctl command: {:#x}\n", cmd);
                 Err(ENOTTY)
@@ -351,6 +447,8 @@ impl kernel::InPlaceModule for Bedrock {
 
                 // SAFETY: Called exactly once during module initialization.
                 HANDLER.init();
+                // Initialize the freeze-time COW deduplication store.
+                cow_store::init();
 
                 // Initialize VMX and create the handler
                 let handler = match BedrockHandler::<RealVmx, MAX_TRACKED_VMS>::new(&MACHINE) {
@@ -387,11 +485,17 @@ impl PinnedDrop for Bedrock {
     fn drop(self: Pin<&mut Self>) {
         log_info!("Bedrock module unloading...\n");
 
-        // Clear the global handler first
+        // Clear the global handler first. This drops the handler's strong
+        // references to every tracked VM; any VM not still held elsewhere drops
+        // now, releasing its shared pages back to the dedup store.
         {
             let mut guard = HANDLER.lock();
             *guard = None;
         }
+
+        // Report the dedup store's residual size. After all VMs have dropped it
+        // should be empty (canonical=0); anything left indicates a leak.
+        cow_store::log_teardown();
 
         // Deinitialize VMX on all CPUs
         match MACHINE.kernel().call_on_all_cpus_with_data(

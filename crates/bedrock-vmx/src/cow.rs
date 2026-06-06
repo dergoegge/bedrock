@@ -95,6 +95,15 @@ mod cargo_impl {
                 .iter()
                 .map(|(&gpa, page)| (GuestPhysAddr::new(gpa), page))
         }
+
+        /// Mutably visit every COW page.
+        ///
+        /// Calls `f(gpa, &mut page)` for each entry, where GPA is page-aligned.
+        pub fn for_each_mut<F: FnMut(GuestPhysAddr, &mut P)>(&mut self, mut f: F) {
+            for (gpa, page) in self.pages.iter_mut() {
+                f(GuestPhysAddr::new(*gpa), page);
+            }
+        }
     }
 
     impl<P: Page> Default for CowPageMap<P> {
@@ -196,6 +205,15 @@ mod kernel_impl {
             self.pages
                 .iter()
                 .map(|(gpa, page)| (GuestPhysAddr::new(*gpa), page))
+        }
+
+        /// Mutably visit every COW page.
+        ///
+        /// Calls `f(gpa, &mut page)` for each entry, where GPA is page-aligned.
+        pub fn for_each_mut<F: FnMut(GuestPhysAddr, &mut P)>(&mut self, mut f: F) {
+            for (gpa, page) in self.pages.iter_mut() {
+                f(GuestPhysAddr::new(*gpa), page);
+            }
         }
     }
 
