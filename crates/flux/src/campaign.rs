@@ -1526,6 +1526,21 @@ mod tests {
     }
 
     #[test]
+    fn eventually_driver_bool_assertion_is_recognized() {
+        // The exact `Always` line an `eventually_` driver appends to
+        // assertions.jsonl on a violation (Condition::Bool(false)). It must
+        // parse and surface as a failed-assertion solution keyed by its message.
+        let violated = r#"{"Always":{"condition":{"Bool":false},"result":false,"message":"btcd chains agree","location":{"file":"eventually_chains_agree","line":1,"column":1}}}"#;
+        assert_eq!(
+            failed_always_message(&line(violated)).as_deref(),
+            Some("btcd chains agree")
+        );
+        // The passing form the driver writes on convergence is not a bug.
+        let held = r#"{"Always":{"condition":{"Bool":true},"result":true,"message":"btcd chains agree","location":{"file":"eventually_chains_agree","line":1,"column":1}}}"#;
+        assert_eq!(failed_always_message(&line(held)), None);
+    }
+
+    #[test]
     fn failed_sometimes_is_not_a_bug() {
         let l = line(
             r#"{"Sometimes":{"condition":{"Eq":{"x":1,"y":0}},"result":false,"message":"x reached zero","location":{"file":"m.rs","line":1,"column":1}}}"#,

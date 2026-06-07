@@ -4,23 +4,40 @@
 # in-flight drivers and clears fault injection, then runs this one ALONE (in its
 # own branch off the quiesced checkpoint), so it observes a settled system.
 #
-# Unlike the state-driving drivers in this directory, an `eventually_` driver
-# MUST exit non-zero when its invariant is violated — that non-zero exec exit is
-# what the workload-monitor turns into a fuzzer solution. So, deliberately, there
-# is NO `trap 'exit 0'` here.
+# Unlike the state-driving drivers here, an `eventually_` driver signals an
+# invariant violation rather than just doing work. It does so the same way the
+# rest of the system does: by recording a bedrock **assertion** — a failed
+# `Always` record appended to /bedrock/assertions.jsonl (bind-mounted into every
+# container, tailed into the journal as `[assertions]`), which the fuzzer's
+# collector turns into a solution. It deliberately does NOT signal failure via
+# its exit code, so it always exits 0.
 #
 # Invariant: once quiesced and with partitions healed, the two btcd nodes
 # converge on the same best-block hash. A permanent divergence is a consensus /
-# fork bug. We poll for convergence (the "eventually") for up to ~60s and fail
-# only if the nodes still disagree after that budget.
+# fork bug. We poll for convergence (the "eventually") for up to ~60s and record
+# the assertion's result once the nodes agree, or after that budget if they
+# don't.
 #
 # Timing: the worst-case runtime (TRIES * the sleep, ~60s here) must stay
-# comfortably below the fuzzer's --eventually-run-for-secs window, or a real
-# divergence would be cut off at the checkpoint before this driver can report
-# it. The fuzzer's default window is sized for this.
+# comfortably below the fuzzer's --eventually-run-for-secs window, or the branch
+# would be checkpointed before the assertion is written. The default window is
+# sized for this.
 set -u
+trap 'exit 0' EXIT
 
 BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+ASSERTIONS=/bedrock/assertions.jsonl
+MSG="btcd chains agree"
+
+# Append one `Always` assertion line. $1 is "true"/"false" — both the Bool
+# condition and its result (result == condition.evaluate()). The JSON matches
+# bedrock-assertions' serde, so the fuzzer parses it like any other assertion; a
+# `false` result is a violation. A single short append is atomic across the
+# file's concurrent writers (this driver plus the workload-monitor).
+assert() {
+    printf '%s\n' "{\"Always\":{\"condition\":{\"Bool\":$1},\"result\":$1,\"message\":\"$MSG\",\"location\":{\"file\":\"eventually_chains_agree\",\"line\":1,\"column\":1}}}" \
+        >> "$ASSERTIONS"
+}
 
 TRIES=60
 while [ "$TRIES" -gt 0 ]; do
@@ -28,6 +45,7 @@ while [ "$TRIES" -gt 0 ]; do
     h2=$($BCTL --rpcserver=btcd2:18334 getbestblockhash 2>/dev/null || true)
     if [ -n "$h1" ] && [ "$h1" = "$h2" ]; then
         echo "chains agree at $h1"
+        assert true
         exit 0
     fi
     TRIES=$((TRIES - 1))
@@ -35,4 +53,5 @@ while [ "$TRIES" -gt 0 ]; do
 done
 
 echo "INVARIANT VIOLATED: btcd1=$h1 btcd2=$h2 (chains did not converge)" >&2
-exit 1
+assert false
+exit 0
