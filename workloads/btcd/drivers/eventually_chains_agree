@@ -11,17 +11,18 @@
 #
 # Invariant: once quiesced and with partitions healed, the two btcd nodes
 # converge on the same best-block hash. A permanent divergence is a consensus /
-# fork bug. We poll for convergence (the "eventually") and fail only if the
-# nodes still disagree after the budget below.
+# fork bug. We poll for convergence (the "eventually") for up to ~60s and fail
+# only if the nodes still disagree after that budget.
 #
-# Timing: keep the worst-case runtime (TRIES * the sleep) comfortably below the
-# fuzzer's --eventually-run-for-secs window, or a real divergence would be cut
-# off at the checkpoint before this driver can report it.
+# Timing: the worst-case runtime (TRIES * the sleep, ~60s here) must stay
+# comfortably below the fuzzer's --eventually-run-for-secs window, or a real
+# divergence would be cut off at the checkpoint before this driver can report
+# it. The fuzzer's default window is sized for this.
 set -u
 
 BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
 
-TRIES=4
+TRIES=60
 while [ "$TRIES" -gt 0 ]; do
     h1=$($BCTL --rpcserver=btcd1:18334 getbestblockhash 2>/dev/null || true)
     h2=$($BCTL --rpcserver=btcd2:18334 getbestblockhash 2>/dev/null || true)

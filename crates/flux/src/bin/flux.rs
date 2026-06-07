@@ -85,8 +85,10 @@ struct Args {
 
     /// Virtual-time window for an `eventually_` pass (kill in-flight drivers,
     /// clear faults, then run the invariant checks). Must exceed the barrier
-    /// plus the slowest `eventually_` driver.
-    #[arg(long = "eventually-run-for-secs", default_value_t = 3.0)]
+    /// plus the slowest `eventually_` driver — each driver fires ~a quarter of
+    /// the way in, so the window needs to be roughly 4/3 of that driver's
+    /// worst-case runtime. The default fits a ~60s convergence-poll driver.
+    #[arg(long = "eventually-run-for-secs", default_value_t = 90.0)]
     eventually_run_for_secs: f64,
 
     /// Keep fuzzing after the first solution instead of quitting.
