@@ -65,6 +65,7 @@
   .legend i { width: 7px; height: 7px; display: inline-block; background: var(--cp); }
   .legend i.br { background: var(--br); }
   .legend i.so { background: var(--fail); }
+  .legend i.bug { background: var(--sol); border-radius: 50%; }
   .legend u { display: inline-block; width: 14px; border-top: 1px solid var(--line-3); }
   #status { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--fg-2); white-space: nowrap; }
   #status::before { content: ""; width: 6px; height: 6px; display: inline-block; background: var(--fg-3); }
@@ -129,6 +130,7 @@ try { document.documentElement.dataset.theme = localStorage.getItem('seed-theme'
     <span><i></i> checkpoint</span>
     <span><u></u> branch</span>
     <span><i class="br"></i> live</span>
+    <span><i class="bug"></i> bug</span>
     <span><i class="so"></i> solution</span>
   </div>
   <span class="sep"></span>
@@ -356,20 +358,30 @@ function draw() {
       const cy = sy(i); if (cy < -2 || cy > h + 2) continue;
       const xs = sxv(LSTART[i]), xe = sxv(LX[i]);
       if (xe < 0 || xs > w) continue;
-      ctx.moveTo(xs, sy(p)); ctx.lineTo(xs, cy); ctx.lineTo(xe, cy);
+      // Attach point on the parent's row: clamp to the parent's bar end so a
+      // branch that forked *after* the parent's checkpoint — e.g. an in-flight
+      // eventually branch hanging off a not-yet-committed end_cp — stays
+      // connected at the bar's tip instead of floating off in empty space.
+      const xa = Math.min(xs, sxv(LX[p]));
+      ctx.moveTo(xa, sy(p)); ctx.lineTo(xa, cy); ctx.lineTo(xe, cy);
     }
     ctx.stroke();
   }
 
-  // checkpoint dots (at the checkpoint vt)
-  ctx.beginPath(); ctx.fillStyle = css('--cp');
-  for (let i = 0; i < LN; i++) {
-    if (!LCP[i]) continue;
-    const x = sxv(LX[i]), y = sy(i);
-    if (x < -R || x > w + R || y < -R || y > h + R) continue;
-    ctx.moveTo(x + R, y); ctx.arc(x, y, R, 0, 6.2832);
+  // checkpoint dots (at the checkpoint vt): white normally, red when the
+  // branch leading to the checkpoint tripped a bug (failed Always assertion).
+  for (const bugPass of [false, true]) {
+    ctx.beginPath(); ctx.fillStyle = bugPass ? css('--sol') : css('--cp');
+    for (let i = 0; i < LN; i++) {
+      if (!LCP[i]) continue;
+      const isBug = !!(corpus[i] && corpus[i].bug);
+      if (isBug !== bugPass) continue;
+      const x = sxv(LX[i]), y = sy(i);
+      if (x < -R || x > w + R || y < -R || y > h + R) continue;
+      ctx.moveTo(x + R, y); ctx.arc(x, y, R, 0, 6.2832);
+    }
+    ctx.fill();
   }
-  ctx.fill();
 
   // rewind dots on the parent's bar — only where the branch actually
   // rewound (forked before the parent's checkpoint vt).

@@ -52,6 +52,10 @@ pub struct Node {
     /// no workload knowledge). Computed once at add; the existing effort decay
     /// keeps it from pinning the fleet to one entry forever.
     pub rarity: f64,
+    /// Whether the branch that produced this checkpoint tripped a bug (a failed
+    /// `Always` assertion on its serial). Such nodes are kept for breeding
+    /// around the bug; the dashboard draws them as a red dot rather than white.
+    pub bug: bool,
 }
 
 impl Node {
@@ -69,6 +73,7 @@ impl Node {
             in_flight: 0,
             swarm: Vec::new(),
             rarity: 0.0,
+            bug: false,
         }
     }
 }

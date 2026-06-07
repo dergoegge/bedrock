@@ -72,6 +72,9 @@ pub struct CorpusEntryView {
     pub scheduled: u64,
     pub novelty: u64,
     pub serial_lines: usize,
+    /// The discovering branch tripped a bug (a failed `Always` assertion on its
+    /// serial) — drawn as a red dot in the dashboard rather than white.
+    pub bug: bool,
 }
 
 /// Corpus entry detail (`/corpus/{id}`): the summary plus captured serial.

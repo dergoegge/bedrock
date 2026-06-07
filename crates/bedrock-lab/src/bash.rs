@@ -8,13 +8,20 @@
 //! module wraps the wire protocol so callers can think in terms of "run
 //! this command" or "list workloads" rather than byte layouts.
 
-/// Where a [`Branch::bash`](crate::Branch::bash) command runs.
+/// Where a [`Branch::bash`](crate::Branch::bash) command runs — or, for
+/// [`BashTarget::KillDrivers`], a module-level control action that runs no
+/// command at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BashTarget {
     /// Run on the guest host (outside any container).
     Host,
     /// Run inside the named container.
     Container(String),
+    /// Not a command: ask the `bedrock-io` guest module to SIGKILL every
+    /// in-flight `/opt/bedrock/drivers/` exec and wait for them to drain. Used
+    /// to quiesce the workload before an `eventually_` invariant check. The
+    /// command string on the action is ignored.
+    KillDrivers,
 }
 
 impl BashTarget {
@@ -26,6 +33,11 @@ impl BashTarget {
     /// Construct a [`BashTarget::Container`] without typing `.into()`.
     pub fn container(name: impl Into<String>) -> Self {
         Self::Container(name.into())
+    }
+
+    /// Construct a [`BashTarget::KillDrivers`] control action.
+    pub fn kill_drivers() -> Self {
+        Self::KillDrivers
     }
 }
 
@@ -87,6 +99,10 @@ pub(crate) const IO_RESPONSE_MAGIC: u32 = 0x1010B10C;
 const ACTION_GET_WORKLOAD_DETAILS: u32 = 0;
 const ACTION_EXEC_BASH: u32 = 1;
 const ACTION_EXEC_HOST_BASH: u32 = 2;
+/// Kill every in-flight `/opt/bedrock/drivers/` exec and wait for them to drain.
+/// Carries no payload; the response's `exit_code` is the count killed. Must stay
+/// in sync with `ACTION_KILL_EXECS` in the `bedrock-io` kernel module.
+const ACTION_KILL_EXECS: u32 = 3;
 
 const REQUEST_HEADER_LEN: usize = 16;
 const RESPONSE_HEADER_LEN: usize = 24;
@@ -96,9 +112,20 @@ const RESPONSE_HEADER_LEN: usize = 24;
 /// in the response so the lab can correlate this submission with its
 /// specific reply even when other workers complete out of order.
 pub(crate) fn encode_bash_request(target: BashTarget, request_id: u32, cmd: &str) -> Vec<u8> {
+    // KillDrivers is a payload-less control action — it carries no command, so
+    // short-circuit before the command-encoding path below.
+    if let BashTarget::KillDrivers = target {
+        let mut bytes = Vec::with_capacity(REQUEST_HEADER_LEN);
+        bytes.extend_from_slice(&IO_REQUEST_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&ACTION_KILL_EXECS.to_le_bytes());
+        bytes.extend_from_slice(&request_id.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        return bytes;
+    }
     let (action_id, payload_len) = match &target {
         BashTarget::Host => (ACTION_EXEC_HOST_BASH, cmd.len() + 1),
         BashTarget::Container(name) => (ACTION_EXEC_BASH, name.len() + 1 + cmd.len() + 1),
+        BashTarget::KillDrivers => unreachable!("handled above"),
     };
     let mut bytes = Vec::with_capacity(REQUEST_HEADER_LEN + payload_len);
     bytes.extend_from_slice(&IO_REQUEST_MAGIC.to_le_bytes());
@@ -206,10 +233,14 @@ pub(crate) fn decode_response(bytes: &[u8]) -> Result<(u32, ActionResponse), Str
         ACTION_GET_WORKLOAD_DETAILS => {
             ActionResponse::WorkloadDetails(parse_workload_listing(env.data))
         }
-        ACTION_EXEC_BASH | ACTION_EXEC_HOST_BASH => ActionResponse::Bash(BashOutput {
-            status: env.status,
-            exit_code: env.exit_code,
-        }),
+        // ACTION_KILL_EXECS reuses the Bash response shape: `exit_code` carries
+        // the count of execs killed, `status` the dispatch status.
+        ACTION_EXEC_BASH | ACTION_EXEC_HOST_BASH | ACTION_KILL_EXECS => {
+            ActionResponse::Bash(BashOutput {
+                status: env.status,
+                exit_code: env.exit_code,
+            })
+        }
         other => return Err(format!("unknown action_id: {other}")),
     };
     Ok((env.request_id, response))
@@ -238,6 +269,33 @@ mod tests {
         // "ctr\0ls\0" = 7
         assert_eq!(&bytes[12..16], &7u32.to_le_bytes());
         assert_eq!(&bytes[16..23], b"ctr\0ls\0");
+    }
+
+    #[test]
+    fn encode_kill_drivers_is_payloadless() {
+        // KillDrivers ignores the command and emits a header-only request with
+        // the kill action id, like workload-details.
+        let bytes = encode_bash_request(BashTarget::KillDrivers, 0x5151, "ignored cmd");
+        assert_eq!(bytes.len(), REQUEST_HEADER_LEN);
+        assert_eq!(&bytes[0..4], &IO_REQUEST_MAGIC.to_le_bytes());
+        assert_eq!(&bytes[4..8], &ACTION_KILL_EXECS.to_le_bytes());
+        assert_eq!(&bytes[8..12], &0x5151u32.to_le_bytes());
+        assert_eq!(&bytes[12..16], &0u32.to_le_bytes());
+    }
+
+    #[test]
+    fn decode_kill_execs_response_is_bash_with_count() {
+        // The kill reply carries the killed count in exit_code.
+        let resp = make_response(ACTION_KILL_EXECS, 3, 0, 4, b"");
+        let (rid, parsed) = decode_response(&resp).unwrap();
+        assert_eq!(rid, 3);
+        match parsed {
+            ActionResponse::Bash(out) => {
+                assert_eq!(out.status, 0);
+                assert_eq!(out.exit_code, 4);
+            }
+            other => panic!("expected Bash, got {other:?}"),
+        }
     }
 
     #[test]

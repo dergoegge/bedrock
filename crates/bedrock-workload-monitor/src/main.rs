@@ -46,6 +46,16 @@ struct Event {
 /// Assertion message for a `podman exec` session dying.
 const EXEC_DEATH_MSG: &str = "exec exit code is zero";
 
+/// Exit code podman reports for an exec the `bedrock-io` module SIGKILLs when
+/// quiescing the workload before an `eventually_` invariant check (128 + SIGKILL
+/// = 137). These deaths are intentional barrier kills, not workload faults, so
+/// the exec-exit-code invariant is not asserted for them — otherwise every
+/// quiesce would surface a spurious "exec exit code is zero" failure. A driver
+/// that means to report a real failure exits with an ordinary non-zero code (or
+/// trips a `bedrock-assertion`), which is still asserted below. Trade-off: a
+/// genuine SIGKILL/OOM exec death (also 137) is likewise ignored.
+const BARRIER_KILL_EXIT_CODE: i64 = 137;
+
 impl Event {
     /// For a container- or exec-death event we assert on, the exit code paired
     /// with the assertion message; else `None`. The container-death message
@@ -61,6 +71,9 @@ impl Event {
                 let name = self.name.as_deref().unwrap_or("<unknown>");
                 Some((exit_code, format!("container {name} exit code is zero")))
             }
+            // Drivers SIGKILLed by the quiesce barrier exit 137; that's an
+            // intentional kill, not a fault, so don't assert on it.
+            Some("exec_died") if exit_code == BARRIER_KILL_EXIT_CODE => None,
             Some("exec_died") => Some((exit_code, EXEC_DEATH_MSG.to_string())),
             _ => None,
         }
@@ -141,5 +154,53 @@ fn record_exit_code_assertion(sink: Option<&mut File>, exit_code: i64, message: 
     line.push('\n');
     if let Err(e) = file.write_all(line.as_bytes()) {
         eprintln!("failed to append assertion to sink: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(type_: &str, status: &str, exit_code: Option<i64>, name: &str) -> Event {
+        Event {
+            type_: Some(type_.to_string()),
+            status: Some(status.to_string()),
+            exit_code,
+            name: Some(name.to_string()),
+        }
+    }
+
+    #[test]
+    fn exec_died_clean_and_failed_assert_but_barrier_kill_is_ignored() {
+        // Normal clean exec exit: assert (and it holds).
+        let (code, msg) = event("container", "exec_died", Some(0), "c1")
+            .death()
+            .expect("clean exec death asserts");
+        assert_eq!((code, msg.as_str()), (0, EXEC_DEATH_MSG));
+
+        // Ordinary non-zero exit (e.g. a failed eventually_ invariant): asserted.
+        let (code, msg) = event("container", "exec_died", Some(1), "c1")
+            .death()
+            .expect("failed exec death asserts");
+        assert_eq!((code, msg.as_str()), (1, EXEC_DEATH_MSG));
+
+        // Barrier SIGKILL (137): suppressed, not a fault.
+        assert!(
+            event("container", "exec_died", Some(BARRIER_KILL_EXIT_CODE), "c1")
+                .death()
+                .is_none(),
+            "SIGKILLed (137) execs must not assert"
+        );
+    }
+
+    #[test]
+    fn container_death_still_asserts_on_137() {
+        // The 137 suppression is exec-only; a container main-process death with
+        // any code (including 137) is still asserted.
+        let (code, msg) = event("container", "died", Some(137), "btcd1")
+            .death()
+            .expect("container death asserts");
+        assert_eq!(code, 137);
+        assert_eq!(msg, "container btcd1 exit code is zero");
     }
 }

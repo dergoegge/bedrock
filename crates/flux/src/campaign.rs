@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use bedrock_assertions::Assertion;
 use bedrock_lab::{
     Branch, Checkpoint, CheckpointId, InputRecording, LabError, RunOutcome, VirtDuration, VirtTime,
+    WorkloadDriver,
 };
 
 use crate::corpus::{weighted_pick, ActiveBranch, Node, Solution};
@@ -33,7 +34,6 @@ use crate::rng::Rng;
 use crate::shape::strip_ansi;
 use crate::sink::Sink;
 use crate::views::*;
-
 
 /// Per-subscriber SSE queue depth. Bounded so a stuck client can't grow memory
 /// without limit; events overflow (drop) for that client only.
@@ -53,8 +53,20 @@ pub struct Config {
     /// range of branch lengths at once.
     pub run_fors: Vec<VirtDuration>,
     pub frequency: u64,
-    /// The discovered action vocabulary (drivers + fault injection).
+    /// The discovered action vocabulary (drivers + fault injection). Excludes
+    /// `eventually_` drivers, which are fired by the eventually pass, not
+    /// inserted as mid-branch actions.
     pub actions: Vec<Action>,
+    /// `eventually_` invariant-check drivers, discovered but kept out of
+    /// `actions`. Run alone at the end of a branch by [`Campaign::run_eventually_pass`]
+    /// after the workload is quiesced. Empty disables the eventually pass.
+    pub eventually: Vec<WorkloadDriver>,
+    /// Chance (percent) a *non-novel* branch still runs an eventually pass; a
+    /// branch that covered new edges always runs one.
+    pub eventually_pct: u64,
+    /// Virtual-time window for an eventually pass (kill + clear + invariant
+    /// checks).
+    pub eventually_run_for: VirtDuration,
     /// Upper bound on actions inserted per `IoInsert` burst.
     pub burst: usize,
     pub swarm: SwarmMode,
@@ -382,51 +394,65 @@ impl Campaign {
                 }
                 self.branches_since_add.fetch_add(1, Ordering::Relaxed);
 
-                // 5. Objective check first — a bug run is terminal. When a
-                //    workload container crashes it restarts, and the restarted
-                //    instrumented process re-registers its feedback buffer in a
-                //    fresh slot under the same build-id (ids are non-unique by
-                //    design); reading it folds a slab of bogus "new" edges into
-                //    the cumulative map, permanently inflating coverage (a
-                //    monotonic OR never takes them back) and making every
-                //    recurrence look novel. The node is also a dead end. So a
-                //    bug run is neither merged into coverage nor bred from: we
-                //    report it and move on.
-                if let Some(reason) = self.detect_solution(&res) {
-                    self.report_solution(parent_idx, &res, reason);
-                    if self.quit_on_solution {
-                        crate::ui::info("quitting on first solution; pass --no-quit-on-solution to keep fuzzing");
-                        self.stop.store(true, Ordering::Relaxed);
-                        break;
-                    }
-                    continue;
-                }
-
-                // 6. Global novelty (edge coverage) — trusted only now that the
-                //    run is known crash-free.
-                let t_cov = Instant::now();
-                let new_edges = self.lock_coverage().merge_bitmap(&res.coverage);
-                self.prof
-                    .cov_merge_ns
-                    .fetch_add(t_cov.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                let novel = new_edges > 0;
-
-                // 7. Append to the shared corpus when the branch covered new
-                //    edges.
-                if novel {
-                    dry = 0;
-                    let t_add = Instant::now();
-                    self.add_node(
+                // 5. Evaluate the branch: merge coverage + report any objective
+                //    (a new edge OR a new unique `Always` failure = novel; a VM
+                //    crash is terminal). Don't add to the corpus yet — whether we
+                //    keep this `end_cp` can also depend on the eventually pass.
+                let crashed = res.crashed;
+                let end_cp = res.new_cp.clone();
+                let (main_novel, mut stop, main_edges) = self.evaluate(parent_idx, &res);
+                // Keep a novel main branch eagerly so its eventually forks (live
+                // branches included) attach to its node instead of floating.
+                let mut res_opt = Some(res);
+                let mut main_id = if !crashed && main_novel {
+                    Some(self.add_node(
                         parent_idx,
                         &parent_swarm,
-                        res,
+                        res_opt.take().unwrap(),
                         &mut rng,
                         n_actions,
-                        new_edges,
+                        main_edges,
+                    ))
+                } else {
+                    None
+                };
+
+                // 6. Eventually pass from this (non-crashed) branch's end state.
+                //    Its branches fork from `end_cp`; if any is kept (new coverage
+                //    or a fresh invariant violation) the pass also keeps `end_cp`
+                //    itself — lazily adding it when the main branch wasn't novel —
+                //    so the kept node attaches to its real parent rather than
+                //    floating past `parent_idx`'s bar.
+                if !crashed
+                    && !stop
+                    && !self.cfg.eventually.is_empty()
+                    && (main_novel || rng.chance(self.cfg.eventually_pct))
+                {
+                    let (mid, ev_stop) = self.run_eventually_round(
+                        parent_idx,
+                        &parent_swarm,
+                        end_cp,
+                        main_id,
+                        res_opt.take(),
+                        main_edges,
+                        n_actions,
+                        &mut rng,
                     );
-                    self.prof
-                        .addnode_ns
-                        .fetch_add(t_add.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    main_id = mid;
+                    stop |= ev_stop;
+                }
+
+                // 7. A find (here or in the eventually pass) resets the dry
+                //    streak so a productive entry keeps being mined.
+                if main_id.is_some() {
+                    dry = 0;
+                }
+                if stop {
+                    crate::ui::info(
+                        "quitting on first solution; pass --no-quit-on-solution to keep fuzzing",
+                    );
+                    self.stop.store(true, Ordering::Relaxed);
+                    break;
                 }
             }
 
@@ -438,14 +464,45 @@ impl Campaign {
         }
     }
 
-    /// Why this run is a bug, if it is: an unexpected guest exit, or a failed
-    /// `Always` assertion reported on the guest serial (see
-    /// [`assertion_failure_reason`]).
-    fn detect_solution(&self, res: &RunResult) -> Option<String> {
+    /// Evaluate a finished branch: merge its edge coverage and report any
+    /// objective, **without** adding it to the corpus. Returns
+    /// `(novel, stop, new_edges)`:
+    ///  - `novel` if it's worth keeping — new **edge coverage** OR a new unique
+    ///    **`Always` assertion failure** (objective-as-coverage), so the fuzzer
+    ///    breeds around what it finds. The caller adds it (see [`Self::add_node`])
+    ///    once it has decided the parent.
+    ///  - `stop` if a solution fired under `quit_on_solution`.
+    ///  - `new_edges` to hand to `add_node` for the "+N edges" record.
+    ///
+    /// A VM-level crash (`res.crashed`) is the exception: the guest yielded on an
+    /// unexpected exit, which both dead-ends the branch and — because a crashed
+    /// workload container restarts and re-registers its instrumented feedback
+    /// buffer under the same build-id — would fold a slab of bogus edges into the
+    /// cumulative map. So a crash is reported but never merged and never novel.
+    fn evaluate(&self, parent_idx: usize, res: &RunResult) -> (bool, bool, usize) {
         if res.crashed {
-            return Some("guest yielded on unexpected exit".to_string());
+            self.report_solution(
+                parent_idx,
+                res,
+                "guest yielded on unexpected exit".to_string(),
+            );
+            return (false, self.quit_on_solution, 0);
         }
-        assertion_failure_reason(&res.serial)
+        let t_cov = Instant::now();
+        let new_edges = self.lock_coverage().merge_bitmap(&res.coverage);
+        self.prof
+            .cov_merge_ns
+            .fetch_add(t_cov.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let mut novel = new_edges > 0;
+        let mut stop = false;
+        if let Some(reason) = assertion_failure_reason(&res.serial) {
+            // A new unique assertion failure is itself a novelty signal.
+            if self.report_solution(parent_idx, res, reason) {
+                novel = true;
+            }
+            stop = self.quit_on_solution;
+        }
+        (novel, stop, new_edges)
     }
 
     /// Record a solution. A solution is a distinct **finding** the first time
@@ -455,7 +512,11 @@ impl Campaign {
     /// finding regardless of which branch/run hit it. Only findings get the full
     /// treatment — serial retained, printed, and a reproducer written — so
     /// keep-fuzzing runs don't flood the repro dir or memory with duplicates.
-    fn report_solution(&self, parent_idx: usize, res: &RunResult, reason: String) {
+    ///
+    /// Returns `true` iff this was a **new unique finding** (its reason hadn't
+    /// been seen before) — the caller uses that as a novelty signal, breeding
+    /// from bug-adjacent states by keeping the branch in the corpus.
+    fn report_solution(&self, parent_idx: usize, res: &RunResult, reason: String) -> bool {
         let serial_lines = res.serial.len();
         let is_finding = self.seen_reasons.lock().unwrap().insert(reason.clone());
         let id = {
@@ -477,7 +538,7 @@ impl Campaign {
         if !is_finding {
             // Recurrence of a known reason: counted in the heartbeat total, but
             // not printed or re-saved.
-            return;
+            return false;
         }
         crate::ui::solution(&format!(
             "SOLUTION #{id} (from corpus entry {parent_idx}) — {reason}"
@@ -496,6 +557,7 @@ impl Campaign {
                 serial_lines,
             }),
         );
+        true
     }
 
     /// Write `crash-<id>.json` (a [`Reproduction`] replayable by `--reproduce`)
@@ -554,6 +616,10 @@ impl Campaign {
         }
     }
 
+    /// Append a novel branch to the shared corpus as a child of `parent_idx`,
+    /// returning its new corpus id. `parent_idx` must be the entry the branch
+    /// actually forked from (so the web tree's fork dot lands on that node's
+    /// bar, not floating past an unrelated ancestor's).
     #[allow(clippy::too_many_arguments)]
     fn add_node(
         &self,
@@ -563,7 +629,8 @@ impl Campaign {
         rng: &mut Rng,
         n_actions: usize,
         new_edges: usize,
-    ) {
+    ) -> usize {
+        let t_add = Instant::now();
         // A find resets the "dry streak" the spinner reports.
         self.branches_since_add.store(0, Ordering::Relaxed);
         *self.last_add.lock().unwrap() = Instant::now();
@@ -581,6 +648,10 @@ impl Campaign {
             res.vt as f64 / self.cfg.frequency as f64
         };
         let serial_lines = res.serial.len();
+        // A failed `Always` assertion on this branch's serial makes it a "bug"
+        // node — kept for breeding around the bug and drawn red (not white) in
+        // the dashboard.
+        let bug = assertion_failure_reason(&res.serial).is_some();
         let time_secs = res.new_cp.time().as_secs_f64();
         let checkpoint = res.new_cp.id().as_u64();
         // No serial is retained in memory. When a serial dir is configured, dump
@@ -621,6 +692,7 @@ impl Campaign {
             in_flight: 0,
             swarm: child_swarm,
             rarity,
+            bug,
         };
         let new_id = {
             let mut corpus = self.lock_corpus();
@@ -649,8 +721,13 @@ impl Campaign {
                 scheduled: 0,
                 novelty: 0,
                 serial_lines,
+                bug,
             }),
         );
+        self.prof
+            .addnode_ns
+            .fetch_add(t_add.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        new_id
     }
 
     /// Rewind/branch/run one mutated input. Returns `None` if there's nothing
@@ -754,6 +831,133 @@ impl Campaign {
             coverage,
             vt,
         })
+    }
+
+    /// Quiesce the workload at `end_cp`, then run every `eventually_` invariant
+    /// check — each in its own branch off the single quiesced checkpoint —
+    /// keeping interesting results *and the ancestor checkpoints they hang off*.
+    /// Returns `(main_id, stop)`: `main_id` is the corpus id of `end_cp` if it
+    /// ended up kept (so the worker tracks it), `stop` if a solution fired under
+    /// `quit_on_solution`.
+    ///
+    /// Two stages:
+    /// 1. **Quiesce**: a forward branch off `end_cp` that kills all in-flight
+    ///    drivers and clears faults, then checkpoints the quiesced state.
+    /// 2. **Check**: for each eventually driver, a *separate* branch off that one
+    ///    quiesced checkpoint running just that driver — so the invariant drivers
+    ///    never overlap (each other or anything else) and each checks the *same*
+    ///    quiesced state, not one a prior driver mutated.
+    ///
+    /// Branches are evaluated (coverage merged, objectives reported) but added to
+    /// the corpus lazily, **bottom-up**: a node is kept if it is itself novel
+    /// (new edges or a fresh `Always` failure) *or* a descendant is kept — so an
+    /// interesting eventually check drags in the quiesce checkpoint and `end_cp`
+    /// it forked from, and they're added top-down with real parent links (the web
+    /// tree then attaches each fork dot on its parent's bar). `end_cp`'s own
+    /// ancestors are already retained: `main_id` is a corpus node when set, and
+    /// `add_node` keeps the main branch's rewind intermediate.
+    ///
+    /// `main_id` is `Some` if the worker already kept the (novel) main branch for
+    /// `end_cp`; otherwise `main_res` carries it for a lazy add here.
+    #[allow(clippy::too_many_arguments)]
+    fn run_eventually_round(
+        &self,
+        parent_idx: usize,
+        parent_swarm: &[usize],
+        end_cp: Checkpoint,
+        mut main_id: Option<usize>,
+        main_res: Option<RunResult>,
+        main_edges: usize,
+        n_actions: usize,
+        rng: &mut Rng,
+    ) -> (Option<usize>, bool) {
+        let window = self.cfg.eventually_run_for;
+        // The corpus entry the live quiesce/driver branches reference until their
+        // real parent node exists: the kept main node if we have one, else the
+        // originating entry (a transient cosmetic for live branches only).
+        let live_parent = main_id.unwrap_or(parent_idx);
+
+        // Stage 1: kill in-flight drivers, then clear faults; checkpoint the
+        // quiesced state. Evaluate but hold for a lazy, bottom-up add.
+        let q_anchor = end_cp.time().instructions();
+        let mut q_input = Input::new(q_anchor);
+        q_input.io = quiesce_io(q_anchor, window.instructions());
+        q_input.mutated_at = Some(q_anchor);
+        let mut stop = false;
+        let mut q_novel = false;
+        let mut q_hold: Option<(RunResult, usize)> = None;
+        let mut quiesced_cp: Option<Checkpoint> = None;
+        if let Some(q_res) = self.run_one(
+            &end_cp,
+            live_parent,
+            &q_input,
+            q_anchor,
+            rng.next_u64(),
+            window,
+        ) {
+            let q_crashed = q_res.crashed;
+            let (nv, st, ed) = self.evaluate(live_parent, &q_res);
+            q_novel = nv;
+            stop = st;
+            // A crashed quiesce is terminal — don't keep it or run checks off it
+            // (barrier SIGKILLs exit 137 and are suppressed, so nothing spurious
+            // surfaces here).
+            if !q_crashed {
+                quiesced_cp = Some(q_res.new_cp.clone());
+                q_hold = Some((q_res, ed));
+            }
+        }
+
+        // Stage 2: each eventually driver alone, off the quiesced checkpoint.
+        let mut kept_drivers: Vec<(RunResult, usize)> = Vec::new();
+        if let (Some(qcp), false) = (&quiesced_cp, stop) {
+            let d_anchor = qcp.time().instructions();
+            for d in &self.cfg.eventually {
+                let mut d_input = Input::new(d_anchor);
+                d_input.io = eventually_driver_io(d_anchor, window.instructions(), d);
+                d_input.mutated_at = Some(d_anchor);
+                let Some(d_res) =
+                    self.run_one(qcp, live_parent, &d_input, d_anchor, rng.next_u64(), window)
+                else {
+                    continue;
+                };
+                let (d_novel, d_stop, d_edges) = self.evaluate(live_parent, &d_res);
+                if d_novel {
+                    kept_drivers.push((d_res, d_edges));
+                }
+                if d_stop {
+                    stop = true;
+                    break;
+                }
+            }
+        }
+
+        // Decide keeps bottom-up: keep the quiesce node if it's novel or hosts a
+        // kept driver; keep `end_cp` if it's novel or hosts the kept quiesce.
+        let keep_quiesce = q_hold.is_some() && (q_novel || !kept_drivers.is_empty());
+        if (keep_quiesce || !kept_drivers.is_empty()) && main_id.is_none() {
+            // An interesting eventually result hangs off `end_cp`; keep it so the
+            // result attaches to its real parent. (`main_res` is `Some` here —
+            // the worker only defers the add when the main branch wasn't novel.)
+            if let Some(mres) = main_res {
+                main_id =
+                    Some(self.add_node(parent_idx, parent_swarm, mres, rng, n_actions, main_edges));
+            }
+        }
+
+        // Add the kept eventually nodes top-down with real parent links.
+        let q_parent = main_id.unwrap_or(parent_idx);
+        let q_id = if keep_quiesce {
+            let (q_res, q_edges) = q_hold.expect("keep_quiesce implies q_hold is Some");
+            Some(self.add_node(q_parent, parent_swarm, q_res, rng, n_actions, q_edges))
+        } else {
+            None
+        };
+        let d_parent = q_id.unwrap_or(q_parent);
+        for (d_res, d_edges) in kept_drivers {
+            self.add_node(d_parent, parent_swarm, d_res, rng, n_actions, d_edges);
+        }
+        (main_id, stop)
     }
 
     /// Sleep up to `dur`, waking early if `stop` is set. Returns `true` if the
@@ -1014,6 +1218,7 @@ impl Campaign {
                 scheduled: n.scheduled,
                 novelty: n.novelty,
                 serial_lines: n.serial_lines,
+                bug: n.bug,
             })
             .collect();
         json_string(&views)
@@ -1128,6 +1333,38 @@ fn recording_to_input(recording: &InputRecording, anchor_instr: u64) -> Input {
     }
 }
 
+/// Scheduled IO for the quiesce stage anchored at virtual time `anchor`: a
+/// kill-drivers barrier, then a `fault-injector clear`. Spaced a third of
+/// `window` apart so the kill's drain-wait completes before the clear fires
+/// (with a final third of headroom before the checkpoint). `at`s are strictly
+/// increasing and `>= anchor`.
+fn quiesce_io(anchor: u64, window: u64) -> Vec<IoAction> {
+    let gap = (window / 3).max(1);
+    vec![
+        IoAction {
+            at: anchor.saturating_add(gap),
+            target: Target::KillDrivers,
+            command: String::new(),
+        },
+        IoAction {
+            at: anchor.saturating_add(gap.saturating_mul(2)),
+            target: Target::Host,
+            command: "fault-injector clear".to_string(),
+        },
+    ]
+}
+
+/// Scheduled IO for one eventually driver, anchored at virtual time `anchor`:
+/// fire it a quarter into `window` so it has the rest of the branch to run to
+/// completion before the checkpoint.
+fn eventually_driver_io(anchor: u64, window: u64, d: &WorkloadDriver) -> Vec<IoAction> {
+    vec![IoAction {
+        at: anchor.saturating_add((window / 4).max(1)),
+        target: Target::Container(d.container.clone()),
+        command: d.driver.clone(),
+    }]
+}
+
 /// Run the branch until it reaches `target_time` or yields with an unexpected
 /// exit. Returns `true` if it crashed. `on_progress` is called with the
 /// branch's virtual time after each step for the live frontier view.
@@ -1215,7 +1452,54 @@ pub fn replay(seed_cp: &Checkpoint, repro: &Reproduction, sink: &Sink) -> Option
 
 #[cfg(test)]
 mod tests {
-    use super::{assertion_failure_reason, failed_always_message};
+    use super::{
+        assertion_failure_reason, eventually_driver_io, failed_always_message, quiesce_io, Target,
+    };
+    use bedrock_lab::WorkloadDriver;
+
+    #[test]
+    fn quiesce_io_is_kill_then_clear_within_window() {
+        let anchor = 1_000;
+        let window = 3_000_000;
+        let io = quiesce_io(anchor, window);
+        assert_eq!(io.len(), 2);
+        // Kill first (payload-less control action), then clear.
+        assert_eq!(io[0].target, Target::KillDrivers);
+        assert!(io[0].command.is_empty());
+        assert_eq!(io[1].target, Target::Host);
+        assert_eq!(io[1].command, "fault-injector clear");
+        // Strictly increasing, at/after the anchor, with headroom before window end.
+        assert!(io[0].at >= anchor && io[0].at < io[1].at);
+        assert!(
+            io[1].at < anchor + window,
+            "clear leaves headroom before the checkpoint"
+        );
+    }
+
+    #[test]
+    fn eventually_driver_io_fires_one_driver_early() {
+        let d = WorkloadDriver {
+            container: "lnd1".into(),
+            driver: "/opt/bedrock/drivers/eventually_b".into(),
+        };
+        let anchor = 500;
+        let window = 4_000_000;
+        let io = eventually_driver_io(anchor, window, &d);
+        assert_eq!(io.len(), 1);
+        assert_eq!(io[0].target, Target::Container("lnd1".into()));
+        assert_eq!(io[0].command, "/opt/bedrock/drivers/eventually_b");
+        // Fires after the anchor but with most of the window left to complete.
+        assert!(io[0].at > anchor && io[0].at < anchor + window / 2);
+    }
+
+    #[test]
+    fn quiesce_io_handles_zero_window_without_panicking() {
+        // Defensive: a tiny/zero window still yields kill+clear with a sane
+        // (>=1) gap and strictly increasing times.
+        let io = quiesce_io(0, 0);
+        assert_eq!(io.len(), 2);
+        assert!(io[0].at < io[1].at);
+    }
 
     /// A serial line as flux captures it: branch/vt prefix plus the
     /// `[assertions]` formatter output carrying one assertion record.
@@ -1235,13 +1519,17 @@ mod tests {
 
     #[test]
     fn passing_always_is_not_a_bug() {
-        let l = line(r#"{"Always":{"condition":{"Eq":{"x":0,"y":0}},"result":true,"message":"container btcd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#);
+        let l = line(
+            r#"{"Always":{"condition":{"Eq":{"x":0,"y":0}},"result":true,"message":"container btcd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#,
+        );
         assert_eq!(failed_always_message(&l), None);
     }
 
     #[test]
     fn failed_sometimes_is_not_a_bug() {
-        let l = line(r#"{"Sometimes":{"condition":{"Eq":{"x":1,"y":0}},"result":false,"message":"x reached zero","location":{"file":"m.rs","line":1,"column":1}}}"#);
+        let l = line(
+            r#"{"Sometimes":{"condition":{"Eq":{"x":1,"y":0}},"result":false,"message":"x reached zero","location":{"file":"m.rs","line":1,"column":1}}}"#,
+        );
         assert_eq!(failed_always_message(&l), None);
     }
 
@@ -1256,8 +1544,12 @@ mod tests {
     #[test]
     fn scan_returns_first_failure_message_as_reason() {
         let serial = vec![
-            line(r#"{"Always":{"condition":{"Eq":{"x":0,"y":0}},"result":true,"message":"ok","location":{"file":"m.rs","line":1,"column":1}}}"#),
-            line(r#"{"Always":{"condition":{"Eq":{"x":2,"y":0}},"result":false,"message":"container lnd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#),
+            line(
+                r#"{"Always":{"condition":{"Eq":{"x":0,"y":0}},"result":true,"message":"ok","location":{"file":"m.rs","line":1,"column":1}}}"#,
+            ),
+            line(
+                r#"{"Always":{"condition":{"Eq":{"x":2,"y":0}},"result":false,"message":"container lnd1 exit code is zero","location":{"file":"m.rs","line":1,"column":1}}}"#,
+            ),
         ];
         // The reason is the message verbatim — that is the per-message dedup key.
         assert_eq!(

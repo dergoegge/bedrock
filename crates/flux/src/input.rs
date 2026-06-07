@@ -40,6 +40,9 @@ pub struct IoAction {
 pub enum Target {
     Host,
     Container(String),
+    /// Module-level control action: SIGKILL in-flight `/opt/bedrock/drivers/`
+    /// execs and wait for them to drain. The action's `command` is unused.
+    KillDrivers,
 }
 
 impl From<&Target> for BashTarget {
@@ -47,6 +50,7 @@ impl From<&Target> for BashTarget {
         match t {
             Target::Host => BashTarget::Host,
             Target::Container(name) => BashTarget::Container(name.clone()),
+            Target::KillDrivers => BashTarget::KillDrivers,
         }
     }
 }
@@ -56,6 +60,7 @@ impl From<&BashTarget> for Target {
         match t {
             BashTarget::Host => Target::Host,
             BashTarget::Container(name) => Target::Container(name.clone()),
+            BashTarget::KillDrivers => Target::KillDrivers,
         }
     }
 }

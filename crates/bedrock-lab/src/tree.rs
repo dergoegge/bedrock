@@ -123,6 +123,13 @@ impl Tree {
 
     /// Render the tree as a Graphviz DOT graph. Useful for visualizing
     /// branching exploration runs.
+    ///
+    /// Edges follow [`Checkpoint::closest_live_ancestor`], not the immediate
+    /// parent — matching [`Tree::ascii`] and the JSON tree view. A checkpoint
+    /// whose direct parent has been dropped (e.g. a transient rewind
+    /// intermediate, or an eventually-pass fork point that wasn't retained)
+    /// attaches to its nearest live ancestor instead of floating off as a stray
+    /// node with no edge.
     pub fn dot(&self) -> String {
         let mut s = String::new();
         s.push_str("digraph tree {\n");
@@ -137,7 +144,7 @@ impl Tree {
             ));
         }
         for cp in &self.checkpoints {
-            if let Some(parent) = cp.parent() {
+            if let Some(parent) = cp.closest_live_ancestor() {
                 s.push_str(&format!("  cp{} -> cp{};\n", parent.id().0, cp.id().0));
             }
         }

@@ -76,6 +76,19 @@ struct Args {
     #[arg(long = "exclude-from-partition")]
     exclude_from_partition: Vec<String>,
 
+    /// Chance (percent) that a branch which covered *no* new edges still runs an
+    /// `eventually_` invariant-check pass. Branches that did cover new edges
+    /// always run one. Has no effect unless the workload ships `eventually_`
+    /// drivers.
+    #[arg(long = "eventually-pct", default_value_t = 10)]
+    eventually_pct: u64,
+
+    /// Virtual-time window for an `eventually_` pass (kill in-flight drivers,
+    /// clear faults, then run the invariant checks). Must exceed the barrier
+    /// plus the slowest `eventually_` driver.
+    #[arg(long = "eventually-run-for-secs", default_value_t = 3.0)]
+    eventually_run_for_secs: f64,
+
     /// Keep fuzzing after the first solution instead of quitting.
     #[arg(long = "no-quit-on-solution")]
     no_quit_on_solution: bool,
@@ -193,11 +206,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     // starts from a state where the discovery response has drained.
     let mut discover = ready_cp.branch()?;
     let details = discover.workload_details()?;
-    let actions = Action::vocabulary(
-        details.drivers.clone(),
-        &details.containers,
-        &args.exclude_from_partition,
-    );
+    // Split discovered drivers by the `eventually_` filename prefix. Eventually
+    // drivers check system-wide invariants: they're kept out of the normal
+    // action vocabulary (never inserted mid-branch) and instead fired alone, at
+    // the end of a branch, after quiescing the workload (see `run_eventually_pass`).
+    let (eventually, normal): (Vec<_>, Vec<_>) = details
+        .drivers
+        .iter()
+        .cloned()
+        .partition(|d| is_eventually_driver(&d.driver));
+    let actions = Action::vocabulary(normal, &details.containers, &args.exclude_from_partition);
     let discovery_cp = discover.checkpoint()?;
 
     // Seal the boot panel; from here serial is captured per-branch and the
@@ -246,12 +264,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     ui::good(&format!(
-        "discovered {} containers, {} drivers",
+        "discovered {} containers, {} drivers ({} eventually)",
         details.containers.len(),
-        details.drivers.len()
+        details.drivers.len(),
+        eventually.len(),
     ));
     for d in &details.drivers {
-        ui::detail(&format!("driver {}:{}", d.container, d.driver));
+        let kind = if is_eventually_driver(&d.driver) {
+            " [eventually]"
+        } else {
+            ""
+        };
+        ui::detail(&format!("driver {}:{}{kind}", d.container, d.driver));
     }
     ui::info(&format!(
         "{} actions (drivers + fault-injector){}",
@@ -286,6 +310,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         run_fors,
         frequency: freq,
         actions,
+        eventually,
+        eventually_pct: args.eventually_pct,
+        eventually_run_for: VirtDuration::from_secs_f64(args.eventually_run_for_secs, freq),
         burst: args.burst,
         swarm: args.swarm.into(),
         max_dry_rounds: args.max_dry_rounds,
@@ -307,6 +334,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         campaign.dump_coverage(&dir);
     }
     Ok(())
+}
+
+/// Whether a discovered driver is an `eventually_` invariant-check driver,
+/// identified by its filename (basename) beginning with `eventually_`. `path`
+/// is the full in-container driver path (e.g. `/opt/bedrock/drivers/eventually_x`).
+fn is_eventually_driver(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .starts_with("eventually_")
 }
 
 /// Per-worker run windows, geometrically spaced from `min_secs` (worker 0) up
@@ -339,6 +376,22 @@ mod tests {
 
     fn secs(d: &[VirtDuration]) -> Vec<f64> {
         d.iter().map(VirtDuration::as_secs_f64).collect()
+    }
+
+    #[test]
+    fn eventually_prefix_matches_basename_only() {
+        assert!(is_eventually_driver(
+            "/opt/bedrock/drivers/eventually_check"
+        ));
+        assert!(is_eventually_driver("eventually_x"));
+        // Prefix must be on the filename, not anywhere in the path.
+        assert!(!is_eventually_driver(
+            "/opt/eventually_dir/drivers/mine-blocks"
+        ));
+        assert!(!is_eventually_driver("/opt/bedrock/drivers/mine-blocks"));
+        assert!(!is_eventually_driver(
+            "/opt/bedrock/drivers/check_eventually"
+        ));
     }
 
     #[test]

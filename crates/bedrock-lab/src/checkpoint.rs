@@ -282,7 +282,15 @@ impl Checkpoint {
     /// input stream regardless of the order in which they're driven.
     pub fn branch(&self) -> Result<Branch> {
         let input_source = self.inner.input_source.as_ref().map(|s| s.clone_box());
-        self.branch_inner(input_source, false)
+        // Continuing the checkpoint's *own* source: inherit its in-flight IO
+        // cursor (the not-yet-fired pending action and the exhausted flag) so
+        // replay resumes exactly where the checkpoint left off.
+        self.branch_inner(
+            input_source,
+            self.inner.pending_input_io.clone(),
+            self.inner.input_io_exhausted,
+            false,
+        )
     }
 
     /// Fork a branch that *overrides* the checkpoint's userspace input
@@ -296,12 +304,22 @@ impl Checkpoint {
     /// branch's VM — descendants of *this* branch then inherit that mode via
     /// the usual VM-state COW.
     pub fn branch_with_input_source<S: InputSource + 'static>(&self, source: S) -> Result<Branch> {
-        self.branch_inner(Some(Box::new(source)), true)
+        // A fresh override source replays from its own start, so it must NOT
+        // inherit the checkpoint's in-flight IO cursor — that pending action and
+        // exhausted flag belong to the source being replaced. Inheriting them
+        // would (a) replay a stale action the new source doesn't contain, and
+        // (b), if the checkpoint was taken after its source ran dry
+        // (`input_io_exhausted == true`), make `prepare_next_io_input`
+        // short-circuit and ignore the new source's IO entirely. Start clean:
+        // no pending action, not exhausted.
+        self.branch_inner(Some(Box::new(source)), None, false, true)
     }
 
     fn branch_inner(
         &self,
         input_source: Option<Box<dyn InputSource>>,
+        pending_input_io: Option<IoInput>,
+        input_io_exhausted: bool,
         force_exit_to_userspace: bool,
     ) -> Result<Branch> {
         let child_vm = self.inner.vm.fork()?;
@@ -317,8 +335,8 @@ impl Checkpoint {
             self.inner.lab.clone(),
             self.inner.partial_line.clone(),
             input_source,
-            self.inner.pending_input_io.clone(),
-            self.inner.input_io_exhausted,
+            pending_input_io,
+            input_io_exhausted,
             self.inner.input_recording.clone(),
         ))
     }

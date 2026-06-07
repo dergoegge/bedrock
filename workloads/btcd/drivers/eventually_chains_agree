@@ -1,0 +1,37 @@
+#!/bin/sh
+# EVENTUALLY driver: a system-wide invariant the fuzzer checks at a quiesced,
+# fault-free point. Before running an `eventually_` driver the fuzzer kills all
+# in-flight drivers and clears fault injection, then runs this one ALONE (in its
+# own branch off the quiesced checkpoint), so it observes a settled system.
+#
+# Unlike the state-driving drivers in this directory, an `eventually_` driver
+# MUST exit non-zero when its invariant is violated — that non-zero exec exit is
+# what the workload-monitor turns into a fuzzer solution. So, deliberately, there
+# is NO `trap 'exit 0'` here.
+#
+# Invariant: once quiesced and with partitions healed, the two btcd nodes
+# converge on the same best-block hash. A permanent divergence is a consensus /
+# fork bug. We poll for convergence (the "eventually") and fail only if the
+# nodes still disagree after the budget below.
+#
+# Timing: keep the worst-case runtime (TRIES * the sleep) comfortably below the
+# fuzzer's --eventually-run-for-secs window, or a real divergence would be cut
+# off at the checkpoint before this driver can report it.
+set -u
+
+BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
+
+TRIES=4
+while [ "$TRIES" -gt 0 ]; do
+    h1=$($BCTL --rpcserver=btcd1:18334 getbestblockhash 2>/dev/null || true)
+    h2=$($BCTL --rpcserver=btcd2:18334 getbestblockhash 2>/dev/null || true)
+    if [ -n "$h1" ] && [ "$h1" = "$h2" ]; then
+        echo "chains agree at $h1"
+        exit 0
+    fi
+    TRIES=$((TRIES - 1))
+    sleep 1
+done
+
+echo "INVARIANT VIOLATED: btcd1=$h1 btcd2=$h2 (chains did not converge)" >&2
+exit 1

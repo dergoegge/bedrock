@@ -72,6 +72,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/umh.h>
+#include <linux/wait.h>
 #include <linux/workqueue.h>
 
 #define HYPERCALL_IO_REGISTER_PAGE 4ULL
@@ -92,6 +93,31 @@
 #define ACTION_GET_WORKLOAD_DETAILS 0U
 #define ACTION_EXEC_BASH            1U
 #define ACTION_EXEC_HOST_BASH       2U
+/*
+ * Kill every in-flight driver exec and wait for them to drain. Carries no
+ * payload; the response's exit_code is the number of driver execs that were
+ * in flight when the kill fired. Must stay in sync with `ACTION_KILL_EXECS`
+ * in the host ABI (crates/bedrock-lab/src/bash.rs).
+ */
+#define ACTION_KILL_EXECS           3U
+
+/*
+ * A container exec whose command targets this prefix is a workload "driver".
+ * Only driver execs are counted as in-flight and killed by ACTION_KILL_EXECS;
+ * host execs and any non-driver container exec are left alone. Must match the
+ * path the host invokes drivers under.
+ */
+#define DRIVER_PATH_PREFIX "/opt/bedrock/drivers/"
+
+/*
+ * Upper bound on how long ACTION_KILL_EXECS waits for SIGKILLed driver execs
+ * to drain before responding anyway. A safety net only: SIGKILL can't be
+ * caught, so the execs die promptly and the wait wakes far sooner; the bound
+ * just prevents a wedged (uninterruptible) process from blocking the worker
+ * forever. Guest jiffies advance off the deterministic emulated timer, so this
+ * bound is itself deterministic.
+ */
+#define BEDROCK_DRAIN_TIMEOUT (30 * HZ)
 
 #define OUTPUT_PATH_FMT "/tmp/bedrock-io-output-%u"
 #define OUTPUT_PATH_MAX 64
@@ -144,6 +170,28 @@ static atomic_t worker_counter = ATOMIC_INIT(0);
  * (single-digit concurrent commands). */
 #define BEDROCK_IO_WORK_POOL_MIN 16
 static mempool_t *work_pool;
+
+/*
+ * Count of driver execs currently in flight (running their
+ * call_usermodehelper). ACTION_KILL_EXECS reads this for its response and
+ * waits on `drivers_drained_wq` until it reaches zero after issuing the kills.
+ * Only ACTION_EXEC_BASH execs whose command targets DRIVER_PATH_PREFIX bump it.
+ */
+static atomic_t inflight_drivers = ATOMIC_INIT(0);
+static DECLARE_WAIT_QUEUE_HEAD(drivers_drained_wq);
+
+/*
+ * Environment for every usermodehelper we spawn. call_usermodehelper starts
+ * the child with an empty environment by default; we mirror the PATH the
+ * initrd's init script exports so unqualified binaries resolve the same way
+ * they would from an interactive guest shell. Shared by the exec worker and
+ * the ACTION_KILL_EXECS pkill helper.
+ */
+static char *umh_envp[] = {
+	"PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+	"HOME=/",
+	NULL,
+};
 
 /*
  * VMCALL helpers. The "memory" clobber is load-bearing — without it the
@@ -347,6 +395,19 @@ static int append_pipe_to_journal(char *cmd, size_t cmd_cap, size_t *off,
 }
 
 /*
+ * Whether a container exec command invokes a workload driver — its first
+ * whitespace-trimmed token lives under DRIVER_PATH_PREFIX. Driver execs are the
+ * ones counted as in-flight and killed by ACTION_KILL_EXECS.
+ */
+static bool is_driver_command(const char *bash_cmd)
+{
+	while (*bash_cmd == ' ' || *bash_cmd == '\t')
+		bash_cmd++;
+	return strncmp(bash_cmd, DRIVER_PATH_PREFIX,
+		       sizeof(DRIVER_PATH_PREFIX) - 1) == 0;
+}
+
+/*
  * Build the shell command that will run inside call_usermodehelper.
  * Two output paths:
  *
@@ -371,8 +432,10 @@ static int append_pipe_to_journal(char *cmd, size_t cmd_cap, size_t *off,
  */
 static int build_command(const struct io_request_header *hdr,
 			 const __u8 *payload, char *cmd, size_t cmd_cap,
-			 const char *output_path, unsigned int worker_id)
+			 const char *output_path, unsigned int worker_id,
+			 bool *is_driver)
 {
+	*is_driver = false;
 	switch (hdr->action_id) {
 	case ACTION_GET_WORKLOAD_DETAILS:
 		pr_info("bedrock-io: worker %u: list\n", worker_id);
@@ -427,8 +490,11 @@ static int build_command(const struct io_request_header *hdr,
 		if (blen == hdr->payload_len - clen - 1)
 			return -EINVAL;
 
-		pr_info("bedrock-io: worker %u: exec '%s' '%s'\n",
-			worker_id, container, bash_cmd);
+		*is_driver = is_driver_command(bash_cmd);
+
+		pr_info("bedrock-io: worker %u: exec '%s' '%s'%s\n",
+			worker_id, container, bash_cmd,
+			*is_driver ? " [driver]" : "");
 
 		/*
 		 * `podman exec ... /bin/sh -c <cmd>` lets the caller supply
@@ -525,6 +591,51 @@ static int build_command(const struct io_request_header *hdr,
 	}
 }
 
+/*
+ * Handle ACTION_KILL_EXECS: SIGKILL every in-flight driver exec across all
+ * running containers, then wait for them to drain. Returns the number of driver
+ * execs in flight when the kill fired (the response's exit_code).
+ *
+ * pkill runs inside each container's PID namespace, so it reaches only that
+ * container's driver processes and never the host-side `podman exec` clients
+ * (different namespace). Killing the in-container process ends its `podman exec`
+ * session, which unblocks the host-side worker still in call_usermodehelper;
+ * that worker then decrements `inflight_drivers` and wakes us.
+ *
+ * Each in-container `pkill` runs under `sh -c '… ; true'` for two reasons, both
+ * about not tripping the workload-monitor's "exec exit code is zero" assertion
+ * with the kill helper's *own* `podman exec` sessions: (1) the `; true` forces a
+ * clean exit even in containers with no matching process (bare `pkill` exits 1
+ * then); (2) the match pattern requires a filename character after the prefix
+ * (`[a-zA-Z0-9_]`) so it matches real drivers (`…/drivers/mine-blocks`, …) but
+ * NOT the wrapper's own command line (`…/drivers/[a-zA-Z0-9_]`, a literal `[`),
+ * so pkill never kills the very shell running it. The trailing outer `true`
+ * likewise keeps the whole helper's status clean.
+ */
+static int bedrock_kill_driver_execs(void)
+{
+	static char *argv[] = {
+		"/bin/sh", "-c",
+		"for c in $(podman ps --format '{{.Names}}' 2>/dev/null); do "
+		"podman exec \"$c\" sh -c 'pkill -KILL -f " DRIVER_PATH_PREFIX
+		"[a-zA-Z0-9_] 2>/dev/null; true' 2>/dev/null; done; true",
+		NULL,
+	};
+	int killed = atomic_read(&inflight_drivers);
+
+	pr_info("bedrock-io: kill-execs: %d driver exec(s) in flight\n", killed);
+	call_usermodehelper("/bin/sh", argv, umh_envp, UMH_WAIT_PROC);
+	/*
+	 * Wait for the SIGKILLed execs' workers to return and decrement the
+	 * counter. Bounded by BEDROCK_DRAIN_TIMEOUT as a safety net (see its
+	 * definition); the wake normally fires well before that.
+	 */
+	wait_event_timeout(drivers_drained_wq,
+			   atomic_read(&inflight_drivers) == 0,
+			   BEDROCK_DRAIN_TIMEOUT);
+	return killed;
+}
+
 static void bedrock_io_work_fn(struct work_struct *work)
 {
 	struct bedrock_io_work *w =
@@ -543,11 +654,6 @@ static void bedrock_io_work_fn(struct work_struct *work)
 	size_t resp_data_cap;
 	int rc;
 	bool got_request = false;
-	static char *envp[] = {
-		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
-		"HOME=/",
-		NULL,
-	};
 
 	snprintf(output_path, sizeof(output_path), OUTPUT_PATH_FMT, w->id);
 
@@ -609,27 +715,42 @@ static void bedrock_io_work_fn(struct work_struct *work)
 	 * this window; the only contention is for `shared_page`, which we
 	 * don't touch here.
 	 */
-	rc = build_command(&req_hdr, (const __u8 *)payload_copy, cmd,
-			   BEDROCK_IO_PAGE_SIZE, output_path, w->id);
-	if (rc) {
-		pr_err("bedrock-io: worker %u: build_command failed: %d\n",
-		       w->id, rc);
-		exit_code = rc;
+	if (req_hdr.action_id == ACTION_KILL_EXECS) {
+		/* No command to build; the response's exit_code is the count of
+		 * driver execs that were in flight when the kill fired. */
+		exit_code = bedrock_kill_driver_execs();
 	} else {
-		argv[0] = "/bin/sh";
-		argv[1] = "-c";
-		argv[2] = cmd;
-		argv[3] = NULL;
-		/*
-		 * call_usermodehelper starts the child with an empty
-		 * environment by default; we mirror the PATH the initrd's
-		 * init script exports so unqualified binaries resolve the
-		 * same way they would from an interactive guest shell.
-		 */
-		exit_code = call_usermodehelper("/bin/sh", argv, envp,
-						UMH_WAIT_PROC);
-		pr_info("bedrock-io: worker %u: command finished, exit=%d\n",
-			w->id, exit_code);
+		bool is_driver = false;
+
+		rc = build_command(&req_hdr, (const __u8 *)payload_copy, cmd,
+				   BEDROCK_IO_PAGE_SIZE, output_path, w->id,
+				   &is_driver);
+		if (rc) {
+			pr_err("bedrock-io: worker %u: build_command failed: %d\n",
+			       w->id, rc);
+			exit_code = rc;
+		} else {
+			argv[0] = "/bin/sh";
+			argv[1] = "-c";
+			argv[2] = cmd;
+			argv[3] = NULL;
+			/*
+			 * Count driver execs as in-flight around the (blocking)
+			 * call so ACTION_KILL_EXECS can SIGKILL them and wait
+			 * for them to drain. `umh_envp` mirrors the PATH the
+			 * initrd's init script exports so unqualified binaries
+			 * resolve as they would from an interactive guest shell.
+			 */
+			if (is_driver)
+				atomic_inc(&inflight_drivers);
+			exit_code = call_usermodehelper("/bin/sh", argv,
+							umh_envp, UMH_WAIT_PROC);
+			if (is_driver &&
+			    atomic_dec_return(&inflight_drivers) == 0)
+				wake_up(&drivers_drained_wq);
+			pr_info("bedrock-io: worker %u: command finished, exit=%d\n",
+				w->id, exit_code);
+		}
 	}
 
 	/*
