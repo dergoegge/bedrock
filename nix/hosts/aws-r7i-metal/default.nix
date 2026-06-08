@@ -15,7 +15,10 @@
   ];
 
   boot.kernelPackages = pkgs.linuxPackagesFor bedrockKernel;
-  boot.extraModulePackages = [ bedrockModule ];
+  # amazon-image.nix adds nixpkgs' out-of-tree ENA module, but that module
+  # does not build against the pinned Linux 6.18 headers. ENA is enabled in
+  # nix/kernel.nix, so only Bedrock needs to be installed as an extra module.
+  boot.extraModulePackages = lib.mkForce [ bedrockModule ];
   boot.kernelModules = [ "bedrock" ];
 
   # Keep the EC2/Nitro initrd driver set from amazon-image.nix and add the
