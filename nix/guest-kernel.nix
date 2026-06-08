@@ -98,9 +98,37 @@ let
     ./scripts/config --enable VETH
     ./scripts/config --enable BRIDGE
     ./scripts/config --enable NETFILTER
+    ./scripts/config --enable NETFILTER_ADVANCED
     ./scripts/config --enable NETFILTER_XTABLES
+    ./scripts/config --enable NETFILTER_XT_MARK
+    ./scripts/config --enable NETFILTER_XT_NAT
+    ./scripts/config --enable NETFILTER_XT_MATCH_ADDRTYPE
+    ./scripts/config --enable NETFILTER_XT_MATCH_COMMENT
+    ./scripts/config --enable NETFILTER_XT_MATCH_CONNTRACK
+    ./scripts/config --enable NETFILTER_XT_MATCH_MULTIPORT
+    ./scripts/config --enable NETFILTER_XT_TARGET_MASQUERADE
+    ./scripts/config --enable NF_CONNTRACK
+    ./scripts/config --enable NF_NAT
+    ./scripts/config --enable IP_NF_IPTABLES
     ./scripts/config --enable IP_NF_FILTER
     ./scripts/config --enable IP_NF_NAT
+    # nftables backend — needed by modern iptables-nft (the default in
+    # current nixpkgs) for netavark's NAT rules.
+    ./scripts/config --enable NF_TABLES
+    ./scripts/config --enable NF_TABLES_INET
+    ./scripts/config --enable NF_TABLES_IPV4
+    # iptables-over-nftables compat shim — netavark's default firewall
+    # driver shells out to `iptables` (which is iptables-nft in current
+    # nixpkgs), and iptables-nft needs NFT_COMPAT to translate some
+    # extension targets (e.g. MASQUERADE) into nft expressions.
+    ./scripts/config --enable NFT_COMPAT
+    ./scripts/config --enable NFT_COUNTER
+    ./scripts/config --enable NFT_NAT
+    ./scripts/config --enable NFT_MASQ
+    ./scripts/config --enable NFT_CHAIN_NAT
+    ./scripts/config --enable NFT_REJECT
+    ./scripts/config --enable NF_NAT_MASQUERADE
+    ./scripts/config --enable NF_REJECT_IPV4
     ./scripts/config --enable BPF
     ./scripts/config --enable BPF_SYSCALL
     ./scripts/config --enable CGROUP_BPF

@@ -1,6 +1,14 @@
-# Two Bitcoin Core regtest nodes on host networking, a miner that produces
-# one block every interval and writes hashes back to the hypervisor feedback
-# buffer, and a shutdown trigger that issues bedrock's VMCALL after a sleep.
+# Two Bitcoin Core regtest nodes, a miner that produces one block every
+# interval and writes hashes back to the hypervisor feedback buffer, and a
+# shutdown trigger that issues bedrock's VMCALL after a sleep.
+#
+# Each container runs in its own network namespace and joins podman's
+# default bridge network. aardvark-dns resolves container_name as a
+# hostname, so bitcoind2 attaches to bitcoind1's p2p port via
+# `-addnode=bitcoind1:18444` and the miner reaches bitcoind1's RPC via
+# `-rpcconnect=bitcoind1`. Determinism of IP/MAC assignment is provided by
+# the bedrock hypervisor (virtualized TSC, RDRAND, interrupts), not by
+# pinning here.
 #
 # All four images come from images.tar (built by ./build.sh) — never pulled.
 # `image:` refs use bare names (no `docker.io/` registry prefix) so podman's
@@ -11,7 +19,6 @@ services:
     image: bitcoin/bitcoin:latest
     pull_policy: never
     container_name: bitcoind1
-    network_mode: host
     command:
       - -regtest
       - -server
@@ -33,7 +40,6 @@ services:
     image: bitcoin/bitcoin:latest
     pull_policy: never
     container_name: bitcoind2
-    network_mode: host
     command:
       - -regtest
       - -server
@@ -47,7 +53,7 @@ services:
       - -listenonion=0
       - -fallbackfee=0.0001
       - -printtoconsole
-      - -addnode=127.0.0.1:18444
+      - -addnode=bitcoind1:18444
       - -debug
       - -debugexclude=libevent
       - -debugexclude=leveldb
@@ -58,7 +64,6 @@ services:
     image: bedrock/bitcoin-miner:latest
     pull_policy: never
     container_name: miner
-    network_mode: host
     privileged: true  # Required for VMCALL
     command: ["600"]  # Sleep interval in seconds (10 minutes)
     depends_on:
@@ -68,7 +73,6 @@ services:
     image: bedrock/shutdown:latest
     pull_policy: never
     container_name: shutdown
-    network_mode: host
     privileged: true  # Required for VMCALL
     entrypoint: ["/bin/sh", "-c"]
     command:

@@ -668,7 +668,9 @@ pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: us
             num_pages: buffer.num_pages as u64,
             registered: 1,
             index: index as u32,
+            id_len: buffer.id_len,
             _reserved: 0,
+            id: buffer.id,
         },
         None => BedrockFeedbackBufferInfo {
             gva: 0,
@@ -676,7 +678,9 @@ pub(crate) fn handle_get_feedback_buffer_info<F: VmFileOps>(vm_file: &F, arg: us
             num_pages: 0,
             registered: 0,
             index: index as u32,
+            id_len: 0,
             _reserved: 0,
+            id: [0u8; super::structs::FEEDBACK_BUFFER_ID_MAX_LEN],
         },
     };
 

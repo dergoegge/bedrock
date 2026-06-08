@@ -11,6 +11,7 @@ use bedrock_vm::{parse_line_tsc_entries, LogEntry, Vm};
 
 use crate::branch::BranchId;
 use crate::checkpoint::CheckpointId;
+use crate::error::Result;
 use crate::time::VirtTime;
 
 /// An observable event in the lab's execution tree.
@@ -52,17 +53,24 @@ pub enum Event<'a> {
         parent: Option<CheckpointId>,
         at: VirtTime,
     },
-    /// The guest registered a feedback buffer at `index` of `size` bytes.
-    /// Fires once per successful `HYPERCALL_REGISTER_FEEDBACK_BUFFER` call.
-    /// The buffer is readable on the originating branch via
-    /// [`Branch::feedback_buffer`](crate::Branch::feedback_buffer); descendant
-    /// branches inherit the registration through CoW. [`BranchId(0)`](crate::BranchId)
-    /// is reserved for registrations that occur during root-VM boot/setup
-    /// before the ready checkpoint exists.
+    /// The guest registered a feedback buffer with identifier `id` of `size`
+    /// bytes, assigned to host slot `slot`. Fires once per successful
+    /// `HYPERCALL_REGISTER_FEEDBACK_BUFFER` call.
+    ///
+    /// `id` borrows from a kernel-mapped struct for the duration of the
+    /// `on_event` call; copy out if the sink needs to retain it. IDs are
+    /// not unique — two registrations with the same `id` represent two
+    /// instances of the same domain (e.g. two processes running the same
+    /// binary). Read the buffers on the originating branch via
+    /// [`Branch::feedback_buffers`](crate::Branch::feedback_buffers);
+    /// descendant branches inherit the registration through CoW.
+    /// [`BranchId(0)`](crate::BranchId) is reserved for registrations that
+    /// occur during root-VM boot/setup before the ready checkpoint exists.
     FeedbackBufferRegistered {
         branch: BranchId,
         at: VirtTime,
-        index: usize,
+        id: &'a [u8],
+        slot: usize,
         size: u64,
     },
     /// A VM exit captured by the determinism-debugging exit logger. Fires
@@ -157,21 +165,39 @@ pub(crate) fn drain_serial_into_sink(
 }
 
 /// Read the guest GPRs after a successful `HYPERCALL_REGISTER_FEEDBACK_BUFFER`
-/// exit and emit an [`Event::FeedbackBufferRegistered`].
+/// exit, look up the assigned slot's identifier via the kernel module, and
+/// emit an [`Event::FeedbackBufferRegistered`].
+///
+/// Returns `(slot, size)` for callers that need the registration in their
+/// own bookkeeping; `None` if the slot lookup didn't find a registered
+/// buffer (only possible if the hypercall actually failed, in which case
+/// RAX would be `u64::MAX` and we treat it as "nothing was registered").
 pub(crate) fn emit_feedback_buffer_registered(
     vm: &Vm,
     at: VirtTime,
     branch: BranchId,
     sink: &dyn EventSink,
-) -> Result<(usize, u64), bedrock_vm::VmError> {
+) -> Result<Option<(usize, u64)>> {
     let regs = vm.get_regs()?;
-    let index = regs.gprs.rdx as usize;
+    let rax = regs.gprs.rax;
+    if rax == u64::MAX {
+        // The hypercall reported failure. No slot to look up.
+        return Ok(None);
+    }
+    let slot = rax as usize;
     let size = regs.gprs.rcx;
-    sink.on_event(Event::FeedbackBufferRegistered {
-        branch,
-        at,
-        index,
-        size,
-    });
-    Ok((index, size))
+    // Pull the id from the slot the hypercall just populated.
+    let info = vm.get_feedback_buffer_info_at(slot)?;
+    if let Some(info) = info {
+        sink.on_event(Event::FeedbackBufferRegistered {
+            branch,
+            at,
+            id: info.id_bytes(),
+            slot,
+            size,
+        });
+        Ok(Some((slot, size)))
+    } else {
+        Ok(None)
+    }
 }

@@ -621,10 +621,16 @@ fn test_vmcall_register_feedback_buffer_success() {
     ctx.set_guest_rip(0x1000);
     ctx.set_instruction_len(3); // VMCALL is 3 bytes
 
-    // Set hypercall number and arguments
+    // Stash the identifier bytes inside the guest's 1GB identity window.
+    let id_bytes = b"build-id-abcd";
+    ctx.memory[0x6000..0x6000 + id_bytes.len()].copy_from_slice(id_bytes);
+
+    // Set hypercall number and arguments. New ABI: RDX = id GVA, RSI = id len.
     ctx.gprs_mut().rax = HYPERCALL_REGISTER_FEEDBACK_BUFFER;
     ctx.gprs_mut().rbx = 0x5000; // GVA of buffer
     ctx.gprs_mut().rcx = 4096; // Size: 1 page
+    ctx.gprs_mut().rdx = 0x6000; // GVA of id bytes
+    ctx.gprs_mut().rsi = id_bytes.len() as u64;
 
     let result = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
 
@@ -634,20 +640,21 @@ fn test_vmcall_register_feedback_buffer_success() {
         ExitHandlerResult::ExitToUserspace(ExitReason::VmcallFeedbackBuffer)
     );
 
-    // RAX should be 0 (success)
+    // RAX should be the assigned slot index (0 on first registration)
     assert_eq!(ctx.gprs().rax, 0);
 
     // RIP should be advanced
     assert_eq!(ctx.get_guest_rip(), Some(0x1003));
 
-    // Feedback buffer should be registered at index 0 (RDX defaults to 0)
+    // Feedback buffer should be registered at slot 0 (the first free slot)
     let fb = ctx.state().feedback_buffers[0]
         .as_ref()
-        .expect("feedback buffer should be registered at index 0");
+        .expect("feedback buffer should be registered at slot 0");
     assert_eq!(fb.gva, 0x5000);
     assert_eq!(fb.size, 4096);
     assert_eq!(fb.num_pages, 1);
     assert_eq!(fb.gpas[0], 0x5000); // With identity mapping, GPA == GVA
+    assert_eq!(fb.id_bytes(), id_bytes);
 }
 
 #[test]

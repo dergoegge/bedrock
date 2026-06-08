@@ -154,12 +154,20 @@ pub(crate) const BEDROCK_VM_QUEUE_IO_ACTION: u64 =
 pub(crate) const BEDROCK_VM_DRAIN_IO_RESPONSE: u64 =
     ioctl_ior(BEDROCK_IOC_MAGIC, 14, size_of::<IoActionPayload>());
 
+/// Maximum length of a feedback-buffer identifier. Must stay in lockstep with
+/// `bedrock_vmx::FEEDBACK_BUFFER_ID_MAX_LEN` — the kernel module writes that
+/// many bytes into the `id` field of [`FeedbackBufferInfo`].
+pub const FEEDBACK_BUFFER_ID_MAX_LEN: usize = 128;
+
 /// Feedback buffer info returned from kernel.
 ///
-/// This structure describes a feedback buffer registered by the guest
-/// via the HYPERCALL_REGISTER_FEEDBACK_BUFFER hypercall.
+/// Describes a feedback buffer registered by the guest via the
+/// `HYPERCALL_REGISTER_FEEDBACK_BUFFER` hypercall. Each registration carries
+/// a byte-string identifier (e.g. the guest binary's build-id). IDs are
+/// *not* required to be unique — see the docs on
+/// `bedrock_vmx::FeedbackBufferInfo` for the rationale.
 #[repr(C)]
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FeedbackBufferInfo {
     /// Original guest virtual address.
     pub gva: u64,
@@ -169,8 +177,34 @@ pub struct FeedbackBufferInfo {
     pub num_pages: u64,
     /// Whether a feedback buffer is registered (0 = no, 1 = yes).
     pub registered: u32,
-    /// Buffer index (0-15).
+    /// Slot index this entry occupies (0..MAX_FEEDBACK_BUFFERS).
     pub index: u32,
+    /// Length of the meaningful prefix of `id`, in bytes.
+    pub id_len: u32,
     /// Reserved for alignment.
     pub _reserved: u32,
+    /// Identifier bytes; trailing bytes past `id_len` are zero.
+    pub id: [u8; FEEDBACK_BUFFER_ID_MAX_LEN],
+}
+
+impl Default for FeedbackBufferInfo {
+    fn default() -> Self {
+        Self {
+            gva: 0,
+            size: 0,
+            num_pages: 0,
+            registered: 0,
+            index: 0,
+            id_len: 0,
+            _reserved: 0,
+            id: [0u8; FEEDBACK_BUFFER_ID_MAX_LEN],
+        }
+    }
+}
+
+impl FeedbackBufferInfo {
+    /// The identifier as a byte slice.
+    pub fn id_bytes(&self) -> &[u8] {
+        &self.id[..self.id_len as usize]
+    }
 }

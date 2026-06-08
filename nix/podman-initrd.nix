@@ -128,7 +128,10 @@ let
   # regardless of PATH or wrapper behaviour.
   containersConf = pkgs.writeText "containers.conf" ''
     [containers]
-    netns = "host"
+    # No global netns override — each container gets its own netns and
+    # joins netavark's default bridge network. Per-container settings in
+    # compose still take precedence if a workload needs `network_mode:
+    # host` for a specific service.
     log_driver = "journald"
 
     [engine]
@@ -366,6 +369,15 @@ pkgs.stdenv.mkDerivation {
     # Minimal /etc files needed for podman
     echo 'root:x:0:0:root:/root:/bin/sh' > rootfs/etc/passwd
     echo 'root:x:0:' > rootfs/etc/group
+
+    # Stub /etc/resolv.conf so aardvark-dns can open it (it's fatal if
+    # the file doesn't exist, even when no upstream forwarding is
+    # needed). The guest has no external network — container names are
+    # resolved by aardvark directly off the netavark bridge.
+    cat > rootfs/etc/resolv.conf << 'RESOLV'
+    # bedrock guest: aardvark-dns serves container-name lookups locally;
+    # there are no upstream nameservers.
+    RESOLV
 
     # Workload: one docker-archive tarball + one compose file. `podman load`
     # recovers image names from the manifest, so the file name here is opaque.

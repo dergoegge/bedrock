@@ -113,10 +113,17 @@ pub(crate) struct BedrockFeedbackBufferInfoRequest {
     pub _reserved: u32,
 }
 
+/// Mirror of `bedrock_vmx::FEEDBACK_BUFFER_ID_MAX_LEN`. Wire-ABI constant —
+/// keep in lockstep with the userland `FeedbackBufferInfo` (in `bedrock-vm`).
+pub(crate) const FEEDBACK_BUFFER_ID_MAX_LEN: usize = 128;
+
 /// Feedback buffer info returned to userspace.
 ///
-/// This structure tells userspace about a feedback buffer registered by the guest
-/// via the HYPERCALL_REGISTER_FEEDBACK_BUFFER hypercall.
+/// This structure tells userspace about a feedback buffer registered by the
+/// guest via the `HYPERCALL_REGISTER_FEEDBACK_BUFFER` hypercall. The
+/// identifier (`id` / `id_len`) is set at registration time by the guest;
+/// duplicate ids across slots represent independent instances of the same
+/// domain.
 #[repr(C)]
 pub(crate) struct BedrockFeedbackBufferInfo {
     /// Original guest virtual address.
@@ -127,10 +134,14 @@ pub(crate) struct BedrockFeedbackBufferInfo {
     pub num_pages: u64,
     /// Whether a feedback buffer is registered (0 = no, 1 = yes).
     pub registered: u32,
-    /// Buffer index (0-15).
+    /// Slot index (0..MAX_FEEDBACK_BUFFERS).
     pub index: u32,
+    /// Length of the identifier in `id`, in bytes (0 if `registered == 0`).
+    pub id_len: u32,
     /// Reserved for alignment.
     pub _reserved: u32,
+    /// Identifier bytes; trailing bytes past `id_len` are zero.
+    pub id: [u8; FEEDBACK_BUFFER_ID_MAX_LEN],
 }
 
 /// Maximum size of serial input buffer.

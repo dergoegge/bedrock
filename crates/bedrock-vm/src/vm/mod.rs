@@ -932,6 +932,29 @@ impl Vm {
         self.feedback_buffer_at(0)
     }
 
+    /// Return the slot indices of every registered feedback buffer whose
+    /// identifier exactly matches `id`. Order is ascending by slot index.
+    ///
+    /// IDs are not unique: two slots can share an id, representing two
+    /// instances of the same domain. Callers that want the union of those
+    /// buffers (e.g. coverage merge) typically iterate the returned slots
+    /// and OR their bytes together.
+    ///
+    /// Issues one `get_feedback_buffer_info_at` ioctl per slot up to
+    /// [`MAX_FEEDBACK_BUFFERS`]; cheap but not free, so cache the result
+    /// across runs if the registration set is stable.
+    pub fn feedback_buffer_slots_for_id(&self, id: &[u8]) -> io::Result<Vec<usize>> {
+        let mut hits = Vec::new();
+        for slot in 0..MAX_FEEDBACK_BUFFERS {
+            if let Some(info) = self.get_feedback_buffer_info_at(slot)? {
+                if info.id_bytes() == id {
+                    hits.push(slot);
+                }
+            }
+        }
+        Ok(hits)
+    }
+
     /// Compute the mmap offset for the feedback buffer at the specified index.
     fn feedback_buffer_mmap_offset_at(&self, index: usize) -> libc::off_t {
         const FEEDBACK_BUFFER_SLOT_SIZE: usize = 1024 * 1024; // 1MB per slot

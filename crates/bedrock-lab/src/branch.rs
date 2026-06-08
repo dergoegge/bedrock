@@ -316,37 +316,73 @@ impl Branch {
         Ok(())
     }
 
-    /// Read the feedback buffer at `index` for this branch's VM.
+    /// Read every feedback buffer this branch's VM has registered under
+    /// `id`. Returns one `&[u8]` per matching slot, in ascending slot
+    /// order. Empty result if no registration matches.
     ///
-    /// Returns `Ok(None)` if no buffer has been registered at `index`.
-    /// Otherwise lazily mmaps the buffer (idempotent across calls) and
-    /// returns a read-only slice into it. The slice is valid until the
-    /// branch is dropped or consumed by [`Branch::checkpoint`].
+    /// IDs are not unique by design (see [`Event::FeedbackBufferRegistered`](crate::Event)
+    /// docs): multiple guest processes can register coverage maps under the
+    /// same id (typically a build-id) and the caller is responsible for
+    /// merging — usually a byte-wise OR — the resulting slices.
     ///
-    /// Forked branches see their own copy-on-write view of the buffer, so
-    /// reads from sibling branches are independent without any cleanup work
-    /// from the caller.
+    /// Each backing slot is lazily mmapped on first read and the mapping is
+    /// cached for the branch's lifetime. The slices stay valid until the
+    /// branch is dropped or consumed by [`Branch::checkpoint`]. Forked
+    /// branches see their own copy-on-write view of every buffer, so reads
+    /// from sibling branches are independent.
     ///
     /// # Errors
     ///
-    /// - `index >= bedrock_vm::MAX_FEEDBACK_BUFFERS`
-    /// - The underlying mmap or info-query ioctl fails
-    pub fn feedback_buffer(&mut self, index: usize) -> Result<Option<&[u8]>> {
+    /// - The mmap or info-query ioctl fails
+    pub fn feedback_buffers(&mut self, id: &[u8]) -> Result<Vec<&[u8]>> {
         let vm = self.vm.as_mut().expect("Branch.vm taken");
-        if vm.feedback_buffer_at(index).is_none() {
-            if vm.get_feedback_buffer_info_at(index)?.is_none() {
-                return Ok(None);
+        let slots = vm.feedback_buffer_slots_for_id(id)?;
+        for &slot in &slots {
+            if vm.feedback_buffer_at(slot).is_none() {
+                vm.map_feedback_buffer_at(slot)?;
             }
-            vm.map_feedback_buffer_at(index)?;
         }
-        Ok(vm.feedback_buffer_at(index))
+        // Re-borrow to get the slices now that all mappings exist. Done in a
+        // second loop so the mutable borrow above is released before we hand
+        // out shared references.
+        let mut out = Vec::with_capacity(slots.len());
+        for &slot in &slots {
+            if let Some(bytes) = vm.feedback_buffer_at(slot) {
+                out.push(bytes);
+            }
+        }
+        Ok(out)
     }
 
-    /// Convenience: read the feedback buffer at `index` into an owned `Vec`.
-    /// Useful when the caller needs to hold the bytes across other `&mut
-    /// self` operations on the branch.
-    pub fn feedback_buffer_to_vec(&mut self, index: usize) -> Result<Option<Vec<u8>>> {
-        Ok(self.feedback_buffer(index)?.map(|s| s.to_vec()))
+    /// Convenience: read every feedback buffer matching `id` into owned
+    /// `Vec`s. Useful when the caller needs to hold the bytes across other
+    /// `&mut self` operations on the branch.
+    pub fn feedback_buffers_to_vec(&mut self, id: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Ok(self
+            .feedback_buffers(id)?
+            .into_iter()
+            .map(|s| s.to_vec())
+            .collect())
+    }
+
+    /// Return every distinct identifier currently registered on this
+    /// branch's VM, in slot-ascending order (first time each id is seen).
+    ///
+    /// Issues one info-query ioctl per slot. Cheap but not free; cache the
+    /// result if you call it on a hot path.
+    pub fn feedback_buffer_ids(&self) -> Result<Vec<Vec<u8>>> {
+        let vm = self.vm.as_ref().expect("Branch.vm taken");
+        let mut seen = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+        for slot in 0..bedrock_vm::MAX_FEEDBACK_BUFFERS {
+            if let Some(info) = vm.get_feedback_buffer_info_at(slot)? {
+                let id = info.id_bytes().to_vec();
+                if seen.insert(id.clone()) {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
     }
 
     /// Run the branch forward until its virtual time reaches `target`.

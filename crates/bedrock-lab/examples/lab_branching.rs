@@ -315,12 +315,14 @@ impl EventSink for LabSink {
             Event::FeedbackBufferRegistered {
                 branch,
                 at,
-                index,
+                id,
+                slot,
                 size,
             } => {
                 eprintln!(
-                    "[br {branch:?} vt {:>8.3}] feedback buffer {index} registered ({size} bytes)",
-                    at.as_secs_f64()
+                    "[br {branch:?} vt {:>8.3}] feedback buffer slot={slot} id={:?} registered ({size} bytes)",
+                    at.as_secs_f64(),
+                    String::from_utf8_lossy(id),
                 );
             }
             Event::ExitLogged { entry, .. } => {
