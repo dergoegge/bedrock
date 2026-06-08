@@ -209,7 +209,7 @@ mod tests {
                 IoAction {
                     at: 120,
                     target: Target::Container("lnd1".into()),
-                    command: "/opt/bedrock/drivers/lnd-force-close deadbeef".into(),
+                    command: "/opt/bedrock/drivers/lnd-force-close".into(),
                 },
                 IoAction {
                     at: 300,

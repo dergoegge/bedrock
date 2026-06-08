@@ -129,16 +129,6 @@ impl Action {
         actions
     }
 
-    /// Whether this action takes a fuzzer-controlled byte argument. Drivers do:
-    /// the argument is appended to the command as hex and the driver decodes it
-    /// as its entropy source, so the fuzzer steers the driver's parameters
-    /// directly (smooth, byte-level, coverage-hill-climbable) instead of via the
-    /// guest CRNG, which a recorded-RDRAND mutation can't actually move. Fault
-    /// actions take no argument.
-    fn wants_arg(&self) -> bool {
-        matches!(self, Action::Driver(_))
-    }
-
     /// Whether the mutators may schedule this action. Everything is insertable
     /// except [`Action::FaultClear`]: partitions self-heal after their duration,
     /// so an explicit `clear` is never needed and would only add noise.
@@ -146,12 +136,6 @@ impl Action {
         !matches!(self, Action::FaultClear)
     }
 }
-
-/// Bytes the fuzzer hands a driver as its entropy, generated fresh on insert and
-/// mutated in place by [`Mutators::io_arg_havoc`]. Long enough for any driver's
-/// parameter draws (they index small offsets); kept fixed-length so a byte
-/// mutation maps to the same parameter across runs.
-const ARG_BYTES: usize = 64;
 
 /// Percent of Lineage-mode bursts that re-roll a fresh regime instead of using
 /// the inherited subset — prevents inheritance from ossifying the corpus or
@@ -162,41 +146,6 @@ const LINEAGE_REROLL_PCT: u64 = 25;
 /// random subset). Small, so the throughput cost of full-vocab bursts is
 /// bounded while still guaranteeing rare full-action combinations get tried.
 const FULL_VOCAB_REROLL_PCT: u64 = 25;
-
-/// Lowercase-hex encode.
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-/// Decode an even-length all-lowercase-hex string to bytes, else `None`.
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.is_empty() || s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-/// Split a command into `(base, arg_bytes)` if its last whitespace-separated
-/// token is an even-length hex string (a fuzzer argument). The command string
-/// is the recorded/replayed source of truth, so the argument round-trips
-/// through it with no separate field.
-fn split_arg(command: &str) -> Option<(&str, Vec<u8>)> {
-    let (base, last) = command.rsplit_once(' ')?;
-    let bytes = hex_decode(last)?;
-    Some((base, bytes))
-}
-
-/// Append a hex argument to a base command.
-fn with_arg(base: &str, arg: &[u8]) -> String {
-    format!("{base} {}", hex_encode(arg))
-}
 
 /// A random subset (1..=n distinct indices, uniform size) of an `n`-action
 /// vocabulary. Seeds a fresh lineage regime / serves `burst` mode.
@@ -277,16 +226,16 @@ impl Mutators {
         let iters = 1u32 << (1 + rng.below(self.max_stack_pow as usize));
         let mut result = MutationResult::Skipped;
         for _ in 0..iters {
-            // io_arg_havoc (the direct parameter knob) gets two of six slots —
-            // it's the highest-signal mutation now that drivers read their
-            // entropy from the fuzzer-controlled argument.
-            let pick = rng.below(6);
+            // rng_byte_havoc (the direct parameter knob) gets two of five slots
+            // — it's the highest-signal mutation now that drivers read their
+            // entropy from /dev/urandom, which bedrock serves byte-for-byte from
+            // the fuzzer-controlled RDRAND stream this mutator rewrites.
+            let pick = rng.below(5);
             let r = match pick {
-                0 => self.rng_byte_havoc(rng, input),
-                1 => self.io_insert(rng, input, lineage),
-                2 => self.io_time_shift(rng, input),
-                3 => self.io_driver_swap(rng, input),
-                _ => self.io_arg_havoc(rng, input),
+                0 | 1 => self.rng_byte_havoc(rng, input),
+                2 => self.io_insert(rng, input, lineage),
+                3 => self.io_time_shift(rng, input),
+                _ => self.io_driver_swap(rng, input),
             };
             result = result.or(r);
         }
@@ -427,10 +376,7 @@ impl Mutators {
         let mut earliest: Option<u64> = None;
         for _ in 0..burst {
             let idx = pick_action(rng, &subset);
-            let (target, mut command) = self.actions[idx].to_io();
-            if self.actions[idx].wants_arg() {
-                command = with_arg(&command, &rand_arg(rng));
-            }
+            let (target, command) = self.actions[idx].to_io();
             let offset = if self.window == 0 {
                 0
             } else {
@@ -487,55 +433,13 @@ impl Mutators {
         }
         let idx = rng.below(input.io.len());
         let a = candidates[rng.below(candidates.len())];
-        let (target, mut command) = self.actions[a].to_io();
-        if self.actions[a].wants_arg() {
-            command = with_arg(&command, &rand_arg(rng));
-        }
+        let (target, command) = self.actions[a].to_io();
         input.io[idx].target = target;
         input.io[idx].command = command;
         let at = input.io[idx].at;
         input.mutated_at = Some(merge_earliest(input.mutated_at, at));
         MutationResult::Mutated
     }
-
-    /// Mutate the fuzzer-controlled byte argument of one existing driver action
-    /// in place — the smooth, targeted parameter knob. Picks an io entry whose
-    /// command carries a hex arg, byte-havocs the decoded bytes, and rewrites
-    /// the command. Because the argument is replayed verbatim from the command
-    /// string, this gives the fuzzer direct, deterministic control over the
-    /// driver's parameter draws (block counts, amounts, channel sizes, raw
-    /// parser inputs, …) — unlike `rng_byte_havoc`, whose effect is laundered
-    /// through the guest CRNG. Divergence is at that action's time, so a deep
-    /// action's re-parameterization re-runs the branch forward from there.
-    fn io_arg_havoc(&self, rng: &mut Rng, input: &mut Input) -> MutationResult {
-        let candidates: Vec<usize> = input
-            .io
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| split_arg(&e.command).is_some())
-            .map(|(i, _)| i)
-            .collect();
-        if candidates.is_empty() {
-            return MutationResult::Skipped;
-        }
-        let idx = candidates[rng.below(candidates.len())];
-        let (base, mut bytes) = match split_arg(&input.io[idx].command) {
-            Some((b, by)) => (b.to_string(), by),
-            None => return MutationResult::Skipped,
-        };
-        if !havoc_bytes(rng, &mut bytes) {
-            return MutationResult::Skipped;
-        }
-        input.io[idx].command = with_arg(&base, &bytes);
-        let at = input.io[idx].at;
-        input.mutated_at = Some(merge_earliest(input.mutated_at, at));
-        MutationResult::Mutated
-    }
-}
-
-/// A fresh random fuzzer argument for a driver action.
-fn rand_arg(rng: &mut Rng) -> Vec<u8> {
-    (0..ARG_BYTES).map(|_| rng.below(256) as u8).collect()
 }
 
 /// Pick a uniformly-random index from `subset`.
@@ -605,26 +509,6 @@ mod tests {
             "respects anchor floor"
         );
         assert_eq!(input.mutated_at, input.io.iter().map(|a| a.at).min());
-    }
-
-    #[test]
-    fn hex_arg_roundtrips_through_command() {
-        let arg = vec![0x00, 0xde, 0xad, 0xbe, 0xef, 0xff];
-        let cmd = with_arg("/opt/bedrock/drivers/mine-blocks", &arg);
-        let (base, back) = split_arg(&cmd).expect("has arg");
-        assert_eq!(base, "/opt/bedrock/drivers/mine-blocks");
-        assert_eq!(back, arg);
-    }
-
-    #[test]
-    fn split_arg_ignores_non_hex_tails() {
-        // Fault commands and bare driver paths have no hex tail.
-        assert!(split_arg("fault-injector clear").is_none());
-        assert!(split_arg("fault-injector partition btcd1").is_none());
-        // A timed partition ends in the `--duration` value, not a hex arg, so
-        // io_arg_havoc leaves it alone.
-        assert!(split_arg("fault-injector partition btcd1 --duration 500ms").is_none());
-        assert!(split_arg("/opt/bedrock/drivers/mine-blocks").is_none());
     }
 
     #[test]
@@ -723,7 +607,9 @@ mod tests {
     }
 
     #[test]
-    fn io_insert_attaches_arg_to_drivers_only() {
+    fn io_insert_emits_bare_driver_commands() {
+        // Drivers now read their entropy from /dev/urandom, so the fuzzer
+        // appends no argument: an inserted driver action is its bare command.
         let mut rng = Rng::new(11);
         let mut actions = drivers(2);
         actions.push(Action::FaultPartition {
@@ -736,21 +622,21 @@ mod tests {
         for _ in 0..40 {
             m.io_insert(&mut rng, &mut input, None);
         }
-        let (mut saw_driver_arg, mut saw_fault) = (false, false);
+        let (mut saw_driver, mut saw_fault) = (false, false);
         for e in &input.io {
             if e.command.starts_with("fault-injector") {
-                assert!(split_arg(&e.command).is_none(), "fault has no hex arg");
                 saw_fault = true;
             } else {
+                // Bare driver path, no appended token.
                 assert!(
-                    split_arg(&e.command).is_some(),
-                    "driver has hex arg: {}",
+                    e.command == "d0" || e.command == "d1",
+                    "driver command carries no arg: {}",
                     e.command
                 );
-                saw_driver_arg = true;
+                saw_driver = true;
             }
         }
-        assert!(saw_driver_arg && saw_fault);
+        assert!(saw_driver && saw_fault);
     }
 
     #[test]
@@ -775,27 +661,6 @@ mod tests {
             m.io_driver_swap(&mut rng, &mut input);
         }
         assert!(input.io.iter().all(|e| e.command != "fault-injector clear"));
-    }
-
-    #[test]
-    fn io_arg_havoc_changes_an_arg() {
-        let mut rng = Rng::new(4);
-        let m = Mutators::new(drivers(1), 1000, 8, SwarmMode::Off);
-        let mut input = Input::new(0);
-        m.io_insert(&mut rng, &mut input, None);
-        let before = input.io[0].command.clone();
-        let mut changed = false;
-        for _ in 0..50 {
-            if m.io_arg_havoc(&mut rng, &mut input) == MutationResult::Mutated
-                && input.io[0].command != before
-            {
-                // Still a valid driver command with a decodable arg.
-                assert!(split_arg(&input.io[0].command).is_some());
-                changed = true;
-                break;
-            }
-        }
-        assert!(changed, "arg havoc should eventually change the arg");
     }
 
     #[test]

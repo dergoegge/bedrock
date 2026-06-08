@@ -19,7 +19,11 @@ trap 'exit 0' EXIT
 BCTL="btcctl --regtest -u user -P password --rpccert=/etc/bedrock/rpc.cert"
 HOSTS="btcd1 btcd2"
 
-FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+# Entropy is the deterministic, fuzzer-controlled /dev/urandom stream (bedrock
+# serves it from trapped RDRAND), read once into a hex buffer; fz N returns
+# byte N of it. The fuzzer steers driver parameters by mutating the RDRAND
+# values behind these bytes; replays are deterministic.
+FZ=$(od -An -N64 -tx1 /dev/urandom | tr -d ' \n'); fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); echo $(( 0x${h:-0} )); }
 hb=$(fz 0)
 vout=$(fz 1)
 shape=$(fz 2)
@@ -27,14 +31,9 @@ a0=$(fz 3)
 a1=$(fz 4)
 host=$(echo "$HOSTS" | cut -d' ' -f$(( hb % 2 + 1 )))
 
-# A fuzzer-controlled 32-byte input txid (hex): bytes 5..36 of the arg. Falls
-# back to a random txid when no arg is present.
-if [ -n "$FZ" ]; then
-    in_txid=$(printf %s "$FZ" | cut -c11-74 | tr -cd '0-9a-f')
-    while [ ${#in_txid} -lt 64 ]; do in_txid="${in_txid}0"; done
-else
-    in_txid=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-fi
+# A fuzzer-controlled 32-byte input txid (hex), read straight from the same
+# /dev/urandom stream.
+in_txid=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 
 base=$(( a1 * 256 + a0 ))
 case $(( shape % 6 )) in

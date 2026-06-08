@@ -3,11 +3,12 @@
 # (zpay32: bech32 + TLV). Builds a candidate request from a regtest HRP prefix
 # plus a fuzzer-controlled run of bech32-charset characters, then feeds it to
 # `decodepayreq`. The body characters come DIRECTLY from the fuzzer-controlled
-# hex argument ($1): each hex nibble-pair maps to a bech32 char, so the fuzzer
-# steers the exact decoder input (smooth, coverage-hill-climbable) rather than
-# through the guest CRNG. The instrumented lnd's edge coverage guides the search
-# deeper into the decoder; an input that panics a non-recovered lnd goroutine
-# crashes the daemon (dead container). Deterministic: the arg is replayed.
+# /dev/urandom stream (bedrock serves it from trapped RDRAND): each hex
+# nibble-pair maps to a bech32 char, so the fuzzer steers the exact decoder
+# input (smooth, coverage-hill-climbable). The instrumented lnd's edge coverage
+# guides the search deeper into the decoder; an input that panics a
+# non-recovered lnd goroutine crashes the daemon (dead container). Deterministic:
+# the urandom stream replays.
 set -eu
 
 # Never exit non-zero: a fuzzer-invoked driver exec dying with a bad code
@@ -19,20 +20,20 @@ trap 'exit 0' EXIT
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 
-FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+# Entropy is the deterministic, fuzzer-controlled /dev/urandom stream (bedrock
+# serves it from trapped RDRAND), read once into a hex buffer; fz N returns
+# byte N of it. The fuzzer steers driver parameters by mutating the RDRAND
+# values behind these bytes; replays are deterministic.
+FZ=$(od -An -N64 -tx1 /dev/urandom | tr -d ' \n'); fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); echo $(( 0x${h:-0} )); }
 
 nb=$(fz 0)
 node=$(echo "$NODES" | cut -d' ' -f$(( nb % 3 + 1 )))
 
-# Body: take the arg hex past the first byte and map each hex char to a bech32
-# char via tr (no awk strtonum — busybox awk lacks it). Each of the fuzzer's hex
-# chars thus controls one decoder-input char. Falls back to a short random body
-# when no arg is present.
-if [ -n "$FZ" ]; then
-    body=$(printf %s "$FZ" | cut -c3- | tr -cd '0-9a-f' | tr '0123456789abcdef' 'qpzry9x8gf2tvdw0')
-else
-    body=$(od -An -N40 -tx1 /dev/urandom | tr -d ' \n' | tr '0123456789abcdef' 'qpzry9x8gf2tvdw0')
-fi
+# Body: a run of bech32-charset chars from the same fuzzer-controlled
+# /dev/urandom stream, mapping each hex char to a bech32 char via tr (no awk
+# strtonum — busybox awk lacks it). Each of the fuzzer's hex chars thus controls
+# one decoder-input char.
+body=$(od -An -N40 -tx1 /dev/urandom | tr -d ' \n' | tr '0123456789abcdef' 'qpzry9x8gf2tvdw0')
 
 req="lnbcrt${body}"
 echo "decodepayreq fuzz on $node len=${#body}"

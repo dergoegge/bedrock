@@ -19,7 +19,11 @@ trap 'exit 0' EXIT
 LNCLI="lncli --network=regtest --no-macaroons --tlscertpath=/etc/bedrock/rpc.cert"
 NODES="lnd1 lnd2 lnd3"
 
-FZ="${1:-}"; fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); if [ ${#h} -eq 2 ]; then echo $((0x$h)); else od -An -N1 -tu1 /dev/urandom|tr -d ' \n'; fi; }
+# Entropy is the deterministic, fuzzer-controlled /dev/urandom stream (bedrock
+# serves it from trapped RDRAND), read once into a hex buffer; fz N returns
+# byte N of it. The fuzzer steers driver parameters by mutating the RDRAND
+# values behind these bytes; replays are deterministic.
+FZ=$(od -An -N64 -tx1 /dev/urandom | tr -d ' \n'); fz(){ o=$(( ${1:-0} * 2 )); h=$(printf %s "$FZ"|cut -c$((o+1))-$((o+2))); echo $(( 0x${h:-0} )); }
 b1=$(fz 0)
 b2=$(fz 1)
 b3=$(fz 2)
