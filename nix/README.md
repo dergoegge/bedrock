@@ -8,6 +8,7 @@ Nix flake for building and testing the bedrock hypervisor with nested KVM.
 nix run .#vm            # Boot interactive dev VM (SSH on port 2222)
 nix run .#test          # Run integration tests in NixOS VM
 nix run .#test-native   # Run tests directly on host (faster, no nested virt)
+nix run .#deploy-aws-r7i-metal -- root@EC2_IP
 ```
 
 ## Packages
@@ -20,6 +21,54 @@ nix run .#test-native   # Run tests directly on host (faster, no nested virt)
 | `guestInitrd` | Trivial initramfs (boots, VMCALL shutdown) |
 | `bedrock-cli` | CLI for loading and running guest VMs |
 | `bedrock-determinism` | Determinism checker (multi-run comparison) |
+
+## AWS Bare-Metal Deployment
+
+The flake exposes `nixosConfigurations.aws-r7i-metal`, a
+`nixos-anywhere` target for EC2 `r7i.metal-*` instances. It reuses
+nixpkgs' EC2 module (`virtualisation/amazon-image.nix`) for AWS metadata,
+SSM agent, serial console, ENA/NVMe defaults, and EC2 SSH behavior. The
+only EC2 feature it disables is `amazon-init`, so EC2 user-data cannot
+replace the flake-managed system after installation. Bedrock's custom Linux
+6.18 kernel and `bedrock.ko` are layered on top.
+
+The disk layout is declared with disko in
+`nix/hosts/aws-r7i-metal/disko.nix`. It wipes `/dev/nvme0n1`, creates a
+GPT disk with a BIOS boot partition, and formats `/` as ext4 labeled
+`nixos`. This matches EC2 Nitro's NVMe EBS presentation and avoids UEFI
+because AWS documents bare-metal instances as an exception to generic Nitro
+UEFI support.
+
+Deploy from a machine with SSH access to the instance:
+
+```bash
+BEDROCK_DEPLOY_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  nix run .#deploy-aws-r7i-metal -- --build-on local root@EC2_PUBLIC_IP
+```
+
+The same helper is available through `just`:
+
+```bash
+BEDROCK_DEPLOY_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  just deploy-aws-r7i-metal --build-on local root@EC2_PUBLIC_IP
+```
+
+The helper wraps:
+
+```bash
+nix run github:nix-community/nixos-anywhere -- \
+  --flake .#aws-r7i-metal root@EC2_PUBLIC_IP
+```
+
+`BEDROCK_DEPLOY_PUBLIC_KEY` is optional but recommended. When set, the
+helper passes it via `nixos-anywhere --extra-files` so the installed
+system keeps that key in `/root/.ssh/authorized_keys` without embedding it
+in the Nix store.
+
+The target instance must already be booted into a Linux environment that
+permits root SSH, such as a temporary NixOS or rescue-style EC2 instance.
+`nixos-anywhere` will kexec into its installer, repartition the root EBS
+volume, install NixOS, and reboot.
 
 The podman initrd is exposed as a function `mkPodmanInitrd` under
 `lib.<system>` — workloads supply a compose file and a docker-archive

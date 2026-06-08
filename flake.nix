@@ -9,6 +9,17 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    nixos-anywhere = {
+      url = "github:nix-community/nixos-anywhere";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.disko.follows = "disko";
+    };
+
     # Linux 6.18 source -- pin to the exact tag
     linux-src = {
       url = "github:torvalds/linux/v6.18";
@@ -16,7 +27,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, rust-overlay, linux-src }:
+  outputs = { self, nixpkgs, rust-overlay, disko, nixos-anywhere, linux-src }:
     let
       system = "x86_64-linux";
 
@@ -109,6 +120,48 @@
         touch $out
       '';
 
+      deployAwsR7iMetal = pkgs.writeShellScript "deploy-aws-r7i-metal" ''
+        set -euo pipefail
+
+        if [ "$#" -eq 0 ]; then
+          cat >&2 <<'EOF'
+        Usage:
+          nix run .#deploy-aws-r7i-metal -- [nixos-anywhere options] root@EC2_PUBLIC_IP
+
+        Set BEDROCK_DEPLOY_PUBLIC_KEY to the SSH public key that should remain
+        authorized for root after installation. The key is copied with
+        nixos-anywhere --extra-files; it is not stored in the Nix store.
+
+        Example:
+          BEDROCK_DEPLOY_PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+            nix run .#deploy-aws-r7i-metal -- --build-on local root@203.0.113.10
+        EOF
+          exit 2
+        fi
+
+        extra_files=
+        cleanup() {
+          if [ -n "$extra_files" ]; then
+            ${pkgs.coreutils}/bin/rm -rf "$extra_files"
+          fi
+        }
+        trap cleanup EXIT
+
+        extra_args=()
+        if [ -n "''${BEDROCK_DEPLOY_PUBLIC_KEY:-}" ]; then
+          extra_files="$(${pkgs.coreutils}/bin/mktemp -d)"
+          ${pkgs.coreutils}/bin/install -d -m 0700 "$extra_files/root/.ssh"
+          printf '%s\n' "$BEDROCK_DEPLOY_PUBLIC_KEY" > "$extra_files/root/.ssh/authorized_keys"
+          ${pkgs.coreutils}/bin/chmod 0600 "$extra_files/root/.ssh/authorized_keys"
+          extra_args+=(--extra-files "$extra_files")
+        fi
+
+        exec ${nixos-anywhere.packages.${system}.default}/bin/nixos-anywhere \
+          --flake ${self.outPath}#aws-r7i-metal \
+          "''${extra_args[@]}" \
+          "$@"
+      '';
+
     in
     {
       packages.${system} = {
@@ -199,6 +252,25 @@
           type = "app";
           program = "${script}";
         };
+
+        deploy-aws-r7i-metal = {
+          type = "app";
+          program = "${deployAwsR7iMetal}";
+        };
+      };
+
+      nixosConfigurations.aws-r7i-metal = nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = {
+          bedrockKernel = kernel;
+          inherit bedrockModule;
+          bedrockCli = userland.bedrock-cli;
+          bedrockDeterminism = userland.bedrock-determinism;
+        };
+        modules = [
+          disko.nixosModules.disko
+          ./nix/hosts/aws-r7i-metal
+        ];
       };
 
       checks.${system} = {

@@ -90,3 +90,9 @@ nix-test:
 [group: 'nix']
 nix-test-native:
     nix run .#test-native
+
+# Deploy the Bedrock NixOS host profile to an AWS r7i.metal instance.
+# Pass nixos-anywhere options and the root SSH target after `--`.
+[group: 'nix']
+deploy-aws-r7i-metal *args:
+    nix run .#deploy-aws-r7i-metal -- {{args}}

@@ -66,6 +66,12 @@ let
     ./scripts/config --enable VIRTIO_BALLOON
     ./scripts/config --enable HW_RANDOM_VIRTIO
 
+    # AWS Nitro bare metal (r7i.metal): EBS appears as NVMe and networking is ENA.
+    ./scripts/config --enable NVME_CORE
+    ./scripts/config --enable BLK_DEV_NVME
+    ./scripts/config --enable NET_VENDOR_AMAZON
+    ./scripts/config --enable ENA_ETHERNET
+
     # 9P filesystem (for NixOS VM store sharing)
     ./scripts/config --enable NET_9P
     ./scripts/config --enable NET_9P_VIRTIO
