@@ -21,15 +21,18 @@
   boot.extraModulePackages = lib.mkForce [ bedrockModule ];
   boot.kernelModules = [ "bedrock" ];
 
-  # Keep the EC2/Nitro initrd driver set from amazon-image.nix and add the
-  # filesystems used by this disko layout.
-  boot.initrd.availableKernelModules = [
+  # The custom Bedrock kernel is intentionally slim and builds most required
+  # drivers in-tree/built-in. Avoid NixOS' broad default initrd module list,
+  # which includes modules this kernel does not build.
+  boot.initrd.includeDefaultModules = false;
+  boot.initrd.availableKernelModules = lib.mkForce [
     "nvme"
     "ena"
     "ahci"
     "sd_mod"
     "xhci_pci"
   ];
+  boot.initrd.kernelModules = lib.mkForce [ ];
   boot.initrd.supportedFilesystems = [ "ext4" "vfat" ];
 
   # r7i.metal boots as EC2 bare metal on Nitro. AWS documents bare-metal
