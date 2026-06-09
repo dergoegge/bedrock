@@ -1661,7 +1661,10 @@ impl<V: VirtualMachineControlStructure, I: InstructionCounter> VmState<V, I> {
         let ioapic_hash = self.devices.ioapic.state_hash();
         let rtc_hash = self.devices.rtc.state_hash();
         let mtrr_hash = self.devices.mtrr.state_hash();
-        let rdrand_hash = self.devices.rdrand.state_hash();
+        // Fold the get_random device's state into the RDRAND slot (both are
+        // randomness sources, and adding a LogEntry field would break the
+        // logging ABI) so a divergence in either source is still caught.
+        let rdrand_hash = self.devices.rdrand.state_hash() ^ self.devices.random.state_hash();
 
         // Memory hash is computed later by finalize_log_entry() after this method returns.
         let memory_hash = 0;

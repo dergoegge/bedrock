@@ -12,7 +12,7 @@ use crate::checkpoint::{Checkpoint, CheckpointId, CheckpointInner};
 use crate::error::{LabError, Result};
 use crate::event::{drain_serial_into_sink, emit_feedback_buffer_registered, Event, PartialLine};
 use crate::inner::{BranchMeta, LabInner};
-use crate::rng::{InputRecording, InputSource, IoInput, RngInput};
+use crate::rng::{InputRecording, InputSource, IoInput, RandomInput, RngInput};
 use crate::time::VirtTime;
 use crate::tree::Tree;
 
@@ -484,6 +484,13 @@ impl Branch {
                         return Ok((at, RunOutcome::Yielded { kind: exit.kind() }))
                     }
                 },
+                ExitKind::VmcallGetRandom => match self.feed_random()? {
+                    FeedRng::Fed => continue,
+                    FeedRng::Exhausted => return Ok((at, RunOutcome::RngExhausted)),
+                    FeedRng::NoSource => {
+                        return Ok((at, RunOutcome::Yielded { kind: exit.kind() }))
+                    }
+                },
                 ExitKind::Continue | ExitKind::LogBufferFull => continue,
                 kind => return Ok((at, RunOutcome::Yielded { kind })),
             }
@@ -561,6 +568,15 @@ impl Branch {
                         })
                     }
                 },
+                ExitKind::VmcallGetRandom => match self.feed_random()? {
+                    FeedRng::Fed => continue,
+                    FeedRng::Exhausted | FeedRng::NoSource => {
+                        return Err(LabError::UnexpectedExit {
+                            at,
+                            kind: exit.kind(),
+                        })
+                    }
+                },
                 ExitKind::Continue | ExitKind::LogBufferFull | ExitKind::VmcallReady => continue,
                 kind => return Err(LabError::UnexpectedExit { at, kind }),
             }
@@ -587,6 +603,46 @@ impl Branch {
         self.input_recording.push_rng(RngInput {
             at: self.current_time,
             value,
+        });
+        Ok(FeedRng::Fed)
+    }
+
+    /// Service a `HYPERCALL_GET_RANDOM` exit: read the pending request (PID +
+    /// length), pull that many bytes from the input source, hand them to the
+    /// guest via `SET_RANDOM_BYTES`, and record them for replay. This is the
+    /// `/dev/urandom` / `getrandom()` analogue of [`Self::feed_rng`] — but the
+    /// bytes are served whole per request (the guest tells us the exact size),
+    /// not one `u64` at a time. Returns [`FeedRng::NoSource`] when the branch
+    /// has no input source (e.g. seeded mode never exits here, so this is only
+    /// a defensive fallback).
+    fn feed_random(&mut self) -> Result<FeedRng> {
+        let req = self.vm_mut().random_request().map_err(|source| {
+            LabError::Vm(VmError::Ioctl {
+                operation: "GET_RANDOM_REQUEST",
+                source,
+            })
+        })?;
+        let len = req.len as usize;
+        let pid = req.pid;
+
+        // Scope the source borrow so we can take `&mut self.vm` afterwards.
+        let bytes = {
+            let Some(source) = self.input_source.as_mut() else {
+                return Ok(FeedRng::NoSource);
+            };
+            source.next_random(len, pid)
+        };
+
+        self.vm_mut().set_random_bytes(&bytes).map_err(|source| {
+            LabError::Vm(VmError::Ioctl {
+                operation: "SET_RANDOM_BYTES",
+                source,
+            })
+        })?;
+        self.input_recording.push_random(RandomInput {
+            at: self.current_time,
+            pid,
+            bytes,
         });
         Ok(FeedRng::Fed)
     }

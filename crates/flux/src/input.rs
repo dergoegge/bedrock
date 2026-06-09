@@ -26,6 +26,22 @@ pub struct RngVal {
     pub value: u64,
 }
 
+/// One `HYPERCALL_GET_RANDOM` reply the guest consumed — the bytes handed to a
+/// single `/dev/urandom` / `getrandom()` read, plus the PID that asked. This is
+/// the high-signal fuzzer knob: mutating `bytes` directly steers the bytes the
+/// guest userspace receives (a btcd/lnd parameter, a parser blob, …), with no
+/// laundering through a CRNG. `pid` lets the fuzzer attribute / filter requests
+/// by process.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RandReq {
+    /// Retired-instruction count at consumption time.
+    pub at: u64,
+    /// PID (`current->tgid`) of the requesting process.
+    pub pid: u32,
+    /// Bytes returned to the guest for this request.
+    pub bytes: Vec<u8>,
+}
+
 /// One bash action injected at a given virtual time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct IoAction {
@@ -80,6 +96,11 @@ impl From<&BashTarget> for Target {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
     pub rng: Vec<RngVal>,
+    /// `HYPERCALL_GET_RANDOM` replies (the `/dev/urandom` / `getrandom()`
+    /// channel). `#[serde(default)]` so older reproductions that predate this
+    /// channel still deserialize.
+    #[serde(default)]
+    pub rand: Vec<RandReq>,
     pub io: Vec<IoAction>,
     pub anchor_at: u64,
     pub mutated_at: Option<u64>,
@@ -113,6 +134,7 @@ impl Input {
     pub fn new(anchor_at: u64) -> Self {
         Self {
             rng: Vec::new(),
+            rand: Vec::new(),
             io: Vec::new(),
             anchor_at,
             mutated_at: None,
@@ -133,6 +155,12 @@ impl Input {
             .skip_while(|r| r.at < at_instr)
             .map(|r| r.value)
             .collect();
+        let rand: Vec<Vec<u8>> = self
+            .rand
+            .iter()
+            .skip_while(|r| r.at < at_instr)
+            .map(|r| r.bytes.clone())
+            .collect();
         let io: Vec<IoInput> = self
             .io
             .iter()
@@ -145,8 +173,10 @@ impl Input {
             .collect();
         InputCursor {
             rng_values,
+            rand,
             io,
             rng_pos: 0,
+            rand_pos: 0,
             io_pos: 0,
             fresh: SplitMix64::new(fresh_seed),
         }
@@ -163,8 +193,10 @@ impl Input {
 #[derive(Clone)]
 pub struct InputCursor {
     rng_values: Vec<u64>,
+    rand: Vec<Vec<u8>>,
     io: Vec<IoInput>,
     rng_pos: usize,
+    rand_pos: usize,
     io_pos: usize,
     fresh: SplitMix64,
 }
@@ -178,6 +210,20 @@ impl InputSource for InputCursor {
             .unwrap_or_else(|| self.fresh.next_u64());
         self.rng_pos += 1;
         Some(v)
+    }
+
+    fn next_random(&mut self, len: usize, _pid: u32) -> Vec<u8> {
+        // Serve the recorded reply for this request slot, then fall back to the
+        // deterministic per-branch fresh RNG for requests past the recording
+        // (and to top up a recorded reply that's shorter than the guest now
+        // asks for). Always returns exactly `len` bytes.
+        let mut bytes = self.rand.get(self.rand_pos).cloned().unwrap_or_default();
+        self.rand_pos += 1;
+        while bytes.len() < len {
+            bytes.extend_from_slice(&self.fresh.next_u64().to_le_bytes());
+        }
+        bytes.truncate(len);
+        bytes
     }
 
     fn next_io_input(&mut self) -> Option<IoInput> {
@@ -205,6 +251,11 @@ mod tests {
                 },
                 RngVal { at: 250, value: 42 },
             ],
+            rand: vec![RandReq {
+                at: 150,
+                pid: 1234,
+                bytes: vec![0xde, 0xad, 0xbe, 0xef],
+            }],
             io: vec![
                 IoAction {
                     at: 120,

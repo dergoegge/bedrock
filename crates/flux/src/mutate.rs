@@ -226,15 +226,19 @@ impl Mutators {
         let iters = 1u32 << (1 + rng.below(self.max_stack_pow as usize));
         let mut result = MutationResult::Skipped;
         for _ in 0..iters {
-            // rng_byte_havoc (the direct parameter knob) gets two of five slots
-            // — it's the highest-signal mutation now that drivers read their
-            // entropy from /dev/urandom, which bedrock serves byte-for-byte from
-            // the fuzzer-controlled RDRAND stream this mutator rewrites.
-            let pick = rng.below(5);
+            // rand_byte_havoc (the direct parameter knob) gets two of six slots
+            // — it's the highest-signal mutation: drivers read their entropy from
+            // /dev/urandom, which the guest now sources via HYPERCALL_GET_RANDOM,
+            // so these bytes reach driver/parser inputs verbatim. rng_byte_havoc
+            // keeps one slot for the residual RDRAND stream (boot-time kernel
+            // entropy), which a recorded mutation can still move but only weakly
+            // steers the workload.
+            let pick = rng.below(6);
             let r = match pick {
-                0 | 1 => self.rng_byte_havoc(rng, input),
-                2 => self.io_insert(rng, input, lineage),
-                3 => self.io_time_shift(rng, input),
+                0 | 1 => self.rand_byte_havoc(rng, input),
+                2 => self.rng_byte_havoc(rng, input),
+                3 => self.io_insert(rng, input, lineage),
+                4 => self.io_time_shift(rng, input),
                 _ => self.io_driver_swap(rng, input),
             };
             result = result.or(r);
@@ -316,6 +320,45 @@ impl Mutators {
                 r.value = v;
                 earliest = Some(earliest.map_or(r.at, |e| e.min(r.at)));
             }
+        }
+        match earliest {
+            Some(at) => {
+                input.mutated_at = Some(merge_earliest(input.mutated_at, at));
+                MutationResult::Mutated
+            }
+            None => MutationResult::Skipped,
+        }
+    }
+
+    /// Byte-level havoc over the recorded `HYPERCALL_GET_RANDOM` replies — the
+    /// `/dev/urandom` / `getrandom()` bytes the guest userspace consumes, and so
+    /// the direct, smooth driver/parser-parameter knob. The channel is
+    /// pull-based: the request count, each reply's length, `at` and `pid` stay
+    /// fixed; only the reply bytes change. Replies are concatenated so havoc can
+    /// range across the whole stream, then scattered back preserving each
+    /// request's length. `mutated_at` becomes the earliest `at` whose bytes
+    /// actually moved.
+    fn rand_byte_havoc(&self, rng: &mut Rng, input: &mut Input) -> MutationResult {
+        if input.rand.is_empty() {
+            return MutationResult::Skipped;
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        for r in &input.rand {
+            buf.extend_from_slice(&r.bytes);
+        }
+        if buf.is_empty() || !havoc_bytes(rng, &mut buf) {
+            return MutationResult::Skipped;
+        }
+        let mut earliest: Option<u64> = None;
+        let mut off = 0usize;
+        for r in input.rand.iter_mut() {
+            let n = r.bytes.len();
+            let slice = &buf[off..off + n];
+            if slice != r.bytes.as_slice() {
+                r.bytes.copy_from_slice(slice);
+                earliest = Some(earliest.map_or(r.at, |e| e.min(r.at)));
+            }
+            off += n;
         }
         match earliest {
             Some(at) => {
@@ -687,6 +730,53 @@ mod tests {
             if m.rng_byte_havoc(&mut rng, &mut clone) == MutationResult::Mutated {
                 assert_eq!(clone.rng.len(), 8);
                 assert!(clone.rng.iter().zip(&input.rng).all(|(a, b)| a.at == b.at));
+                assert!(clone.mutated_at.is_some());
+                applied = true;
+                break;
+            }
+        }
+        assert!(applied);
+    }
+
+    #[test]
+    fn rand_havoc_skips_when_empty_and_preserves_shape() {
+        let mut rng = Rng::new(8);
+        let m = Mutators::new(drivers(2), 1000, 8, SwarmMode::Off);
+        let mut empty = Input::new(0);
+        assert_eq!(
+            m.rand_byte_havoc(&mut rng, &mut empty),
+            MutationResult::Skipped
+        );
+
+        // Two replies of distinct lengths from two PIDs.
+        let mut input = Input::new(0);
+        input.rand = vec![
+            crate::input::RandReq {
+                at: 10,
+                pid: 1,
+                bytes: vec![0u8; 4],
+            },
+            crate::input::RandReq {
+                at: 20,
+                pid: 2,
+                bytes: vec![0u8; 12],
+            },
+        ];
+        // Try until havoc applies; request count, per-reply length, `at` and
+        // `pid` must all be preserved — only the bytes change.
+        let mut applied = false;
+        for _ in 0..50 {
+            let mut clone = input.clone();
+            if m.rand_byte_havoc(&mut rng, &mut clone) == MutationResult::Mutated {
+                assert_eq!(clone.rand.len(), 2);
+                assert_eq!(clone.rand[0].bytes.len(), 4);
+                assert_eq!(clone.rand[1].bytes.len(), 12);
+                assert!(clone
+                    .rand
+                    .iter()
+                    .zip(&input.rand)
+                    .all(|(a, b)| a.at == b.at && a.pid == b.pid));
+                assert_ne!(clone.rand, input.rand, "some byte changed");
                 assert!(clone.mutated_at.is_some());
                 applied = true;
                 break;

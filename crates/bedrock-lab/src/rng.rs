@@ -37,10 +37,23 @@ pub struct RngInput {
     pub value: u64,
 }
 
+/// One `HYPERCALL_GET_RANDOM` reply fed to a branch — the bytes handed to a
+/// single guest `/dev/urandom` / `getrandom()` read, plus the PID that asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RandomInput {
+    /// Virtual time at which the bytes were fed.
+    pub at: VirtTime,
+    /// PID (`current->tgid`) of the requesting process.
+    pub pid: u32,
+    /// Bytes returned to the guest for this request.
+    pub bytes: Vec<u8>,
+}
+
 /// Inputs consumed by a branch, suitable for replay.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputRecording {
     rng_inputs: Vec<RngInput>,
+    random_inputs: Vec<RandomInput>,
     io_inputs: Vec<IoInput>,
 }
 
@@ -55,6 +68,11 @@ impl InputRecording {
         &self.rng_inputs
     }
 
+    /// `HYPERCALL_GET_RANDOM` replies fed to the branch, in consumption order.
+    pub fn random_inputs(&self) -> &[RandomInput] {
+        &self.random_inputs
+    }
+
     /// I/O actions queued from the branch's [`InputSource`], in queue order.
     pub fn io_inputs(&self) -> &[IoInput] {
         &self.io_inputs
@@ -62,6 +80,10 @@ impl InputRecording {
 
     pub(crate) fn push_rng(&mut self, input: RngInput) {
         self.rng_inputs.push(input);
+    }
+
+    pub(crate) fn push_random(&mut self, input: RandomInput) {
+        self.random_inputs.push(input);
     }
 
     pub(crate) fn push_io(&mut self, input: IoInput) {
@@ -74,6 +96,7 @@ impl InputRecording {
 pub struct RecordedInputSource {
     recording: InputRecording,
     rng_pos: usize,
+    random_pos: usize,
     io_pos: usize,
 }
 
@@ -83,6 +106,7 @@ impl RecordedInputSource {
         Self {
             recording,
             rng_pos: 0,
+            random_pos: 0,
             io_pos: 0,
         }
     }
@@ -124,6 +148,23 @@ pub trait InputSource: Send + Sync {
     /// returned, future calls should keep returning `None`.
     fn next_rng_u64(&mut self) -> Option<u64>;
 
+    /// Serve the bytes for one `HYPERCALL_GET_RANDOM` request of `len` bytes
+    /// from process `pid` (the guest's `/dev/urandom` / `getrandom()` path).
+    ///
+    /// The default synthesizes the bytes from [`next_rng_u64`](Self::next_rng_u64)
+    /// so any RNG source works unchanged; sources that record/replay exact byte
+    /// streams (or want to steer per-PID) override it. Must always return
+    /// exactly `len` bytes.
+    fn next_random(&mut self, len: usize, _pid: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len);
+        while out.len() < len {
+            let v = self.next_rng_u64().unwrap_or(0);
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.truncate(len);
+        out
+    }
+
     /// Pull the next I/O input from the source.
     ///
     /// Return `None` to signal that no more I/O input is available from this
@@ -160,6 +201,19 @@ impl InputSource for RecordedInputSource {
             self.rng_pos += 1;
         }
         input.map(|entry| entry.value)
+    }
+
+    fn next_random(&mut self, len: usize, _pid: u32) -> Vec<u8> {
+        let mut bytes = match self.recording.random_inputs.get(self.random_pos) {
+            Some(input) => {
+                self.random_pos += 1;
+                input.bytes.clone()
+            }
+            // Past the recorded stream: zero-fill so replay stays deterministic.
+            None => Vec::new(),
+        };
+        bytes.resize(len, 0);
+        bytes
     }
 
     fn next_io_input(&mut self) -> Option<IoInput> {
@@ -225,6 +279,11 @@ impl InputSource for SystemRng {
         // kernel is in such a broken state that zero-padding is fine.
         let _ = self.file.read_exact(&mut buf);
         Some(u64::from_le_bytes(buf))
+    }
+    fn next_random(&mut self, len: usize, _pid: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        let _ = self.file.read_exact(&mut buf);
+        buf
     }
     fn clone_box(&self) -> Box<dyn InputSource> {
         Box::new(Self::new().expect("/dev/urandom"))

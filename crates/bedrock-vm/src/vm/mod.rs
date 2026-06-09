@@ -11,8 +11,8 @@ mod stats;
 pub use config::{LogConfig, LogMode, SingleStepConfig, EXIT_REASON_CHECKPOINT};
 pub use exit::{ExitKind, VmExit};
 pub use ioctl::{
-    FeedbackBufferInfo, FeedbackBufferInfoRequest, IoActionPayload, IO_CHANNEL_BUF_SIZE,
-    MAX_FEEDBACK_BUFFERS,
+    FeedbackBufferInfo, FeedbackBufferInfoRequest, IoActionPayload, RandomRequest,
+    IO_CHANNEL_BUF_SIZE, MAX_FEEDBACK_BUFFERS, RANDOM_REPLY_MAX,
 };
 pub use serial::{
     parse_line_tsc_entries, LineTscEntry, SerialInput, LOG_BUFFER_SIZE, SERIAL_BUFFER_SIZE,
@@ -703,6 +703,56 @@ impl Vm {
                 self.fd.as_raw_fd(),
                 BEDROCK_VM_SET_RDRAND_VALUE as libc::c_ulong,
                 &value as *const u64,
+            )
+        };
+
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
+    }
+
+    // --- get_random (VMCALL) configuration ---
+
+    /// Read the pending `HYPERCALL_GET_RANDOM` request: the requesting PID and
+    /// the number of bytes it wants (already capped at [`RANDOM_REPLY_MAX`]).
+    ///
+    /// Call after a [`ExitKind::VmcallGetRandom`] exit to size the reply.
+    pub fn random_request(&self) -> io::Result<RandomRequest> {
+        let mut req = RandomRequest::default();
+        let ret = unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                BEDROCK_VM_GET_RANDOM_REQUEST as libc::c_ulong,
+                &mut req as *mut RandomRequest,
+            )
+        };
+
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(req)
+    }
+
+    /// Stage the reply bytes for a pending `HYPERCALL_GET_RANDOM` request, then
+    /// run again so the guest's random read completes with these bytes.
+    ///
+    /// Only used when the random device is in ExitToUserspace mode. Bytes
+    /// beyond [`RANDOM_REPLY_MAX`] are ignored (the request was capped to that
+    /// length anyway).
+    pub fn set_random_bytes(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut payload = RandomBytes::default();
+        let n = bytes.len().min(RANDOM_REPLY_MAX);
+        payload.data[..n].copy_from_slice(&bytes[..n]);
+        payload.len = n as u32;
+
+        let ret = unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                BEDROCK_VM_SET_RANDOM_BYTES as libc::c_ulong,
+                &payload as *const RandomBytes,
             )
         };
 

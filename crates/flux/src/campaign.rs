@@ -1319,6 +1319,15 @@ fn recording_to_input(recording: &InputRecording, anchor_instr: u64) -> Input {
                 value: r.value,
             })
             .collect(),
+        rand: recording
+            .random_inputs()
+            .iter()
+            .map(|r| crate::input::RandReq {
+                at: r.at.instructions(),
+                pid: r.pid,
+                bytes: r.bytes.clone(),
+            })
+            .collect(),
         io: recording
             .io_inputs()
             .iter()

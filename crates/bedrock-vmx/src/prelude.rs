@@ -57,13 +57,13 @@ pub use memory::{GuestPhysAddr, HostPhysAddr, VirtAddr};
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::devices::{
-    ApicState, IoApicState, MtrrState, RdrandMode, RdrandState, RtcState, SerialState,
-    IOAPIC_NUM_PINS, MTRR_VAR_MAX,
+    ApicState, IoApicState, MtrrState, RandomState, RdrandMode, RdrandState, RtcState, SerialState,
+    IOAPIC_NUM_PINS, MTRR_VAR_MAX, RANDOM_REPLY_MAX,
 };
 #[cfg(feature = "cargo")]
 pub use crate::devices::{
-    ApicState, IoApicState, MtrrState, RdrandMode, RdrandState, RtcState, SerialState,
-    IOAPIC_NUM_PINS, MTRR_VAR_MAX,
+    ApicState, IoApicState, MtrrState, RandomState, RdrandMode, RdrandState, RtcState, SerialState,
+    IOAPIC_NUM_PINS, MTRR_VAR_MAX, RANDOM_REPLY_MAX,
 };
 
 // =============================================================================
@@ -142,15 +142,15 @@ pub use crate::decoder::decode_instruction;
 // =============================================================================
 #[cfg(not(feature = "cargo"))]
 pub use super::hypercalls::{
-    HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_PUT_RESPONSE, HYPERCALL_IO_REGISTER_PAGE,
-    HYPERCALL_READY, HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_REGISTER_PEBS_PAGE,
-    HYPERCALL_SHUTDOWN, HYPERCALL_SNAPSHOT,
+    HYPERCALL_GET_RANDOM, HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_PUT_RESPONSE,
+    HYPERCALL_IO_REGISTER_PAGE, HYPERCALL_READY, HYPERCALL_REGISTER_FEEDBACK_BUFFER,
+    HYPERCALL_REGISTER_PEBS_PAGE, HYPERCALL_SHUTDOWN, HYPERCALL_SNAPSHOT,
 };
 #[cfg(feature = "cargo")]
 pub use crate::hypercalls::{
-    HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_PUT_RESPONSE, HYPERCALL_IO_REGISTER_PAGE,
-    HYPERCALL_READY, HYPERCALL_REGISTER_FEEDBACK_BUFFER, HYPERCALL_REGISTER_PEBS_PAGE,
-    HYPERCALL_SHUTDOWN, HYPERCALL_SNAPSHOT,
+    HYPERCALL_GET_RANDOM, HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_PUT_RESPONSE,
+    HYPERCALL_IO_REGISTER_PAGE, HYPERCALL_READY, HYPERCALL_REGISTER_FEEDBACK_BUFFER,
+    HYPERCALL_REGISTER_PEBS_PAGE, HYPERCALL_SHUTDOWN, HYPERCALL_SNAPSHOT,
 };
 
 // =============================================================================

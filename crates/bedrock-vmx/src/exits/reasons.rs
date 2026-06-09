@@ -210,6 +210,12 @@ pub enum ExitReason {
     /// VMCALL hypercall: guest signaled it is ready / booted / initialized.
     /// Guest issued VMCALL with RAX=7.
     VmcallReady = 266,
+    /// VMCALL hypercall: guest requested random bytes (RAX=8) and the random
+    /// device is in ExitToUserspace mode. The hypervisor has recorded the
+    /// request and surfaced its length in `exit_qualification` and the
+    /// requesting PID in `guest_physical_addr`; userspace stages the reply
+    /// bytes via `SET_RANDOM_BYTES` and re-runs.
+    VmcallGetRandom = 267,
 }
 
 /// Error when converting from raw exit reason value.

@@ -29,6 +29,8 @@ pub struct DeviceStates {
     pub mtrr: MtrrState,
     /// RDRAND instruction emulation state.
     pub rdrand: RdrandState,
+    /// `HYPERCALL_GET_RANDOM` (guest `/dev/urandom` / `getrandom()`) state.
+    pub random: RandomState,
 }
 
 impl DeviceStates {
@@ -41,6 +43,7 @@ impl DeviceStates {
             rtc: RtcState::default(),
             mtrr: MtrrState::default(),
             rdrand: RdrandState::default(),
+            random: RandomState::default(),
         }
     }
 }

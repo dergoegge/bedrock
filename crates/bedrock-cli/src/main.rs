@@ -621,6 +621,12 @@ fn run() -> io::Result<()> {
                         warn!("VM exit: RDRAND/RDSEED in userspace mode not supported by CLI");
                         break;
                     }
+                    ExitKind::VmcallGetRandom => {
+                        warn!(
+                            "VM exit: HYPERCALL_GET_RANDOM in userspace mode not supported by CLI"
+                        );
+                        break;
+                    }
                     ExitKind::UnhandledExit { reason } => {
                         log_vm_exit(&vm, &format!("{} ({})", reason, exit.reason_str()));
                         if let Ok(regs) = vm.get_regs() {

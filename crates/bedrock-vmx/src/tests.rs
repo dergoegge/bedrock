@@ -817,6 +817,99 @@ fn test_vmcall_io_get_request_no_pending() {
 }
 
 #[test]
+fn test_vmcall_get_random_seeded_fills_deterministically() {
+    use crate::hypercalls::HYPERCALL_GET_RANDOM;
+    use crate::prelude::RdrandMode;
+
+    fn run(seed: u64, gva: u64, len: u64) -> Vec<u8> {
+        let mut ctx = MockVmContext::new();
+        install_identity_paging(&mut ctx);
+        ctx.state_mut()
+            .devices
+            .random
+            .configure(RdrandMode::SeededRng, seed);
+        ctx.set_exit_reason(ExitReason::Vmcall);
+        ctx.set_exit_qualification(0);
+        ctx.set_guest_rip(0x1000);
+        ctx.set_instruction_len(3);
+        ctx.gprs_mut().rax = HYPERCALL_GET_RANDOM;
+        ctx.gprs_mut().rbx = gva;
+        ctx.gprs_mut().rcx = len;
+        ctx.gprs_mut().rdx = 1234;
+        let r = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+        assert_eq!(r, ExitHandlerResult::Continue);
+        assert_eq!(ctx.gprs().rax, len, "RAX reports bytes written");
+        assert_eq!(ctx.get_guest_rip(), Some(0x1003), "RIP advanced");
+        ctx.memory[gva as usize..(gva + len) as usize].to_vec()
+    }
+
+    let a = run(0xABCD, 0x6000, 32);
+    assert!(a.iter().any(|&b| b != 0), "PRNG produced nonzero bytes");
+    // Same seed → identical bytes (deterministic, no userspace round-trip).
+    let b = run(0xABCD, 0x6000, 32);
+    assert_eq!(a, b);
+    // Different seed → different bytes.
+    let c = run(0x1234, 0x6000, 32);
+    assert_ne!(a, c);
+}
+
+#[test]
+fn test_vmcall_get_random_source_round_trips() {
+    use crate::hypercalls::HYPERCALL_GET_RANDOM;
+    use crate::prelude::RdrandMode;
+
+    let mut ctx = MockVmContext::new();
+    install_identity_paging(&mut ctx);
+    ctx.state_mut()
+        .devices
+        .random
+        .configure(RdrandMode::ExitToUserspace, 0);
+
+    // First entry: records the request, exits to userspace, RIP not advanced.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_exit_qualification(0);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_GET_RANDOM;
+    ctx.gprs_mut().rbx = 0x6000;
+    ctx.gprs_mut().rcx = 16;
+    ctx.gprs_mut().rdx = 4242;
+    let r = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(
+        r,
+        ExitHandlerResult::ExitToUserspace(ExitReason::VmcallGetRandom)
+    );
+    assert!(ctx.state().devices.random.awaiting);
+    assert_eq!(ctx.state().devices.random.req_len, 16);
+    assert_eq!(ctx.state().devices.random.pid, 4242);
+    assert_eq!(
+        ctx.get_guest_rip(),
+        Some(0x1000),
+        "RIP must not advance until the reply is written"
+    );
+
+    // Userspace stages the reply bytes.
+    ctx.state_mut().devices.random.stage_reply(&[0xCD; 16]);
+
+    // Second entry: writes the staged bytes to the guest and completes.
+    ctx.set_exit_reason(ExitReason::Vmcall);
+    ctx.set_guest_rip(0x1000);
+    ctx.set_instruction_len(3);
+    ctx.gprs_mut().rax = HYPERCALL_GET_RANDOM;
+    ctx.gprs_mut().rbx = 0x6000;
+    ctx.gprs_mut().rcx = 16;
+    let r = handle_exit(&mut ctx, &MockKernel, &mut MockFrameAllocator::new());
+    assert_eq!(r, ExitHandlerResult::Continue);
+    assert_eq!(ctx.gprs().rax, 16);
+    assert_eq!(ctx.get_guest_rip(), Some(0x1003));
+    assert_eq!(&ctx.memory[0x6000..0x6010], &[0xCD; 16]);
+    assert!(
+        !ctx.state().devices.random.awaiting,
+        "in-flight request cleared after completion"
+    );
+}
+
+#[test]
 fn test_vmcall_io_get_request_writes_payload_to_guest() {
     use crate::hypercalls::{HYPERCALL_IO_GET_REQUEST, HYPERCALL_IO_REGISTER_PAGE};
 
