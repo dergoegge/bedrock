@@ -39,7 +39,7 @@
   # instances as an exception to the generic Nitro UEFI support, so use BIOS
   # GRUB on GPT with an EF02 BIOS boot partition from disko.nix.
   ec2.efi = false;
-  boot.loader.grub.device = lib.mkForce "";
+  boot.loader.grub.devices = lib.mkForce [ "/dev/nvme0n1" ];
   boot.loader.grub.useOSProber = false;
 
   # Keep EC2 metadata/key handling from amazon-image.nix, but do not let
