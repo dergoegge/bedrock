@@ -19,7 +19,7 @@ in
   ];
 
   boot.kernelPackages =
-    if useStockKernel then pkgs.linuxPackages_latest else bedrockKernelPackages;
+    if useStockKernel then pkgs.linuxPackages_6_12 else bedrockKernelPackages;
   # amazon-image.nix adds nixpkgs' out-of-tree ENA module, but that module
   # does not build against the pinned Linux 6.18 headers. ENA is enabled in
   # nix/kernel.nix, so only Bedrock needs to be installed as an extra module.
