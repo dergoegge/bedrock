@@ -31,19 +31,6 @@ in
 
   boot.initrd = {
     supportedFilesystems = [ "ext4" "vfat" ];
-  } // lib.optionalAttrs (!useStockKernel) {
-    # The custom Bedrock kernel is intentionally slim and builds most required
-    # drivers in-tree/built-in. Avoid NixOS' broad default initrd module list,
-    # which includes modules this kernel does not build.
-    includeDefaultModules = false;
-    availableKernelModules = lib.mkForce [
-      "nvme"
-      "ena"
-      "ahci"
-      "sd_mod"
-      "xhci_pci"
-    ];
-    kernelModules = lib.mkForce [ ];
   };
 
   # r7i.metal boots as EC2 bare metal on Nitro. AWS documents bare-metal
