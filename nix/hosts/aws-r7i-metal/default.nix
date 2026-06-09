@@ -5,35 +5,43 @@
 , bedrockModule
 , bedrockCli
 , bedrockDeterminism
+, useStockKernel ? false
 , ...
 }:
 
+let
+  bedrockKernelPackages = pkgs.linuxPackagesFor bedrockKernel;
+in
 {
   imports = [
     "${modulesPath}/virtualisation/amazon-image.nix"
     ./disko.nix
   ];
 
-  boot.kernelPackages = pkgs.linuxPackagesFor bedrockKernel;
+  boot.kernelPackages =
+    if useStockKernel then pkgs.linuxPackages_latest else bedrockKernelPackages;
   # amazon-image.nix adds nixpkgs' out-of-tree ENA module, but that module
   # does not build against the pinned Linux 6.18 headers. ENA is enabled in
   # nix/kernel.nix, so only Bedrock needs to be installed as an extra module.
-  boot.extraModulePackages = lib.mkForce [ bedrockModule ];
-  boot.kernelModules = [ "bedrock" ];
+  boot.extraModulePackages = lib.mkForce (lib.optionals (!useStockKernel) [ bedrockModule ]);
+  boot.kernelModules = lib.mkIf (!useStockKernel) [ "bedrock" ];
 
-  # The custom Bedrock kernel is intentionally slim and builds most required
-  # drivers in-tree/built-in. Avoid NixOS' broad default initrd module list,
-  # which includes modules this kernel does not build.
-  boot.initrd.includeDefaultModules = false;
-  boot.initrd.availableKernelModules = lib.mkForce [
-    "nvme"
-    "ena"
-    "ahci"
-    "sd_mod"
-    "xhci_pci"
-  ];
-  boot.initrd.kernelModules = lib.mkForce [ ];
-  boot.initrd.supportedFilesystems = [ "ext4" "vfat" ];
+  boot.initrd = {
+    supportedFilesystems = [ "ext4" "vfat" ];
+  } // lib.optionalAttrs (!useStockKernel) {
+    # The custom Bedrock kernel is intentionally slim and builds most required
+    # drivers in-tree/built-in. Avoid NixOS' broad default initrd module list,
+    # which includes modules this kernel does not build.
+    includeDefaultModules = false;
+    availableKernelModules = lib.mkForce [
+      "nvme"
+      "ena"
+      "ahci"
+      "sd_mod"
+      "xhci_pci"
+    ];
+    kernelModules = lib.mkForce [ ];
+  };
 
   # r7i.metal boots as EC2 bare metal on Nitro. AWS documents bare-metal
   # instances as an exception to the generic Nitro UEFI support, so use BIOS

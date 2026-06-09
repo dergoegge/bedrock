@@ -128,6 +128,10 @@
         Usage:
           nix run .#deploy-aws-r7i-metal -- [nixos-anywhere options] root@EC2_PUBLIC_IP
 
+        Set BEDROCK_DEPLOY_FLAKE to choose a NixOS configuration. It defaults
+        to aws-r7i-metal. For the stock-kernel boot isolation test, set:
+          BEDROCK_DEPLOY_FLAKE=aws-r7i-metal-stock
+
         Set BEDROCK_DEPLOY_PUBLIC_KEY to the SSH public key that should remain
         authorized for root after installation. The key is copied with
         nixos-anywhere --extra-files; it is not stored in the Nix store.
@@ -156,8 +160,10 @@
           extra_args+=(--extra-files "$extra_files")
         fi
 
+        deploy_flake="''${BEDROCK_DEPLOY_FLAKE:-aws-r7i-metal}"
+
         exec ${nixos-anywhere.packages.${system}.default}/bin/nixos-anywhere \
-          --flake ${self.outPath}#aws-r7i-metal \
+          --flake ${self.outPath}#"$deploy_flake" \
           "''${extra_args[@]}" \
           "$@"
       '';
@@ -266,6 +272,22 @@
           inherit bedrockModule;
           bedrockCli = userland.bedrock-cli;
           bedrockDeterminism = userland.bedrock-determinism;
+          useStockKernel = false;
+        };
+        modules = [
+          disko.nixosModules.disko
+          ./nix/hosts/aws-r7i-metal
+        ];
+      };
+
+      nixosConfigurations.aws-r7i-metal-stock = nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = {
+          bedrockKernel = kernel;
+          inherit bedrockModule;
+          bedrockCli = userland.bedrock-cli;
+          bedrockDeterminism = userland.bedrock-determinism;
+          useStockKernel = true;
         };
         modules = [
           disko.nixosModules.disko
