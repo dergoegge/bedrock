@@ -24,7 +24,10 @@ in
   # does not build against the pinned Linux 6.18 headers. ENA is enabled in
   # nix/kernel.nix, so only Bedrock needs to be installed as an extra module.
   boot.extraModulePackages = lib.mkForce (lib.optionals (!useStockKernel) [ bedrockModule ]);
-  boot.kernelModules = lib.mkIf (!useStockKernel) [ "bedrock" ];
+  # Keep the Bedrock module available on the image, but do not load it during
+  # boot on AWS. This lets us separate custom-kernel boot problems from module
+  # initialization problems by running `modprobe bedrock` manually after SSH.
+  boot.kernelModules = lib.mkForce [ ];
 
   boot.initrd = {
     supportedFilesystems = [ "ext4" "vfat" ];
