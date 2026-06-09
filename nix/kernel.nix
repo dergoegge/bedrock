@@ -57,6 +57,38 @@ let
     ./scripts/config --enable MODULE_UNLOAD
     ./scripts/config --enable MODULE_FORCE_LOAD
 
+    # Physical x86_64 platform support. AWS r7i.metal boots via legacy BIOS,
+    # but the Nitro platform still relies on the normal ACPI/DMI/PCI stack.
+    ./scripts/config --enable ACPI
+    ./scripts/config --enable ACPI_PROCESSOR
+    ./scripts/config --enable ACPI_HOTPLUG_CPU
+    ./scripts/config --enable ACPI_THERMAL
+    ./scripts/config --enable ACPI_BUTTON
+    ./scripts/config --enable DMI
+    ./scripts/config --enable DMIID
+    ./scripts/config --enable DMI_SYSFS
+    ./scripts/config --enable PCI
+    ./scripts/config --enable PCI_MSI
+    ./scripts/config --enable PCIEPORTBUS
+    ./scripts/config --enable HOTPLUG_PCI
+
+    # Early userspace and disk discovery requirements.
+    ./scripts/config --enable DEVTMPFS
+    ./scripts/config --enable DEVTMPFS_MOUNT
+    ./scripts/config --enable BLK_DEV_INITRD
+    ./scripts/config --enable PARTITION_ADVANCED
+    ./scripts/config --enable EFI_PARTITION
+    ./scripts/config --enable MSDOS_PARTITION
+    ./scripts/config --enable EFI
+    ./scripts/config --enable EFI_STUB
+    ./scripts/config --enable EFI_RUNTIME_MAP
+
+    # Base networking used by systemd-networkd after the initrd.
+    ./scripts/config --enable NET
+    ./scripts/config --enable UNIX
+    ./scripts/config --enable INET
+    ./scripts/config --enable PACKET
+
     # Virtio (needed for NixOS VM)
     ./scripts/config --enable VIRTIO
     ./scripts/config --enable VIRTIO_PCI
@@ -81,6 +113,11 @@ let
     # Serial console
     ./scripts/config --enable SERIAL_8250
     ./scripts/config --enable SERIAL_8250_CONSOLE
+    ./scripts/config --enable SERIAL_8250_PNP
+    ./scripts/config --enable SERIAL_8250_PCI
+    ./scripts/config --enable EARLY_PRINTK
+    ./scripts/config --enable MAGIC_SYSRQ
+    ./scripts/config --enable PRINTK_TIME
 
     # Ext4 + tmpfs
     ./scripts/config --enable EXT4_FS
