@@ -54,11 +54,10 @@ let
     # Bedrock is a Rust kernel module.
     ./scripts/config --enable RUST
 
-    # Virtualization support (but NOT KVM -- bedrock replaces it)
+    # Keep stock virtualization/KVM modules available. AWS hosts blacklist KVM
+    # at runtime while Bedrock owns VMX, but local builders/tests still need
+    # KVM to launch VMs.
     ./scripts/config --enable VIRTUALIZATION
-    ./scripts/config --disable KVM
-    ./scripts/config --disable KVM_INTEL
-    ./scripts/config --disable KVM_AMD
 
     # Module support
     ./scripts/config --enable MODULES
