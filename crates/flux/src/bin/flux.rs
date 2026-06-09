@@ -76,6 +76,12 @@ struct Args {
     #[arg(long = "exclude-from-partition")]
     exclude_from_partition: Vec<String>,
 
+    /// Disable the `eventually_` invariant-check pass entirely. Any discovered
+    /// `eventually_` drivers are ignored — never fired at the end of a branch and
+    /// never added to the normal action vocabulary.
+    #[arg(long = "no-eventually")]
+    no_eventually: bool,
+
     /// Chance (percent) that a branch which covered *no* new edges still runs an
     /// `eventually_` invariant-check pass. Branches that did cover new edges
     /// always run one. Has no effect unless the workload ships `eventually_`
@@ -212,11 +218,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     // drivers check system-wide invariants: they're kept out of the normal
     // action vocabulary (never inserted mid-branch) and instead fired alone, at
     // the end of a branch, after quiescing the workload (see `run_eventually_pass`).
-    let (eventually, normal): (Vec<_>, Vec<_>) = details
+    let (mut eventually, normal): (Vec<_>, Vec<_>) = details
         .drivers
         .iter()
         .cloned()
         .partition(|d| is_eventually_driver(&d.driver));
+    // `--no-eventually` ignores them entirely: dropped from the eventually list
+    // (an empty list disables the pass — see `Config::eventually`) and never in
+    // `normal`, so they're not added to the action vocabulary either.
+    if args.no_eventually {
+        eventually.clear();
+    }
     let actions = Action::vocabulary(normal, &details.containers, &args.exclude_from_partition);
     let discovery_cp = discover.checkpoint()?;
 
@@ -273,7 +285,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     ));
     for d in &details.drivers {
         let kind = if is_eventually_driver(&d.driver) {
-            " [eventually]"
+            if args.no_eventually {
+                " [eventually, disabled]"
+            } else {
+                " [eventually]"
+            }
         } else {
             ""
         };
