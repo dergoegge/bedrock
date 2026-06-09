@@ -49,11 +49,6 @@ in
   ec2.efi = false;
   boot.loader.grub.devices = lib.mkForce [ "/dev/nvme0n1" ];
   boot.loader.grub.useOSProber = false;
-  boot.kernelParams = [
-    "console=tty0"
-    "earlyprintk=ttyS0,115200"
-    "consoleblank=0"
-  ];
 
   # Keep EC2 metadata/key handling from amazon-image.nix, but do not let
   # instance user-data replace this flake-managed system after installation.
