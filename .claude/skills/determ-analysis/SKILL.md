@@ -176,13 +176,13 @@ First run `just sync` to ensure the remote has the latest scripts, then:
 
 ```bash
 # Run divergence analysis
-ssh $REMOTE_HOST 'python3 $REMOTE_DIR/scripts/determ-divergence.py ~/workspace/determ-tests/<dir> run-NNNNNN'
+ssh $REMOTE_HOST 'python3 $REMOTE_DIR/contrib/determ-divergence.py ~/workspace/determ-tests/<dir> run-NNNNNN'
 
 # With more context exits before divergence
-ssh $REMOTE_HOST 'python3 $REMOTE_DIR/scripts/determ-divergence.py ~/workspace/determ-tests/<dir> run-NNNNNN --context 20'
+ssh $REMOTE_HOST 'python3 $REMOTE_DIR/contrib/determ-divergence.py ~/workspace/determ-tests/<dir> run-NNNNNN --context 20'
 
 # Widen the non-determ exit search window beyond the divergence point
-ssh $REMOTE_HOST 'python3 $REMOTE_DIR/scripts/determ-divergence.py ~/workspace/determ-tests/<dir> run-NNNNNN --nondeterm-window 50000'
+ssh $REMOTE_HOST 'python3 $REMOTE_DIR/contrib/determ-divergence.py ~/workspace/determ-tests/<dir> run-NNNNNN --nondeterm-window 50000'
 ```
 
 The script outputs:

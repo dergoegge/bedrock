@@ -105,7 +105,7 @@
       in pkgs.runCommand "bedrock-check-stack" {
         nativeBuildInputs = [ pkgs.python3 pkgs.binutils-unwrapped rustfilt ];
       } ''
-        python3 ${./scripts/check_stack.py} ${koPath}
+        python3 ${./contrib/check_stack.py} ${koPath}
         touch $out
       '';
 

@@ -51,7 +51,7 @@ enable the kernel build to include them as submodules.
   instead of kernel `pr_*!` macros. In `crates/bedrock/`, these are available
   via `#[macro_use]` with no explicit import needed.
 - Kernel stack is only 8KB. Large structures (`VmState`, `DeviceStates`,
-  `ExitStats`) must be boxed. Use `scripts/check_stack.py` to verify.
+  `ExitStats`) must be boxed. Use `contrib/check_stack.py` to verify.
 - Test mocks are in `bedrock-vmx/test_mocks.rs`, gated behind the `test-utils`
   feature.
 

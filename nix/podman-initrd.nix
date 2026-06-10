@@ -28,7 +28,7 @@ let
   bedrockPebsRegister = pkgs.pkgsStatic.stdenv.mkDerivation {
     name = "bedrock-pebs-register";
     dontUnpack = true;
-    buildPhase = "$CC -O2 -static -o bedrock-pebs-register ${../scripts/initrd-podman/pebs-register.c}";
+    buildPhase = "$CC -O2 -static -o bedrock-pebs-register ${../guest/pebs-register.c}";
     installPhase = "mkdir -p $out/bin && cp bedrock-pebs-register $out/bin/";
   };
 
@@ -49,7 +49,7 @@ let
     llvmPackages = pkgs.llvmPackages;
   in llvmPackages.stdenv.mkDerivation {
     name = "bedrock-io-module";
-    src = ../scripts/initrd-podman/bedrock-io;
+    src = ../guest/bedrock-io;
 
     nativeBuildInputs = [
       llvmPackages.lld
@@ -149,7 +149,14 @@ let
     default_network = "bridge"
   '';
 
-  storageConf = pkgs.writeText "storage.conf" (builtins.readFile ../scripts/initrd-podman/storage.conf);
+  # vfs driver works on any filesystem (including tmpfs/initrd); storage and
+  # run dirs live under the conventional podman paths.
+  storageConf = pkgs.writeText "storage.conf" ''
+    [storage]
+    driver = "vfs"
+    graphroot = "/var/lib/containers/storage"
+    runroot = "/run/containers/storage"
+  '';
 
   # journald config: keep storage in /run (memory-only — we don't want
   # /var/log/journal persistence, which would grow the rootfs across a

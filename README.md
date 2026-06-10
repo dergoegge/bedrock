@@ -35,7 +35,7 @@ testing.
 ## Requirements
 
 - [Linux 6.18] host kernel with `CONFIG_RUST=y`
-- Patched linux 6.18 guest kernel (see [guest-patches/](guest-patches/))
+- Patched linux 6.18 guest kernel (see [guest-patches/](guest/patches/))
 - Bedrock requires a modern Intel CPU, due to a required feature called
   `EPT-friendly PEBS`, which was introduced in the Ice Lake-SP
   microarchitecture. Therefore, Ice Lake-SP CPUs (or newer) should work.

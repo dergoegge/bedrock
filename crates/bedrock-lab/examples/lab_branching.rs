@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut branch = pre_io_cp.branch_with_input_source(source)?;
         if args.exit_log_dir.is_some() {
             // AllExits captures every deterministic exit (used by
-            // `scripts/determ-divergence.py` to find the divergence point)
+            // `contrib/determ-divergence.py` to find the divergence point)
             // and routes non-deterministic exits + PEBS diagnostic entries
             // to `exit-log-nondeterm.jsonl` for use in the divergence
             // window. Memory hashing is skipped — register state already
@@ -144,7 +144,7 @@ struct Args {
     /// them as JSONL to two files under this directory:
     ///
     /// - `exit-log.jsonl` — deterministic exits (used by
-    ///   `scripts/determ-divergence.py` to find the divergence point)
+    ///   `contrib/determ-divergence.py` to find the divergence point)
     /// - `exit-log-nondeterm.jsonl` — non-deterministic exits + PEBS
     ///   diagnostic entries (used to show what happened around the
     ///   divergence window; these are not compared directly because PEBS
@@ -156,7 +156,7 @@ struct Args {
 
     /// Run the input-driven phase this many times from the same pre-IO
     /// checkpoint. Each iteration's exit log lands in
-    /// `<exit-log-dir>/run-NNN/` so `scripts/determ-divergence.py` can
+    /// `<exit-log-dir>/run-NNN/` so `contrib/determ-divergence.py` can
     /// diff any two. The boot+pre-IO phase happens once and is shared.
     #[arg(long, default_value_t = 1)]
     iterations: u32,
@@ -256,7 +256,7 @@ fn print_input_recording(recording: &bedrock_lab::InputRecording) {
 
 /// Lab sink: serial lines to stdout; `ExitLogged` entries split by the
 /// determinism flag into two JSONL files (consumed by
-/// `scripts/determ-divergence.py`). The exit-log file pair can be swapped
+/// `contrib/determ-divergence.py`). The exit-log file pair can be swapped
 /// between iterations via [`LabSink::open_exit_log`] / [`LabSink::close_exit_log`]
 /// so a single tree (and a single boot) can produce N independent run dirs.
 struct LabSink {
