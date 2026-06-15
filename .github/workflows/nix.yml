@@ -41,6 +41,17 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}/runner=m7i-nested-virt
     steps:
       - uses: actions/checkout@v4
+      # The image only has the default Nix profile on PATH; cachix-action
+      # installs cachix into the per-user profile, so add that to PATH too.
+      - run: echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+      # cachix needs `runner` to be a trusted Nix user to configure the binary
+      # cache. cachix parses nix.conf itself and only recognizes a literal
+      # `trusted-users` line (not the `extra-` merge), so write that, then
+      # restart the daemon (trusted-users is only read at daemon startup).
+      - run: |
+          echo "trusted-users = root runner" | sudo tee -a /etc/nix/nix.conf
+          sudo systemctl restart nix-daemon.service 2>/dev/null || sudo pkill nix-daemon || true
+          nix store info
       - uses: cachix/cachix-action@v15
         with:
           name: bedrock
