@@ -1,0 +1,167 @@
+#!/bin/sh
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+
+# Stage 1: Switch from initramfs to real tmpfs root (required for pivot_root in containers)
+if [ ! -f /switched_root ]; then
+    mount -t proc proc /proc
+    mount -t sysfs sysfs /sys
+    mount -t devtmpfs devtmpfs /dev
+
+    mkdir -p /newroot
+    mount -t tmpfs -o size=90% tmpfs /newroot
+
+    # Copy filesystem to new root
+    cp -a /bin /newroot/ 2>/dev/null || true
+    cp -a /sbin /newroot/ 2>/dev/null || true
+    cp -a /lib /newroot/ 2>/dev/null || true
+    cp -a /lib64 /newroot/ 2>/dev/null || true
+    cp -a /usr /newroot/ 2>/dev/null || true
+    cp -a /etc /newroot/ 2>/dev/null || true
+    cp -a /var /newroot/ 2>/dev/null || true
+    cp -a /nix /newroot/ 2>/dev/null || true
+    cp -a /images /newroot/ 2>/dev/null || true
+    cp -a /workload /newroot/ 2>/dev/null || true
+    cp -a /init /newroot/
+
+    mkdir -p /newroot/proc /newroot/sys /newroot/dev /newroot/run /newroot/tmp
+    mkdir -p /newroot/dev/shm /newroot/dev/pts /newroot/sys/fs/cgroup
+    mkdir -p /newroot/var/lib/containers
+
+    touch /newroot/switched_root
+    exec switch_root /newroot /init
+fi
+
+# Stage 2: Setup after switch_root
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+mkdir -p /dev/shm /dev/pts
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t cgroup2 cgroup2 /sys/fs/cgroup
+
+# Create directories needed for containers and networking
+mkdir -p /run/netns /var/run/netns /run/containers/storage /var/lib/cni /var/tmp
+
+# Load the paravirtual batch console as early as possible so that
+# kernel printk output for the rest of boot is shipped one line per
+# VMCALL instead of one byte per VMX I/O exit through the emulated
+# 8250. The cmdline selects it with console=hvc0; earlyprintk=serial
+# covers the pre-registration window. Failure is non-fatal — the guest
+# keeps logging through earlyprintk/8250. Userspace stdout is sent to
+# /dev/ttyS0 below (the 8250 tty, unchanged), since this console is a
+# write-only printk console with no tty backing /dev/console.
+insmod /lib/modules/bedrock-console.ko || \
+    echo "bedrock-console: insmod failed (continuing without batch console)"
+
+# Register a PEBS scratch page with the hypervisor so precise VM exits
+# (timer interrupt injection, stop-at-tsc) can trap on EPT writes. The
+# program registers, then blocks forever to keep the page pinned, so we
+# background it. Failure is expected outside bedrock; the workload runs
+# regardless.
+bedrock-pebs-register &
+
+# Load the deterministic I/O channel module. Must come after the
+# filesystem is in place (kernel_read_file_from_path needs /tmp on
+# tmpfs) but before podman-compose, since the I/O actions exec into
+# the containers that compose brings up. Failure is non-fatal in case
+# the module ABI is mismatched against the running kernel.
+insmod /lib/modules/bedrock-io.ko || \
+    echo "bedrock-io: insmod failed (continuing without I/O channel)"
+
+# Reset podman state
+podman system reset -f 2>/dev/null || true
+
+# Redirect output to the console. /dev/console now routes to the
+# paravirtual batch console (hvc0): bedrock-console.ko registers a tty
+# whose .write batches whole buffers to the hypervisor in one VMCALL, and
+# the console's .device points /dev/console at it. So both kernel printk
+# and this userspace output go through hvc0, one VM exit per line instead
+# of one per byte through the emulated 8250.
+exec >/dev/console 2>&1
+
+echo "=== Podman Initrd ==="
+
+# Set up loopback
+ip link set lo up
+
+# Start systemd-journald standalone (no PID 1 systemd). conmon
+# connects to its socket directly when `log_driver = "journald"`
+# is set in containers.conf, so every container's stdout/stderr
+# lands in the journal as a structured record (CONTAINER_NAME,
+# MESSAGE, PRIORITY, …). bedrock-io's exec output is piped
+# through `systemd-cat -t bedrock-exec` for the same treatment.
+# The unified journal becomes the single source the formatter
+# below tails — no per-container follower bookkeeping, no
+# re-attach loops on stop/start.
+mkdir -p /run/systemd/journal /run/log/journal
+@systemd@/lib/systemd/systemd-journald &
+# Wait for the socket so the first podman/conmon connect doesn't
+# race the daemon's bind.
+while [ ! -S /run/systemd/journal/socket ]; do
+    sleep 0.05
+done
+
+# Shared assertion sink: an append-only JSONL file. The host-side workload
+# monitor appends to it, and containers.conf bind-mounts it into every
+# container so workload code (e.g. `eventually_` drivers) can append too.
+# Create it as a regular file now — before the monitor starts and before
+# `podman-compose up` — so the per-container bind mounts attach to the file
+# rather than to an auto-created directory.
+mkdir -p /bedrock
+: > /bedrock/assertions.jsonl
+
+# Surface the assertion sink in the guest log: follow it and pipe each line
+# through `systemd-cat` into the journal under the `assertions` tag, so the
+# journalctl formatter below renders every assertion (host- or
+# container-written) as `[assertions] | …` on the serial console — where the
+# host-side oracle reads it. `-F` re-follows across truncation/recreation
+# and `-n +1` replays existing lines so nothing written before this is missed.
+tail -n +1 -F /bedrock/assertions.jsonl 2>/dev/null | systemd-cat -t assertions &
+
+# Start the workload monitor. It tails `podman events` and, on each container
+# or exec death, appends an exit-code assertion to /bedrock/assertions.jsonl
+# (surfaced as `[assertions]` by the tail above). It prints nothing to
+# stdout; only its error diagnostics reach the journal via `systemd-cat`,
+# rendered as `[workload-monitor]`.
+workload-monitor 2>&1 | systemd-cat -t workload-monitor &
+
+# Load all workload images from the single docker-archive tarball.
+# `podman load` reads the embedded manifest to recover each image's
+# original name+tag, so a compose file referencing those names works
+# unchanged.
+podman load -i /images/images.tar
+rm -f /images/images.tar
+echo "Loaded images:"
+podman images
+
+# Run workload detached. Container output and lifecycle events both
+# flow into journald (log_driver = journald, events_logger =
+# journald in containers.conf); bedrock-io's exec actions feed it
+# via systemd-cat. journalctl -f -o json then drains the unified
+# stream, and a small jq filter renders each record back to the
+# `[name] | message` human format with a deterministic per-source
+# color (sum of label bytes modulo the 31..36 palette). This
+# replaces the previous per-container follow-loop entirely — restart
+# resilience is now journald's problem, not ours.
+cd /workload
+podman-compose up -d
+
+journalctl -f -o json --no-tail | jq -r --unbuffered '
+    ((.CONTAINER_NAME // .SYSLOG_IDENTIFIER) // "kernel") as $label |
+    (($label | explode | add // 0) % 6 + 31) as $color |
+    ((.MESSAGE // "") | rtrimstr("\n")) as $msg |
+    "[\u001b[\($color)m\($label)\u001b[0m] | \($msg)"
+' &
+
+# Block until the shutdown VMCALL terminates the VM.
+wait
+
+# Drop to an interactive shell on the 8250 serial tty. The hvc0 batch
+# console is output-only (no get_chars/input path), so the interactive
+# fallback shell uses /dev/ttyS0, which carries host-fed serial input.
+# This only runs in manual sessions — under the fuzzer/determinism
+# harness the VM is terminated by the shutdown VMCALL before here.
+exec setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'
