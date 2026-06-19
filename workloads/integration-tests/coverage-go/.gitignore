@@ -1,0 +1,7 @@
+# Guest libraries staged into this build context by ../build.sh. The single
+# source of truth lives in guest/; these copies are transient and must not be
+# committed.
+libvmcall.h
+libfeedback.h
+libfeedback.c
+libvoidstar.c

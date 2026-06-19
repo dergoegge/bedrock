@@ -122,6 +122,13 @@ ip link set lo up | systemd-cat -t init
 mkdir -p /bedrock
 : > /bedrock/assertions.jsonl
 
+# Coverage dir: a host-namespace mount bind-mounted into every container (see
+# containers.conf volumes). Each instrumented process keeps its feedback bitmap
+# as a file here (see guest/libfeedback.c) so the pages — and the coverage they
+# hold — outlive the process and the container that produced them. Pre-create
+# it before any container starts, for the same reason as the assertion sink.
+mkdir -p /bedrock/coverage
+
 # Surface the assertion sink in the guest log: follow it and pipe each line
 # through `systemd-cat` into the journal under the `assertions` tag, so the
 # journalctl formatter below renders every assertion (host- or

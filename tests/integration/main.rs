@@ -14,6 +14,7 @@ mod common;
 
 mod bash_io;
 mod boot;
+mod coverage;
 mod determinism;
 mod feedback;
 mod file_xfer;

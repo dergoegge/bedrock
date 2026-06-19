@@ -221,14 +221,19 @@ let
     # host` for a specific service.
     log_driver = "journald"
 
-    # Bind-mount the shared assertion sink into every container podman creates,
-    # without touching any compose file. It is a single JSONL file appended to
-    # by the host-side workload monitor and by workload code inside containers
-    # (e.g. `eventually_` drivers). The source must exist (the initrd
-    # pre-creates it) before a container starts, else podman bind-mounts an
-    # auto-created path in its place.
+    # Bind-mount shared host-namespace paths into every container podman
+    # creates, without touching any compose file:
+    #   - the assertion sink (a single JSONL file appended to by the host-side
+    #     workload monitor and by workload code inside containers, e.g.
+    #     `eventually_` drivers); and
+    #   - the coverage dir, where each instrumented process keeps its feedback
+    #     bitmap as a file (see guest/libfeedback.c), so the pages outlive the
+    #     container that produced them.
+    # Each source must exist (the initrd pre-creates them) before a container
+    # starts, else podman bind-mounts an auto-created path in its place.
     volumes = [
       "/bedrock/assertions.jsonl:/bedrock/assertions.jsonl",
+      "/bedrock/coverage:/bedrock/coverage",
     ]
 
     [engine]

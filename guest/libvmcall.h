@@ -101,7 +101,7 @@ typedef unsigned long long vmcall_u64;
 /* Feedback buffer limits (FEEDBACK_BUFFER_MAX_PAGES * 4096 = 1 MB, and the
  * id length cap). Mirrors the hypervisor's constants. */
 #define VMCALL_FEEDBACK_BUFFER_MAX_SIZE (256U * 4096U)
-#define VMCALL_FEEDBACK_BUFFER_ID_MAX_LEN 64U
+#define VMCALL_FEEDBACK_BUFFER_ID_MAX_LEN 128U
 
 /*
  * Feedback buffer registration failure codes returned in RAX (mirror the
