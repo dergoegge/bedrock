@@ -1,0 +1,24 @@
+# Concurrency-fuzz workload: one privileged container that loads the in-kernel
+# sched_ext fuzzing scheduler, runs it against the producer/consumer sample with
+# a fixed seed until the sample crashes, then shuts the VM down. Under bedrock's
+# single vCPU + deterministic emulated TSC the whole run replays from the seed.
+#
+# The image comes from images.tar (built by ./build.sh); never pulled.
+
+services:
+  fuzz:
+    image: bedrock/concurrency-fuzz:latest
+    pull_policy: never
+    container_name: fuzz
+    privileged: true  # Required for VMCALL and for loading the sched_ext struct_ops
+    # CRITICAL: share the host (guest-global) PID namespace. The loader fuzzes
+    # the target by writing the child's pid into the BPF config map, and the BPF
+    # program matches it against task_struct->tgid (a global pid). In podman's
+    # default private PID namespace the child's pid would not equal that global
+    # tgid, so the target would never get fuzzed.
+    pid: host
+    # FUZZ_SEED overrides the default seed baked into run.sh; vary it for the
+    # determinism negative control (the crash time must change with the seed).
+    # environment:
+    #   - FUZZ_SEED=0x1337
+    command: ["/usr/local/bin/run.sh"]
