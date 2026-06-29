@@ -2,20 +2,23 @@
 # Entrypoint for the concurrency-fuzz workload.
 #
 #   1. Signal the VM ready (takes the boot checkpoint).
-#   2. Run the in-kernel fuzzing scheduler against the queue sample with a
-#      FIXED seed until the sample crashes (the expected outcome). The seed is
-#      what makes the run reproducible under bedrock's single vCPU + emulated
-#      TSC; vary FUZZ_SEED to prove the schedule actually depends on it
-#      (determinism negative control).
+#   2. Run the producer/consumer sample until it crashes (the expected outcome).
 #   3. Shut the VM down so the run terminates deterministically.
+#
+# There is no scheduler setup here: the in-kernel fuzzing scheduler is loaded by
+# the guest at boot (scx-init), and crun-shim — podman's OCI runtime — has
+# already switched this container's processes into SCHED_EXT, so `queue` (and
+# anything else this container runs) is governed by the fuzzing scheduler
+# automatically. Under bedrock's single vCPU + emulated TSC the schedule is a
+# pure function of the getrandom stream bedrock serves; vary that stream to prove
+# the crash time depends on it (determinism negative control).
 set -eu
-
-SEED="${FUZZ_SEED:-0x1337}"
 
 bedrock-vmcall --ready
 
-# The loader returns 0 when the target crashed (success for a fuzz run), so
-# don't let `set -e` abort before we issue the shutdown.
-/usr/local/bin/fuzz-loader "$SEED" /usr/local/bin/queue || true
+# queue aborts (non-zero / SIGABRT) once the fuzzing scheduler starves its
+# consumer long enough for an item to go stale — the success condition for a
+# fuzz run. Don't let `set -e` abort before we issue the shutdown.
+/usr/local/bin/queue || true
 
 bedrock-vmcall

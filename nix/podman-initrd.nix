@@ -55,6 +55,79 @@ let
     installPhase = "mkdir -p $out/bin && cp bedrock-file-store $out/bin/";
   };
 
+  # scx headers (sched_ext BPF headers + bundled vmlinux.h for CO-RE). Pinned to
+  # the same commit the workload image used to vendor, whose kfunc ABI matches
+  # the bedrock guest kernel (6.18). This is the commit tag v1.0.18 points to.
+  scxSrc = pkgs.fetchFromGitHub {
+    owner = "sched-ext";
+    repo = "scx";
+    rev = "5bff813ccc5e56d0dd628632e4ca355305e77d94";
+    hash = "sha256-RkTY7gDcKbkNUKl7NJDX3Ac/I+dRG1Gj8rRHynbbxUU=";
+  };
+
+  # The in-kernel concurrency-fuzz scheduler, its guest-side init service, and
+  # the crun wrapper. Lives in the generic initrd (not in any workload image):
+  # the scheduler is a generic guest capability loaded once at boot, and the
+  # crun wrapper is podman's OCI runtime, so both belong to the guest, not to
+  # the workload.
+  #
+  # scx-init links libbpf dynamically (static libbpf needs static elfutils,
+  # which nixpkgs refuses to build); its runtime closure is pulled into the
+  # rootfs via closureInfo below, like the rest of the dynamically-linked guest
+  # userland (podman, crun, systemd).
+  #
+  # The BPF object is compiled CO-RE (-g for BTF); CO-RE relocations resolve at
+  # load time against the guest kernel's /sys/kernel/btf/vmlinux, so scx's
+  # bundled vmlinux.h need not match the guest exactly.
+  scxFuzz = pkgs.stdenv.mkDerivation {
+    name = "scx-fuzz";
+    src = ../guest/scx-fuzz;
+
+    nativeBuildInputs = [ pkgs.clang pkgs.bpftools pkgs.pkg-config ];
+    buildInputs = [ pkgs.libbpf pkgs.elfutils pkgs.zlib ];
+
+    # The nix cc-wrapper injects x86_64 hardening flags (-fstack-protector,
+    # -fzero-call-used-regs) that the bpf target rejects. Disable hardening for
+    # the whole derivation; the host helpers don't need it either. We keep the
+    # wrapped clang (not clang-unwrapped) so libc / kernel-uapi / libbpf headers
+    # are still on the include path via NIX_CFLAGS.
+    hardeningDisable = [ "all" ];
+
+    buildPhase = ''
+      runHook preBuild
+
+      # Compile the sched_ext BPF object. Include flags mirror scx's own
+      # bpf_includes (meson.build): the bundled vmlinux.h lives under
+      # scheds/vmlinux (+ a per-arch copy), not under scheds/include.
+      clang -g -O2 -target bpf -D__TARGET_ARCH_x86 \
+        -I${pkgs.lib.getDev pkgs.libbpf}/include \
+        -I${scxSrc}/scheds/include \
+        -I${scxSrc}/scheds/include/bpf-compat \
+        -I${scxSrc}/scheds/include/lib \
+        -I${scxSrc}/scheds/vmlinux \
+        -I${scxSrc}/scheds/vmlinux/arch/x86 \
+        -Ibpf \
+        -c bpf/main.bpf.c -o main.bpf.o
+
+      # Generate the libbpf skeleton the init service includes.
+      bpftool gen skeleton main.bpf.o name fuzz_bpf > fuzz_bpf.skel.h
+
+      # Init service, dynamically linked against libbpf.
+      $CC -O2 -Ibpf -I. -o scx-init scx-init.c \
+        $(pkg-config --cflags --libs libbpf)
+
+      # crun wrapper; REAL_CRUN points at the real crun in the closure.
+      $CC -O2 -DREAL_CRUN='"${pkgs.crun}/bin/crun"' -o crun-shim crun-shim.c
+
+      runHook postBuild
+    '';
+
+    installPhase = ''
+      mkdir -p $out/bin
+      cp scx-init crun-shim $out/bin/
+    '';
+  };
+
   # Guest kernel module that drives the deterministic I/O channel. Built
   # against the patched 6.18 guest kernel's headers so its kbuild
   # configuration (LLVM=1, no CONFIG_RUST, etc.) matches what the running
@@ -218,7 +291,10 @@ let
     ignoreCollisions = true;
   };
 
-  closureInfo = pkgs.closureInfo { rootPaths = [ runtimeEnv ]; };
+  # scxFuzz is added explicitly so its runtime closure (libbpf, elfutils, zlib,
+  # glibc) is copied into the rootfs — scx-init and crun-shim are
+  # dynamically linked and referenced by store path, not via runtimeEnv.
+  closureInfo = pkgs.closureInfo { rootPaths = [ runtimeEnv scxFuzz ]; };
 
   # Containers.conf with absolute Nix store paths so podman finds its helpers
   # regardless of PATH or wrapper behaviour.
@@ -247,9 +323,15 @@ let
 
     [engine]
     cgroup_manager = "cgroupfs"
-    runtime = "crun"
+    # crun-shim wraps crun: for create/run/exec it runs the real crun and then
+    # switches the container payload into SCHED_EXT (by pid), so the in-kernel
+    # fuzzing scheduler (loaded at boot by scx-init) governs it while every other
+    # host process stays on the stock scheduler. Other subcommands pass straight
+    # through to crun, so behaviour is otherwise unchanged.
+    runtime = "crun-shim"
 
     [engine.runtimes]
+    crun-shim = ["${scxFuzz}/bin/crun-shim"]
     crun = ["${pkgs.crun}/bin/crun"]
 
     helper_binaries_dir = ["${pkgs.conmon}/bin", "${pkgs.netavark}/bin", "${pkgs.aardvark-dns}/bin"]
@@ -342,6 +424,11 @@ pkgs.stdenv.mkDerivation {
 
     # bedrock-file-store at /usr/local/bin/.
     ln -sf ${bedrockFileStore}/bin/bedrock-file-store rootfs/usr/local/bin/bedrock-file-store
+
+    # scx-init at /usr/local/bin/ so the init script can start the in-kernel
+    # fuzzing scheduler at boot. crun-shim is referenced by absolute store path
+    # from containers.conf (podman's runtime), so it needs no rootfs symlink.
+    ln -sf ${scxFuzz}/bin/scx-init rootfs/usr/local/bin/scx-init
 
     # workload-monitor: watches podman container/exec lifecycle events and
     # records exit-code assertions to /bedrock/assertions.jsonl. Lives on the

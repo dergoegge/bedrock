@@ -4,7 +4,3 @@ images.tar
 # (single source of truth lives at guest/libvmcall.h). Normally removed on
 # exit; ignored here in case a build is interrupted before cleanup.
 fuzz/libvmcall.h
-
-# Generated into the build context by bpftool during the image build; never
-# committed.
-fuzz/fuzz_bpf.skel.h

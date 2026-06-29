@@ -6,14 +6,15 @@
 # `bedrock-cli --file compose.yaml=... --file images.tar=...`, or `nix run
 # .#test-concurrency-fuzz-workload`. See nix/podman-initrd.nix.
 #
-# The image bakes the in-kernel sched_ext fuzzing scheduler, its static C
-# loader, the producer/consumer sample target, and the VMCALL helper. The guest
+# The image bakes the producer/consumer sample target and the VMCALL helper.
+# The fuzzing scheduler itself is guest infrastructure (sched_ext BPF + scx-init
+# + crun-shim in nix/podman-initrd.nix), not part of this image. The guest
 # kernel must be built with sched_ext + BTF (see nix/guest-kernel.nix).
 #
 # Usage:  ./build.sh
 #
 # Requires a working `docker` daemon (or `podman` with a `docker` shim) and
-# network access (the image build fetches Debian packages and the scx headers).
+# network access (the image build fetches Debian packages).
 
 set -euo pipefail
 cd "$(dirname "$0")"
